@@ -42,6 +42,7 @@ export async function graphGet(path: string) {
     headers: {
       Authorization: `Bearer ${token}`,
     },
+    cache: "no-store",
   });
   if (!res.ok) {
     const text = await res.text();

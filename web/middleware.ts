@@ -2,17 +2,8 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
 
-const ADMIN_PREFIXES = ["/admin", "/api/worker"];
-const USER_PREFIXES = [
-  "/analytics",
-  "/jobs",
-  "/runs",
-  "/api/jobs",
-  "/api/schedules",
-  "/api/runs",
-  "/api/analytics",
-  "/api/graph",
-];
+const ADMIN_PREFIXES = ["/admin", "/analytics", "/jobs", "/runs", "/api/worker", "/api/jobs", "/api/schedules", "/api/runs", "/api/analytics"];
+const USER_PREFIXES = ["/dashboard", "/api/graph", "/api/dashboard"];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
@@ -39,6 +30,12 @@ export async function middleware(req: NextRequest) {
 
   if (ADMIN_PREFIXES.some((p) => pathname.startsWith(p))) {
     if (!isAdmin) {
+      return new NextResponse("Forbidden", { status: 403 });
+    }
+  }
+
+  if (pathname === "/") {
+    if (!isUser) {
       return new NextResponse("Forbidden", { status: 403 });
     }
   }
