@@ -87,7 +87,6 @@ export default async function JobsPage() {
             <label className="text-sm text-slate">Job Type</label>
             <select name="job_type" className="rounded-lg border border-slate/20 bg-white/80 p-2">
               <option value="graph_ingest">graph_ingest</option>
-              <option value="refresh_mv">refresh_mv</option>
             </select>
             <label className="text-sm text-slate">Config (JSON)</label>
             <textarea

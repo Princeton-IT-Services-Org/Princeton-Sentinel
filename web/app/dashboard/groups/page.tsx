@@ -1,8 +1,13 @@
-import Link from "next/link";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Pagination } from "@/components/pagination";
+import { Button } from "@/components/ui/button";
 import { requireUser } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
-import { formatDate, formatNumber } from "@/app/lib/format";
+import { formatNumber } from "@/app/lib/format";
 import { getPagination, getParam, getSortDirection, SearchParams } from "@/app/lib/params";
+import { GroupsTable } from "./groups-table";
+import { GroupsSummaryBarChartClient, GroupsSummaryPieChartClient } from "@/components/groups-summary-graphs-wrapper";
 
 function buildSearchFilter(search: string | null) {
   if (!search) return { clause: "", params: [] as any[] };
@@ -11,6 +16,8 @@ function buildSearchFilter(search: string | null) {
     params: [`%${search.toLowerCase()}%`],
   };
 }
+
+export const dynamic = "force-dynamic";
 
 export default async function GroupsPage({ searchParams }: { searchParams?: SearchParams }) {
   await requireUser();
@@ -32,21 +39,15 @@ export default async function GroupsPage({ searchParams }: { searchParams?: Sear
 
   const rows = await query<any>(
     `
-    WITH member_counts AS (
-      SELECT group_id, COUNT(*)::int AS member_count
-      FROM msgraph_group_memberships
-      WHERE deleted_at IS NULL
-      GROUP BY group_id
-    )
     SELECT
-      g.id,
+      g.id AS group_id,
       g.display_name,
       g.mail,
       g.visibility,
       g.created_dt,
       COALESCE(mc.member_count, 0) AS member_count
     FROM msgraph_groups g
-    LEFT JOIN member_counts mc ON mc.group_id = g.id
+    LEFT JOIN mv_msgraph_group_member_counts mc ON mc.group_id = g.id
     ${clause || "WHERE g.deleted_at IS NULL"}
     ORDER BY ${sortColumn} ${dir.toUpperCase()} NULLS LAST
     LIMIT $${params.length + 1} OFFSET $${params.length + 2}
@@ -60,7 +61,13 @@ export default async function GroupsPage({ searchParams }: { searchParams?: Sear
   );
   const total = countRows[0]?.total || 0;
 
-  const topGroups = [...rows].sort((a, b) => b.member_count - a.member_count).slice(0, 10);
+  const topGroups = [...rows]
+    .sort((a, b) => b.member_count - a.member_count)
+    .slice(0, 10)
+    .map((g) => ({
+      label: g.display_name ?? g.group_id,
+      value: g.member_count ?? 0,
+    }));
 
   const visibilityBreakdown = await query<any>(
     `
@@ -72,96 +79,83 @@ export default async function GroupsPage({ searchParams }: { searchParams?: Sear
     `,
     params
   );
+  const visibilityData = visibilityBreakdown.map((row: any) => ({ label: row.visibility, value: row.count }));
 
   return (
-    <div className="grid gap-6">
-      <section className="card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="font-display text-2xl">Groups</h2>
-            <p className="text-sm text-slate">Cached (DB) • Browse Microsoft 365 groups and memberships.</p>
-          </div>
-          <form className="flex flex-wrap gap-2" method="get">
-            <input
-              name="q"
-              defaultValue={search || ""}
-              placeholder="Search groups"
-              className="rounded-lg border border-slate/20 bg-white/80 px-3 py-2 text-sm"
-            />
-            <button className="badge bg-white/70 text-slate hover:bg-white" type="submit">Search</button>
-          </form>
+    <main className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Groups</h1>
+          <p className="text-sm text-muted-foreground">Microsoft 365 groups and membership counts (as ingested).</p>
         </div>
-        <div className="mt-4 text-sm text-slate">Total groups: {formatNumber(total)}</div>
-      </section>
+        <form className="flex flex-wrap items-center gap-2" action="/dashboard/groups" method="get">
+          <Input name="q" placeholder="Search groups…" defaultValue={search || ""} className="w-64" />
+          <Input
+            name="pageSize"
+            type="number"
+            min={10}
+            max={200}
+            defaultValue={String(pageSize)}
+            className="w-24"
+            title="Page size"
+          />
+          <Button type="submit" variant="outline">
+            Apply
+          </Button>
+        </form>
+      </div>
 
-      <section className="grid gap-6 md:grid-cols-2">
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Top Groups by Members</h3>
-          <div className="mt-4 grid gap-2 text-sm">
-            {topGroups.map((row) => (
-              <div key={row.id} className="flex items-center justify-between">
-                <Link className="text-ink underline decoration-dotted" href={`/dashboard/groups/${encodeURIComponent(row.id)}`}>
-                  {row.display_name || row.id}
-                </Link>
-                <span className="font-semibold text-slate">{formatNumber(row.member_count)}</span>
-              </div>
-            ))}
-            {!topGroups.length && <div className="text-sm text-slate">No groups.</div>}
-          </div>
-        </div>
+      <div className="flex flex-row gap-4 items-center justify-center">
+        <Card className="w-full max-w-xs text-center shadow-lg border border-gray-200 bg-white">
+          <CardHeader>
+            <CardTitle className="text-3xl font-bold">{formatNumber(total)}</CardTitle>
+            <CardDescription>Total Groups</CardDescription>
+          </CardHeader>
+        </Card>
+      </div>
 
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Visibility Breakdown</h3>
-          <div className="mt-4 grid gap-2 text-sm">
-            {visibilityBreakdown.map((row: any) => (
-              <div key={row.visibility} className="flex items-center justify-between">
-                <span className="text-ink">{row.visibility}</span>
-                <span className="font-semibold text-slate">{formatNumber(row.count)}</span>
-              </div>
-            ))}
-            {!visibilityBreakdown.length && <div className="text-sm text-slate">No data.</div>}
-          </div>
-        </div>
-      </section>
+      <div className="w-full flex flex-col md:flex-row gap-6 items-center justify-center my-2">
+        <Card className="w-full md:w-1/2 max-w-xl flex flex-col items-center justify-center shadow-lg border border-gray-200 bg-white">
+          <CardHeader>
+            <CardTitle>Top 10 Groups by Members</CardTitle>
+          </CardHeader>
+          <CardContent className="w-full flex items-center justify-center">
+            <div className="w-full h-72 flex items-center justify-center">
+              <GroupsSummaryBarChartClient data={topGroups} />
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="w-full md:w-1/2 max-w-xl flex flex-col items-center justify-center shadow-lg border border-gray-200 bg-white">
+          <CardHeader>
+            <CardTitle>Visibility Breakdown</CardTitle>
+          </CardHeader>
+          <CardContent className="w-full flex items-center justify-center">
+            <div className="w-full h-72 flex items-center justify-center">
+              <GroupsSummaryPieChartClient data={visibilityData} />
+            </div>
+          </CardContent>
+        </Card>
+      </div>
 
-      <section className="card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="font-display text-xl">Groups List</h3>
-          <div className="text-xs text-slate">Showing {rows.length} of {formatNumber(total)}</div>
-        </div>
-        <div className="mt-4 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="text-left text-slate/70">
-              <tr>
-                <th className="py-2">Group</th>
-                <th className="py-2">Visibility</th>
-                <th className="py-2">Members</th>
-                <th className="py-2">Created</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row: any) => (
-                <tr key={row.id} className="border-t border-white/60">
-                  <td className="py-3">
-                    <Link className="font-semibold text-ink underline decoration-dotted" href={`/dashboard/groups/${encodeURIComponent(row.id)}`}>
-                      {row.display_name || row.id}
-                    </Link>
-                    <div className="text-xs text-slate">{row.mail || "--"}</div>
-                  </td>
-                  <td className="py-3 text-slate">{row.visibility || "unknown"}</td>
-                  <td className="py-3 text-slate">{formatNumber(row.member_count)}</td>
-                  <td className="py-3 text-slate">{formatDate(row.created_dt)}</td>
-                </tr>
-              ))}
-              {!rows.length && (
-                <tr>
-                  <td className="py-3 text-slate" colSpan={4}>No groups match that filter.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Groups</CardTitle>
+          <CardDescription>
+            {formatNumber(total)} groups • showing {formatNumber(rows.length)}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="overflow-x-auto">
+          <GroupsTable items={rows} />
+        </CardContent>
+      </Card>
+
+      <Pagination
+        pathname="/dashboard/groups"
+        page={page}
+        pageSize={pageSize}
+        totalItems={total}
+        extraParams={{ q: search || undefined, pageSize, sort, dir }}
+      />
+    </main>
   );
 }

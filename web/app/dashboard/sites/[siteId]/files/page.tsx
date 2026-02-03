@@ -1,10 +1,53 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
+
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { requireUser } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
-import { formatBytes, formatDate, formatNumber, safeDecode } from "@/app/lib/format";
+import { safeDecode } from "@/app/lib/format";
 
-function itemKey(driveId: string, itemId: string) {
-  return encodeURIComponent(`${driveId}::${itemId}`);
+import { SiteLargestFilesTable, SiteMostPermissionedItemsTable, SiteRecentlyModifiedTable } from "./site-files-tables";
+
+export const dynamic = "force-dynamic";
+
+function Heatmap({ cells }: { cells: Array<{ dayOfWeek: number; hour: number; count: number }> }) {
+  const byKey = new Map(cells.map((c) => [`${c.dayOfWeek}:${c.hour}`, c.count]));
+  const max = Math.max(...cells.map((c) => c.count), 0);
+  const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  return (
+    <div className="overflow-x-auto">
+      <div className="min-w-[900px]">
+        <div className="grid grid-cols-[64px_repeat(24,32px)] gap-1 text-xs">
+          <div />
+          {Array.from({ length: 24 }).map((_, h) => (
+            <div key={h} className="text-center text-muted-foreground">
+              {h}
+            </div>
+          ))}
+          {weekdays.map((label, dayIdx) => (
+            <div key={label} className="contents">
+              <div className="flex items-center justify-end pr-2 text-muted-foreground">{label}</div>
+              {Array.from({ length: 24 }).map((_, hour) => {
+                const count = byKey.get(`${dayIdx}:${hour}`) ?? 0;
+                const alpha = max <= 0 ? 0 : 0.08 + (count / max) * 0.75;
+                return (
+                  <div
+                    key={`${label}:${hour}`}
+                    title={`${label} ${hour}:00 — ${count.toLocaleString()} writes`}
+                    className="h-6 rounded border"
+                    style={{
+                      backgroundColor: count > 0 ? `hsl(var(--primary) / ${alpha})` : "transparent",
+                    }}
+                  />
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default async function SiteFilesPage({ params }: { params: { siteId: string } }) {
@@ -12,17 +55,12 @@ export default async function SiteFilesPage({ params }: { params: { siteId: stri
 
   const rawId = safeDecode(params.siteId);
   const siteRows = await query<any>("SELECT * FROM mv_msgraph_site_inventory WHERE site_key = $1", [rawId]);
-  if (!siteRows.length) {
-    return (
-      <div className="card p-6">
-        <h2 className="font-display text-2xl">Site not found</h2>
-      </div>
-    );
-  }
+  if (!siteRows.length) notFound();
+
   const site = siteRows[0];
   const isPersonal = site.is_personal === true;
 
-  const heatmap = await query<any>(
+  const heatmapRows = await query<any>(
     `
     SELECT EXTRACT(DOW FROM i.modified_dt)::int AS dow,
            EXTRACT(HOUR FROM i.modified_dt)::int AS hour,
@@ -40,7 +78,7 @@ export default async function SiteFilesPage({ params }: { params: { siteId: stri
 
   const recentlyModified = await query<any>(
     `
-    SELECT i.drive_id, i.id, i.name, i.web_url, i.path, i.is_folder, i.size, i.modified_dt
+    SELECT i.drive_id, i.id, i.name, i.web_url, i.normalized_path, i.path, i.modified_dt
     FROM msgraph_drive_items i
     JOIN msgraph_drives d ON d.id = i.drive_id
     WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
@@ -53,7 +91,7 @@ export default async function SiteFilesPage({ params }: { params: { siteId: stri
 
   const largestFiles = await query<any>(
     `
-    SELECT i.drive_id, i.id, i.name, i.web_url, i.path, i.size, i.modified_dt
+    SELECT i.drive_id, i.id, i.name, i.web_url, i.normalized_path, i.path, i.size
     FROM msgraph_drive_items i
     JOIN msgraph_drives d ON d.id = i.drive_id
     WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
@@ -72,7 +110,6 @@ export default async function SiteFilesPage({ params }: { params: { siteId: stri
       i.id,
       i.name,
       i.web_url,
-      i.path,
       COUNT(p.permission_id)::int AS permissions,
       COUNT(*) FILTER (WHERE p.link_scope IS NOT NULL)::int AS sharing_links
     FROM msgraph_drive_items i
@@ -81,169 +118,102 @@ export default async function SiteFilesPage({ params }: { params: { siteId: stri
       ON p.drive_id = i.drive_id AND p.item_id = i.id AND p.deleted_at IS NULL
     WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
       AND ${isPersonal ? "d.id" : "d.site_id"} = $1
-    GROUP BY i.drive_id, i.id, i.name, i.web_url, i.path
+    GROUP BY i.drive_id, i.id, i.name, i.web_url
     ORDER BY sharing_links DESC NULLS LAST, permissions DESC NULLS LAST
     LIMIT 25
     `,
     [site.site_id]
   );
 
+  const heatmap = heatmapRows.map((row: any) => ({
+    dayOfWeek: row.dow,
+    hour: row.hour,
+    count: row.count,
+  }));
+
   return (
-    <div className="grid gap-6">
-      <section className="card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h2 className="font-display text-2xl">{site.title || site.site_id} — Files</h2>
-            <div className="text-sm text-slate">Write heatmap and high-signal file lists.</div>
-          </div>
-          <Link className="badge bg-white/70 text-slate hover:bg-white" href={`/dashboard/sites/${encodeURIComponent(site.site_key)}`}>
-            Back to Site
+    <main className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="truncate text-2xl font-semibold">{site.title || site.site_id}: Files</h1>
+          <p className="text-sm text-muted-foreground">File-level signals based on drive item metadata.</p>
+          <p className="mt-2 text-xs uppercase tracking-[0.3em] text-muted-foreground">Cached (DB)</p>
+        </div>
+        <div className="flex items-center gap-3 text-sm">
+          <Link className="text-muted-foreground hover:underline" href={`/dashboard/sites/${encodeURIComponent(site.site_key)}`}>
+            Overview
+          </Link>
+          <Link className="text-muted-foreground hover:underline" href={`/dashboard/sites/${encodeURIComponent(site.site_key)}/sharing`}>
+            Sharing
           </Link>
         </div>
-      </section>
+      </div>
 
-      <section className="card p-6">
-        <h3 className="font-display text-xl">Write Heatmap</h3>
-        <div className="mt-4 overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead className="text-left text-slate/70">
-              <tr>
-                <th className="py-2">Day</th>
-                <th className="py-2">Hour</th>
-                <th className="py-2">Count</th>
-              </tr>
-            </thead>
-            <tbody>
-              {heatmap.map((row: any) => (
-                <tr key={`${row.dow}-${row.hour}`} className="border-t border-white/60">
-                  <td className="py-2 text-slate">{row.dow}</td>
-                  <td className="py-2 text-slate">{row.hour}</td>
-                  <td className="py-2 text-ink font-semibold">{formatNumber(row.count)}</td>
-                </tr>
-              ))}
-              {!heatmap.length && (
-                <tr>
-                  <td className="py-3 text-slate" colSpan={3}>
-                    No write activity recorded.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      <Card>
+        <CardHeader>
+          <CardTitle>Write heatmap</CardTitle>
+          <CardDescription>Day-of-week × hour-of-day based on `lastModifiedDateTime`.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Heatmap cells={heatmap} />
+        </CardContent>
+      </Card>
 
-      <section className="grid gap-6 md:grid-cols-2">
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Recently Modified</h3>
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-left text-slate/70">
-                <tr>
-                  <th className="py-2">Item</th>
-                  <th className="py-2">Modified</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentlyModified.map((row: any) => (
-                  <tr key={`${row.drive_id}-${row.id}`} className="border-t border-white/60">
-                    <td className="py-3">
-                      <div className="font-semibold text-ink">
-                        <Link className="underline decoration-dotted" href={`/dashboard/items/${itemKey(row.drive_id, row.id)}`}>
-                          {row.name || row.id}
-                        </Link>
-                      </div>
-                      <div className="text-xs text-slate">{row.path || "--"}</div>
-                    </td>
-                    <td className="py-3 text-slate">{formatDate(row.modified_dt)}</td>
-                  </tr>
-                ))}
-                {!recentlyModified.length && (
-                  <tr>
-                    <td className="py-3 text-slate" colSpan={2}>
-                      No recent items.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Recently modified</CardTitle>
+            <CardDescription>Latest writes</CardDescription>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            <SiteRecentlyModifiedTable
+              items={recentlyModified.map((row: any) => ({
+                itemId: `${row.drive_id}::${row.id}`,
+                name: row.name || row.id,
+                webUrl: row.web_url,
+                normalizedPath: row.normalized_path || row.path,
+                lastModifiedDateTime: row.modified_dt,
+              }))}
+            />
+          </CardContent>
+        </Card>
 
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Largest Files</h3>
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-left text-slate/70">
-                <tr>
-                  <th className="py-2">Item</th>
-                  <th className="py-2">Size</th>
-                </tr>
-              </thead>
-              <tbody>
-                {largestFiles.map((row: any) => (
-                  <tr key={`${row.drive_id}-${row.id}`} className="border-t border-white/60">
-                    <td className="py-3">
-                      <div className="font-semibold text-ink">
-                        <Link className="underline decoration-dotted" href={`/dashboard/items/${itemKey(row.drive_id, row.id)}`}>
-                          {row.name || row.id}
-                        </Link>
-                      </div>
-                      <div className="text-xs text-slate">{row.path || "--"}</div>
-                    </td>
-                    <td className="py-3 text-slate">{formatBytes(row.size)}</td>
-                  </tr>
-                ))}
-                {!largestFiles.length && (
-                  <tr>
-                    <td className="py-3 text-slate" colSpan={2}>
-                      No file size data.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </section>
+        <Card>
+          <CardHeader>
+            <CardTitle>Largest files</CardTitle>
+            <CardDescription>Top 25 by size</CardDescription>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            <SiteLargestFilesTable
+              items={largestFiles.map((row: any) => ({
+                itemId: `${row.drive_id}::${row.id}`,
+                name: row.name || row.id,
+                webUrl: row.web_url,
+                normalizedPath: row.normalized_path || row.path,
+                size: row.size,
+              }))}
+            />
+          </CardContent>
+        </Card>
+      </div>
 
-      <section className="card p-6">
-        <h3 className="font-display text-xl">Most Shared / Permissioned Items</h3>
-        <div className="mt-4 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="text-left text-slate/70">
-              <tr>
-                <th className="py-2">Item</th>
-                <th className="py-2">Sharing Links</th>
-                <th className="py-2">Permissions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {mostShared.map((row: any) => (
-                <tr key={`${row.drive_id}-${row.id}`} className="border-t border-white/60">
-                  <td className="py-3">
-                    <div className="font-semibold text-ink">
-                      <Link className="underline decoration-dotted" href={`/dashboard/items/${itemKey(row.drive_id, row.id)}`}>
-                        {row.name || row.id}
-                      </Link>
-                    </div>
-                    <div className="text-xs text-slate">{row.path || "--"}</div>
-                  </td>
-                  <td className="py-3 text-slate">{formatNumber(row.sharing_links)}</td>
-                  <td className="py-3 text-slate">{formatNumber(row.permissions)}</td>
-                </tr>
-              ))}
-              {!mostShared.length && (
-                <tr>
-                  <td className="py-3 text-slate" colSpan={3}>
-                    No sharing data.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Most shared/permissioned items</CardTitle>
+          <CardDescription>Ranked by sharing links and total permissions</CardDescription>
+        </CardHeader>
+        <CardContent className="overflow-x-auto">
+          <SiteMostPermissionedItemsTable
+            items={mostShared.map((row: any) => ({
+              itemId: `${row.drive_id}::${row.id}`,
+              name: row.name || row.id,
+              webUrl: row.web_url,
+              sharingLinks: row.sharing_links ?? 0,
+              permissions: row.permissions ?? 0,
+            }))}
+          />
+        </CardContent>
+      </Card>
+    </main>
   );
 }

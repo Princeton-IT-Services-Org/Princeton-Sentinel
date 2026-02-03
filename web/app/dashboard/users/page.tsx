@@ -1,8 +1,13 @@
-import Link from "next/link";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Pagination } from "@/components/pagination";
+import { Button } from "@/components/ui/button";
 import { requireUser } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
-import { formatDate, formatNumber } from "@/app/lib/format";
+import { formatNumber } from "@/app/lib/format";
 import { getPagination, getParam, getSortDirection, getWindowDays, SearchParams } from "@/app/lib/params";
+import { UsersTable } from "./users-table";
+import { UsersSummaryBarChartClient } from "@/components/users-summary-graphs-wrapper";
 
 function buildSearchClause(search: string | null, startIndex: number) {
   if (!search) return { clause: "", params: [] as any[] };
@@ -10,6 +15,8 @@ function buildSearchClause(search: string | null, startIndex: number) {
   const clause = `AND (LOWER(u.display_name) LIKE $${startIndex} OR LOWER(u.mail) LIKE $${startIndex} OR LOWER(u.user_principal_name) LIKE $${startIndex} OR LOWER(a.user_id) LIKE $${startIndex})`;
   return { clause, params: [pattern] };
 }
+
+export const dynamic = "force-dynamic";
 
 export default async function UsersPage({ searchParams }: { searchParams?: SearchParams }) {
   await requireUser();
@@ -53,7 +60,8 @@ export default async function UsersPage({ searchParams }: { searchParams?: Searc
       u.user_principal_name,
       a.modified_items,
       a.sites_touched,
-      a.last_modified_dt
+      a.last_modified_dt,
+      NULL::timestamptz AS last_sign_in_dt
     FROM activity a
     LEFT JOIN msgraph_users u ON u.id = a.user_id AND u.deleted_at IS NULL
     WHERE 1=1
@@ -62,9 +70,7 @@ export default async function UsersPage({ searchParams }: { searchParams?: Searc
     LIMIT $${windowStart ? 2 + searchClause.params.length : 1 + searchClause.params.length}
     OFFSET $${windowStart ? 3 + searchClause.params.length : 2 + searchClause.params.length}
     `,
-    windowStart
-      ? [windowStart, ...searchClause.params, pageSize, offset]
-      : [...searchClause.params, pageSize, offset]
+    windowStart ? [windowStart, ...searchClause.params, pageSize, offset] : [...searchClause.params, pageSize, offset]
   );
 
   const totalRows = await query<any>(
@@ -90,109 +96,105 @@ export default async function UsersPage({ searchParams }: { searchParams?: Searc
 
   const total = totalRows[0]?.total || 0;
 
-  const topByModified = [...rows].sort((a, b) => b.modified_items - a.modified_items).slice(0, 10);
-  const topBySites = [...rows].sort((a, b) => b.sites_touched - a.sites_touched).slice(0, 10);
+  const topByModified = [...rows]
+    .sort((a, b) => b.modified_items - a.modified_items)
+    .slice(0, 10)
+    .map((u) => ({ label: u.display_name ?? u.user_id, value: u.modified_items ?? 0 }));
+
+  const topBySites = [...rows]
+    .sort((a, b) => b.sites_touched - a.sites_touched)
+    .slice(0, 10)
+    .map((u) => ({ label: u.display_name ?? u.user_id, value: u.sites_touched ?? 0 }));
 
   return (
-    <div className="grid gap-6">
-      <section className="card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="font-display text-2xl">Users Activity</h2>
-            <p className="text-sm text-slate">Cached (DB) • Window: {windowDays || "all"} days</p>
-          </div>
-          <form className="flex flex-wrap gap-2" method="get">
-            <input
-              name="q"
-              defaultValue={search || ""}
-              placeholder="Search users"
-              className="rounded-lg border border-slate/20 bg-white/80 px-3 py-2 text-sm"
-            />
-            <input
-              name="days"
-              defaultValue={windowDays ? String(windowDays) : "all"}
-              className="w-24 rounded-lg border border-slate/20 bg-white/80 px-3 py-2 text-sm"
-            />
-            <button className="badge bg-white/70 text-slate hover:bg-white" type="submit">Apply</button>
-          </form>
+    <main className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Users</h1>
+          <p className="text-sm text-muted-foreground">
+            Based on which items each user is currently the last modifier for. Window: {windowDays ?? "all"}d.
+          </p>
         </div>
-        <div className="mt-4 text-sm text-slate">Total users with activity: {formatNumber(total)}</div>
-      </section>
+        <form className="flex flex-wrap items-center gap-2" action="/dashboard/users" method="get">
+          <Input name="q" placeholder="Search users…" defaultValue={search || ""} className="w-64" />
+          <select
+            name="days"
+            defaultValue={windowDays == null ? "all" : String(windowDays)}
+            className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
+            title="Window"
+          >
+            <option value="all">All-time</option>
+            <option value="7">7d</option>
+            <option value="30">30d</option>
+            <option value="90">90d</option>
+            <option value="365">365d</option>
+          </select>
+          <Input
+            name="pageSize"
+            type="number"
+            min={10}
+            max={200}
+            defaultValue={String(pageSize)}
+            className="w-24"
+            title="Page size"
+          />
+          <Button type="submit" variant="outline">
+            Apply
+          </Button>
+        </form>
+      </div>
 
-      <section className="grid gap-6 md:grid-cols-2">
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Top Users by Modified Items</h3>
-          <div className="mt-4 grid gap-2 text-sm">
-            {topByModified.map((row) => (
-              <div key={row.user_id} className="flex items-center justify-between">
-                <Link className="text-ink underline decoration-dotted" href={`/dashboard/users/${encodeURIComponent(row.user_id)}`}>
-                  {row.display_name || row.user_principal_name || row.mail || row.user_id}
-                </Link>
-                <span className="font-semibold text-slate">{formatNumber(row.modified_items)}</span>
-              </div>
-            ))}
-            {!topByModified.length && <div className="text-sm text-slate">No activity.</div>}
-          </div>
-        </div>
+      <div className="flex flex-row gap-4 items-center justify-center">
+        <Card className="w-full max-w-xs text-center shadow-lg border border-gray-200 bg-white">
+          <CardHeader>
+            <CardTitle className="text-3xl font-bold">{formatNumber(total)}</CardTitle>
+            <CardDescription>Total Users</CardDescription>
+          </CardHeader>
+        </Card>
+      </div>
 
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Top Users by Sites Touched</h3>
-          <div className="mt-4 grid gap-2 text-sm">
-            {topBySites.map((row) => (
-              <div key={row.user_id} className="flex items-center justify-between">
-                <Link className="text-ink underline decoration-dotted" href={`/dashboard/users/${encodeURIComponent(row.user_id)}`}>
-                  {row.display_name || row.user_principal_name || row.mail || row.user_id}
-                </Link>
-                <span className="font-semibold text-slate">{formatNumber(row.sites_touched)}</span>
-              </div>
-            ))}
-            {!topBySites.length && <div className="text-sm text-slate">No activity.</div>}
-          </div>
-        </div>
-      </section>
+      <div className="w-full flex flex-col md:flex-row gap-6 items-center justify-center my-2">
+        <Card className="w-full md:w-1/2 max-w-xl flex flex-col items-center justify-center shadow-lg border border-gray-200 bg-white">
+          <CardHeader>
+            <CardTitle>Top 10 Users by Items Last Modified</CardTitle>
+          </CardHeader>
+          <CardContent className="w-full flex items-center justify-center">
+            <div className="w-full h-72 flex items-center justify-center">
+              <UsersSummaryBarChartClient data={topByModified} label="Items last modified" xTitle="Count" />
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="w-full md:w-1/2 max-w-xl flex flex-col items-center justify-center shadow-lg border border-gray-200 bg-white">
+          <CardHeader>
+            <CardTitle>Top 10 Users by Sites</CardTitle>
+          </CardHeader>
+          <CardContent className="w-full flex items-center justify-center">
+            <div className="w-full h-72 flex items-center justify-center">
+              <UsersSummaryBarChartClient data={topBySites} label="Sites" xTitle="Count" />
+            </div>
+          </CardContent>
+        </Card>
+      </div>
 
-      <section className="card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="font-display text-xl">Active Users</h3>
-          <div className="text-xs text-slate">Showing {rows.length} of {formatNumber(total)}</div>
-        </div>
-        <div className="mt-4 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="text-left text-slate/70">
-              <tr>
-                <th className="py-2">User</th>
-                <th className="py-2">Items Modified</th>
-                <th className="py-2">Sites Touched</th>
-                <th className="py-2">Last Modified</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.user_id} className="border-t border-white/60">
-                  <td className="py-3">
-                    <div className="font-semibold text-ink">
-                      <Link className="underline decoration-dotted" href={`/dashboard/users/${encodeURIComponent(row.user_id)}`}>
-                        {row.display_name || row.user_principal_name || row.mail || row.user_id}
-                      </Link>
-                    </div>
-                    <div className="text-xs text-slate">{row.mail || row.user_principal_name}</div>
-                  </td>
-                  <td className="py-3 text-slate">{formatNumber(row.modified_items)}</td>
-                  <td className="py-3 text-slate">{formatNumber(row.sites_touched)}</td>
-                  <td className="py-3 text-slate">{formatDate(row.last_modified_dt)}</td>
-                </tr>
-              ))}
-              {!rows.length && (
-                <tr>
-                  <td className="py-3 text-slate" colSpan={4}>
-                    No users match that filter.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Active users</CardTitle>
+          <CardDescription>
+            {formatNumber(total)} users • showing {formatNumber(rows.length)} • click a user for details
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="overflow-x-auto">
+          <UsersTable items={rows} windowDays={windowDays} />
+        </CardContent>
+      </Card>
+
+      <Pagination
+        pathname="/dashboard/users"
+        page={page}
+        pageSize={pageSize}
+        totalItems={total}
+        extraParams={{ q: search || undefined, pageSize, sort, dir, days: windowDays == null ? "all" : windowDays }}
+      />
+    </main>
   );
 }

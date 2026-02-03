@@ -49,11 +49,30 @@ CREATE TABLE IF NOT EXISTS msgraph_drives (
   id text PRIMARY KEY,
   site_id text,
   name text,
+  description text,
   drive_type text,
   web_url text,
   owner_id text,
+  owner_type text,
+  owner_display_name text,
+  owner_email text,
+  owner_graph_id text,
+  created_by_user_id text,
+  created_by_type text,
+  created_by_display_name text,
+  created_by_email text,
+  created_by_graph_id text,
+  last_modified_by_user_id text,
+  last_modified_by_type text,
+  last_modified_by_display_name text,
+  last_modified_by_email text,
+  last_modified_by_graph_id text,
+  last_modified_dt timestamptz,
   quota_total bigint,
   quota_used bigint,
+  quota_remaining bigint,
+  quota_deleted bigint,
+  quota_state text,
   created_dt timestamptz,
   synced_at timestamptz,
   deleted_at timestamptz,
@@ -67,14 +86,26 @@ CREATE TABLE IF NOT EXISTS msgraph_drive_items (
   web_url text,
   parent_id text,
   path text,
+  normalized_path text,
+  path_level int,
   is_folder boolean,
+  child_count int,
   size bigint,
   mime_type text,
   file_hash_sha1 text,
   created_dt timestamptz,
   modified_dt timestamptz,
   created_by_user_id text,
+  created_by_display_name text,
+  created_by_email text,
   last_modified_by_user_id text,
+  last_modified_by_display_name text,
+  last_modified_by_email text,
+  is_shared boolean,
+  sp_site_id text,
+  sp_list_id text,
+  sp_list_item_id text,
+  sp_list_item_unique_id text,
   permissions_last_synced_at timestamptz,
   permissions_last_error_at timestamptz,
   permissions_last_error text,
@@ -88,6 +119,7 @@ CREATE TABLE IF NOT EXISTS msgraph_drive_item_permissions (
   permission_id text,
   drive_id text NOT NULL,
   item_id text NOT NULL,
+  source text,
   roles text[],
   link_type text,
   link_scope text,
@@ -193,8 +225,61 @@ CREATE TABLE IF NOT EXISTS mv_refresh_log (
   last_refreshed_at timestamptz
 );
 
+CREATE OR REPLACE FUNCTION refresh_impacted_mvs() RETURNS trigger AS $$
+DECLARE
+  mv record;
+BEGIN
+  IF pg_trigger_depth() > 1 THEN
+    RETURN NULL;
+  END IF;
+
+  FOR mv IN SELECT DISTINCT mv_name FROM mv_dependencies WHERE table_name = TG_TABLE_NAME LOOP
+    EXECUTE format('REFRESH MATERIALIZED VIEW %I', mv.mv_name);
+    INSERT INTO mv_refresh_log (mv_name, last_refreshed_at)
+    VALUES (mv.mv_name, now())
+    ON CONFLICT (mv_name)
+    DO UPDATE SET last_refreshed_at = EXCLUDED.last_refreshed_at;
+  END LOOP;
+
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
 -- Helpful indexes
 CREATE INDEX IF NOT EXISTS idx_drive_items_drive_id ON msgraph_drive_items (drive_id);
 CREATE INDEX IF NOT EXISTS idx_drive_item_permissions_item_id ON msgraph_drive_item_permissions (drive_id, item_id);
 CREATE INDEX IF NOT EXISTS idx_drive_item_permission_grants_item_id ON msgraph_drive_item_permission_grants (drive_id, item_id);
 CREATE INDEX IF NOT EXISTS idx_group_memberships_group_id ON msgraph_group_memberships (group_id);
+
+-- Triggered MV refreshes on base table changes (statement-level)
+CREATE TRIGGER trg_refresh_mvs_users
+AFTER INSERT OR UPDATE OR DELETE ON msgraph_users
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_impacted_mvs();
+
+CREATE TRIGGER trg_refresh_mvs_groups
+AFTER INSERT OR UPDATE OR DELETE ON msgraph_groups
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_impacted_mvs();
+
+CREATE TRIGGER trg_refresh_mvs_sites
+AFTER INSERT OR UPDATE OR DELETE ON msgraph_sites
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_impacted_mvs();
+
+CREATE TRIGGER trg_refresh_mvs_drives
+AFTER INSERT OR UPDATE OR DELETE ON msgraph_drives
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_impacted_mvs();
+
+CREATE TRIGGER trg_refresh_mvs_drive_items
+AFTER INSERT OR UPDATE OR DELETE ON msgraph_drive_items
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_impacted_mvs();
+
+CREATE TRIGGER trg_refresh_mvs_item_permissions
+AFTER INSERT OR UPDATE OR DELETE ON msgraph_drive_item_permissions
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_impacted_mvs();
+
+CREATE TRIGGER trg_refresh_mvs_item_permission_grants
+AFTER INSERT OR UPDATE OR DELETE ON msgraph_drive_item_permission_grants
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_impacted_mvs();
+
+CREATE TRIGGER trg_refresh_mvs_group_memberships
+AFTER INSERT OR UPDATE OR DELETE ON msgraph_group_memberships
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_impacted_mvs();

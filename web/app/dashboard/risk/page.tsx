@@ -1,9 +1,15 @@
-import Link from "next/link";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Pagination } from "@/components/pagination";
+import { Button } from "@/components/ui/button";
 import { requireUser } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
-import { formatBytes, formatDate, formatNumber } from "@/app/lib/format";
+import { formatNumber } from "@/app/lib/format";
 import { getPagination, getParam, getSortDirection, getWindowDays, SearchParams } from "@/app/lib/params";
 import { getInternalDomainPatterns } from "@/app/lib/internalDomains";
+import { RiskTable } from "./risk-table";
+import { RiskItemsTable } from "./risk-item-tables";
+import { RiskSummaryBarChartClient, RiskSummaryPieChartClient } from "@/components/risk-summary-graphs-client";
 
 function itemKey(driveId: string, itemId: string) {
   return encodeURIComponent(`${driveId}::${itemId}`);
@@ -16,6 +22,8 @@ function buildSearchFilter(search: string | null) {
     params: [`%${search.toLowerCase()}%`],
   };
 }
+
+export const dynamic = "force-dynamic";
 
 export default async function RiskPage({ searchParams }: { searchParams?: SearchParams }) {
   await requireUser();
@@ -113,14 +121,13 @@ export default async function RiskPage({ searchParams }: { searchParams?: Search
       orgLinksSignal,
       externalUsersSignal,
       guestUsersSignal,
-      external_users: external.external_users,
       guest_users: external.guest_users,
+      external_users: external.external_users,
       flag_count: flagCount,
     };
   });
 
   const flaggedSites = enrichedSites.filter((site: any) => site.flag_count > 0);
-  const flaggedCount = flaggedSites.length;
 
   const sortedFlagged = [...flaggedSites].sort((a, b) => {
     if (sortColumn === "flag_count") return dir === "asc" ? a.flag_count - b.flag_count : b.flag_count - a.flag_count;
@@ -128,17 +135,22 @@ export default async function RiskPage({ searchParams }: { searchParams?: Search
     if (sortColumn === "last_activity_dt") return dir === "asc" ? new Date(a.last_activity_dt || 0).getTime() - new Date(b.last_activity_dt || 0).getTime() : new Date(b.last_activity_dt || 0).getTime() - new Date(a.last_activity_dt || 0).getTime();
     return dir === "asc" ? (a.title || "").localeCompare(b.title || "") : (b.title || "").localeCompare(a.title || "");
   });
-  const pagedFlagged = sortedFlagged.slice(offset, offset + pageSize);
+
+  const totalFlagged = sortedFlagged.length;
+  const totalPages = Math.max(Math.ceil(totalFlagged / pageSize), 1);
+  const clampedPage = Math.min(page, totalPages);
+  const start = (clampedPage - 1) * pageSize;
+  const pageItems = sortedFlagged.slice(start, start + pageSize);
 
   const anonymousItems = await query<any>(
     `
-    SELECT i.drive_id, i.id, i.name, i.web_url, COUNT(*)::int AS links
+    SELECT i.drive_id, i.id, i.name, i.web_url, i.normalized_path, i.size, i.modified_dt, COUNT(*)::int AS link_shares, 'anonymous'::text AS link_scope
     FROM msgraph_drive_item_permissions p
     JOIN msgraph_drive_items i ON i.drive_id = p.drive_id AND i.id = p.item_id
     WHERE p.deleted_at IS NULL AND i.deleted_at IS NULL AND p.link_scope = 'anonymous'
       ${windowStart ? "AND p.synced_at >= $1" : ""}
-    GROUP BY i.drive_id, i.id, i.name, i.web_url
-    ORDER BY links DESC NULLS LAST
+    GROUP BY i.drive_id, i.id, i.name, i.web_url, i.normalized_path, i.size, i.modified_dt
+    ORDER BY link_shares DESC NULLS LAST
     LIMIT 25
     `,
     windowStart ? [windowStart] : []
@@ -146,188 +158,180 @@ export default async function RiskPage({ searchParams }: { searchParams?: Search
 
   const orgItems = await query<any>(
     `
-    SELECT i.drive_id, i.id, i.name, i.web_url, COUNT(*)::int AS links
+    SELECT i.drive_id, i.id, i.name, i.web_url, i.normalized_path, i.size, i.modified_dt, COUNT(*)::int AS link_shares, 'organization'::text AS link_scope
     FROM msgraph_drive_item_permissions p
     JOIN msgraph_drive_items i ON i.drive_id = p.drive_id AND i.id = p.item_id
     WHERE p.deleted_at IS NULL AND i.deleted_at IS NULL AND p.link_scope = 'organization'
       ${windowStart ? "AND p.synced_at >= $1" : ""}
-    GROUP BY i.drive_id, i.id, i.name, i.web_url
-    ORDER BY links DESC NULLS LAST
+    GROUP BY i.drive_id, i.id, i.name, i.web_url, i.normalized_path, i.size, i.modified_dt
+    ORDER BY link_shares DESC NULLS LAST
     LIMIT 25
     `,
     windowStart ? [windowStart] : []
   );
 
+  const topSites = [...pageItems]
+    .filter((s) => typeof s.storage_used_bytes === "number")
+    .sort((a, b) => (b.storage_used_bytes || 0) - (a.storage_used_bytes || 0))
+    .slice(0, 10)
+    .map((s) => ({
+      title: s.title ?? s.site_id,
+      storageGB: s.storage_used_bytes ? s.storage_used_bytes / 1024 / 1024 / 1024 : 0,
+    }));
+
+  const flagBreakdown: Record<string, number> = {
+    Dormant: 0,
+    "Anonymous links": 0,
+    "Org-wide links": 0,
+    "External principals": 0,
+    "Multiple signals": 0,
+  };
+  for (const s of flaggedSites) {
+    const principalSignal = s.externalUsersSignal || s.guestUsersSignal;
+    const signals = Number(s.dormant) + Number(s.anonymousLinksSignal) + Number(s.orgLinksSignal) + Number(principalSignal);
+    if (signals > 1) {
+      flagBreakdown["Multiple signals"]++;
+      continue;
+    }
+    if (s.anonymousLinksSignal) flagBreakdown["Anonymous links"]++;
+    else if (s.orgLinksSignal) flagBreakdown["Org-wide links"]++;
+    else if (principalSignal) flagBreakdown["External principals"]++;
+    else if (s.dormant) flagBreakdown["Dormant"]++;
+  }
+
   return (
-    <div className="grid gap-6">
-      <section className="card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="font-display text-2xl">Risk Signals</h2>
-            <p className="text-sm text-slate">Cached (DB) • Flags derived from dormant activity and sharing exposure.</p>
-          </div>
-          <form className="flex flex-wrap gap-2" method="get">
-            <input
-              name="q"
-              defaultValue={search || ""}
-              placeholder="Search sites"
-              className="rounded-lg border border-slate/20 bg-white/80 px-3 py-2 text-sm"
-            />
-            <input
-              name="scanLimit"
-              defaultValue={scanLimit}
-              className="w-28 rounded-lg border border-slate/20 bg-white/80 px-3 py-2 text-sm"
-            />
-            <input
-              name="dormantDays"
-              defaultValue={dormantDays}
-              className="w-28 rounded-lg border border-slate/20 bg-white/80 px-3 py-2 text-sm"
-            />
-            <input
-              name="days"
-              defaultValue={windowDays ? String(windowDays) : "all"}
-              className="w-24 rounded-lg border border-slate/20 bg-white/80 px-3 py-2 text-sm"
-            />
-            <button className="badge bg-white/70 text-slate hover:bg-white" type="submit">Apply</button>
-          </form>
+    <main className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Risk</h1>
+          <p className="text-sm text-muted-foreground">
+            Site-level signals plus file-level exposure lists. File window: {windowDays ?? "all"}d.
+          </p>
         </div>
-      </section>
+        <form className="flex flex-wrap items-center gap-2" action="/dashboard/risk" method="get">
+          <Input name="q" placeholder="Search sites…" defaultValue={search || ""} className="w-64" />
+          <select
+            name="days"
+            defaultValue={windowDays == null ? "all" : String(windowDays)}
+            className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
+            title="File window"
+          >
+            <option value="all">All-time</option>
+            <option value="30">30d</option>
+            <option value="90">90d</option>
+            <option value="365">365d</option>
+          </select>
+          <select
+            name="dormantDays"
+            defaultValue={String(dormantDays)}
+            className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
+            title="Dormant threshold"
+          >
+            <option value="30">Dormant 30d+</option>
+            <option value="90">Dormant 90d+</option>
+            <option value="180">Dormant 180d+</option>
+            <option value="365">Dormant 365d+</option>
+          </select>
+          <Input name="scanLimit" type="number" min={50} max={2000} defaultValue={String(scanLimit)} className="w-28" title="Scan limit" />
+          <Input name="pageSize" type="number" min={10} max={200} defaultValue={String(pageSize)} className="w-24" title="Page size" />
+          <Button type="submit" variant="outline">
+            Apply
+          </Button>
+        </form>
+      </div>
 
-      <section className="grid gap-6 md:grid-cols-4">
-        <div className="card p-6">
-          <div className="text-sm text-slate">Flagged sites</div>
-          <div className="text-3xl font-semibold text-ink">{formatNumber(flaggedCount)}</div>
-        </div>
-        <div className="card p-6">
-          <div className="text-sm text-slate">Files with anonymous links</div>
-          <div className="text-3xl font-semibold text-ink">{formatNumber(anonymousItems.length)}</div>
-        </div>
-        <div className="card p-6">
-          <div className="text-sm text-slate">Files with org-wide links</div>
-          <div className="text-3xl font-semibold text-ink">{formatNumber(orgItems.length)}</div>
-        </div>
-        <div className="card p-6">
-          <div className="text-sm text-slate">Sites scanned</div>
-          <div className="text-3xl font-semibold text-ink">{formatNumber(sites.length)}</div>
-        </div>
-      </section>
+      <div className="grid gap-3 md:grid-cols-4">
+        <Card className="text-center">
+          <CardHeader>
+            <CardTitle className="text-3xl font-bold">{formatNumber(totalFlagged)}</CardTitle>
+            <CardDescription>Flagged sites</CardDescription>
+          </CardHeader>
+        </Card>
+        <Card className="text-center">
+          <CardHeader>
+            <CardTitle className="text-3xl font-bold">{formatNumber(anonymousItems.length)}</CardTitle>
+            <CardDescription>Files w/ anonymous links</CardDescription>
+          </CardHeader>
+        </Card>
+        <Card className="text-center">
+          <CardHeader>
+            <CardTitle className="text-3xl font-bold">{formatNumber(orgItems.length)}</CardTitle>
+            <CardDescription>Files w/ org links</CardDescription>
+          </CardHeader>
+        </Card>
+        <Card className="text-center">
+          <CardHeader>
+            <CardTitle className="text-3xl font-bold">{formatNumber(sites.length)}</CardTitle>
+            <CardDescription>Sites scanned</CardDescription>
+          </CardHeader>
+        </Card>
+      </div>
 
-      <section className="grid gap-6 md:grid-cols-2">
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Files with Anonymous Links</h3>
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-left text-slate/70">
-                <tr>
-                  <th className="py-2">Item</th>
-                  <th className="py-2">Links</th>
-                </tr>
-              </thead>
-              <tbody>
-                {anonymousItems.map((row: any) => (
-                  <tr key={`${row.drive_id}-${row.id}`} className="border-t border-white/60">
-                    <td className="py-3">
-                      <Link className="font-semibold text-ink underline decoration-dotted" href={`/dashboard/items/${itemKey(row.drive_id, row.id)}`}>
-                        {row.name || row.id}
-                      </Link>
-                    </td>
-                    <td className="py-3 text-slate">{formatNumber(row.links)}</td>
-                  </tr>
-                ))}
-                {!anonymousItems.length && (
-                  <tr>
-                    <td className="py-3 text-slate" colSpan={2}>No anonymous link items.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
+      <div className="w-full flex flex-col md:flex-row gap-6 items-center justify-center my-2">
+        <RiskSummaryBarChartClient topSites={topSites} />
+        <RiskSummaryPieChartClient flagBreakdown={flagBreakdown} />
+      </div>
 
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Files with Org-Wide Links</h3>
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-left text-slate/70">
-                <tr>
-                  <th className="py-2">Item</th>
-                  <th className="py-2">Links</th>
-                </tr>
-              </thead>
-              <tbody>
-                {orgItems.map((row: any) => (
-                  <tr key={`${row.drive_id}-${row.id}`} className="border-t border-white/60">
-                    <td className="py-3">
-                      <Link className="font-semibold text-ink underline decoration-dotted" href={`/dashboard/items/${itemKey(row.drive_id, row.id)}`}>
-                        {row.name || row.id}
-                      </Link>
-                    </td>
-                    <td className="py-3 text-slate">{formatNumber(row.links)}</td>
-                  </tr>
-                ))}
-                {!orgItems.length && (
-                  <tr>
-                    <td className="py-3 text-slate" colSpan={2}>No org-wide link items.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </section>
+      <Card>
+        <CardHeader>
+          <CardTitle>Flagged sites</CardTitle>
+          <CardDescription>
+            {formatNumber(totalFlagged)} sites • showing {formatNumber(pageItems.length)}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="overflow-x-auto">
+          <RiskTable items={pageItems} />
+        </CardContent>
+      </Card>
 
-      <section className="card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="font-display text-xl">Flagged Sites</h3>
-          <div className="text-xs text-slate">Showing {pagedFlagged.length} of {formatNumber(flaggedCount)}</div>
-        </div>
-        <div className="mt-4 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="text-left text-slate/70">
-              <tr>
-                <th className="py-2">Site</th>
-                <th className="py-2">Signals</th>
-                <th className="py-2">Exposure</th>
-                <th className="py-2">Storage</th>
-                <th className="py-2">Last Activity</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pagedFlagged.map((site: any) => (
-                <tr key={site.site_key} className="border-t border-white/60">
-                  <td className="py-3">
-                    <Link className="font-semibold text-ink underline decoration-dotted" href={`/dashboard/sites/${encodeURIComponent(site.site_key)}`}>
-                      {site.title || site.site_id}
-                    </Link>
-                    <div className="text-xs text-slate">{site.is_personal ? "Personal" : "SharePoint"}</div>
-                  </td>
-                  <td className="py-3">
-                    <div className="flex flex-wrap gap-2 text-xs">
-                      {site.dormant && <span className="badge badge-warn">Dormant</span>}
-                      {site.anonymousLinksSignal && <span className="badge badge-error">Anonymous</span>}
-                      {site.orgLinksSignal && <span className="badge badge-warn">Org-wide</span>}
-                      {site.externalUsersSignal && <span className="badge badge-error">External</span>}
-                      {site.guestUsersSignal && <span className="badge badge-warn">Guest</span>}
-                    </div>
-                  </td>
-                  <td className="py-3 text-slate">
-                    Links: {formatNumber(site.sharing_links || 0)}
-                    <br />
-                    Guests: {formatNumber(site.guest_users || 0)} • External: {formatNumber(site.external_users || 0)}
-                  </td>
-                  <td className="py-3 text-slate">{formatBytes(site.storage_used_bytes)} / {formatBytes(site.storage_total_bytes)}</td>
-                  <td className="py-3 text-slate">{formatDate(site.last_activity_dt)}</td>
-                </tr>
-              ))}
-              {!pagedFlagged.length && (
-                <tr>
-                  <td className="py-3 text-slate" colSpan={5}>No flagged sites within the scan limit.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </div>
+      <Pagination
+        pathname="/dashboard/risk"
+        page={clampedPage}
+        pageSize={pageSize}
+        totalItems={totalFlagged}
+        extraParams={{ q: search || undefined, pageSize, sort, dir, scanLimit, dormantDays, days: windowDays == null ? "all" : windowDays }}
+      />
+
+      <div className="grid gap-6 md:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Files with Anonymous Links</CardTitle>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            <RiskItemsTable
+              items={anonymousItems.map((row: any) => ({
+                item_id: itemKey(row.drive_id, row.id),
+                name: row.name || row.id,
+                web_url: row.web_url,
+                normalized_path: row.normalized_path,
+                size: row.size,
+                modified_dt: row.modified_dt,
+                link_scope: "anonymous",
+                link_shares: row.link_shares,
+              }))}
+            />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Files with Org-wide Links</CardTitle>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            <RiskItemsTable
+              items={orgItems.map((row: any) => ({
+                item_id: itemKey(row.drive_id, row.id),
+                name: row.name || row.id,
+                web_url: row.web_url,
+                normalized_path: row.normalized_path,
+                size: row.size,
+                modified_dt: row.modified_dt,
+                link_scope: "organization",
+                link_shares: row.link_shares,
+              }))}
+            />
+          </CardContent>
+        </Card>
+      </div>
+    </main>
   );
 }

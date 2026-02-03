@@ -1,6 +1,8 @@
 import AdminTabs from "@/app/admin/AdminTabs";
 import { requireAdmin } from "@/app/lib/auth";
 
+export const dynamic = "force-dynamic";
+
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   await requireAdmin();
 

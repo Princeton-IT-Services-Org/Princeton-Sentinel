@@ -1,18 +1,25 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
+
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { requireUser } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
 import { graphGet } from "@/app/lib/graph";
-import { formatBytes, formatDate, formatNumber, safeDecode } from "@/app/lib/format";
+import { formatBytes, formatIsoDateTime, safeDecode } from "@/app/lib/format";
 import { getInternalDomainPatterns } from "@/app/lib/internalDomains";
+
+import { ItemAccessLinksTable, ItemLinkBreakdownTable, ItemPermissionsTable, ItemPrincipalsTable } from "./item-tables";
 
 type Principal = {
   key: string;
-  displayName?: string | null;
-  email?: string | null;
-  type?: string | null;
+  id: string | null;
+  displayName: string | null;
+  email: string | null;
+  type: "user" | "group" | "siteGroup" | "application" | "link" | "unknown";
   grants: number;
   viaLinks: number;
-  classification: string;
+  classification: "guest" | "external" | "internal" | "unknown";
 };
 
 function splitItemKey(raw: string) {
@@ -56,10 +63,10 @@ function extractPrincipals(permission: any): Array<{ id?: string; displayName?: 
 
   return identities.map((identity) => {
     const user = identity?.user || identity?.siteUser;
-    const group = identity?.group;
+    const group = identity?.group || identity?.siteGroup;
     const app = identity?.application;
     const principal = user || group || app || {};
-    const type = user ? "user" : group ? "group" : app ? "app" : "unknown";
+    const type = user ? "user" : group ? "group" : app ? "application" : "unknown";
     return {
       id: principal.id,
       displayName: principal.displayName || principal.name,
@@ -69,24 +76,20 @@ function extractPrincipals(permission: any): Array<{ id?: string; displayName?: 
   });
 }
 
+export const dynamic = "force-dynamic";
+
 export default async function ItemDetailPage({ params }: { params: { itemId: string } }) {
   await requireUser();
 
   const key = splitItemKey(params.itemId);
-  if (!key) {
-    return (
-      <div className="card p-6">
-        <h2 className="font-display text-2xl">Invalid item id</h2>
-        <p className="mt-2 text-slate">Expected format: driveId::itemId</p>
-      </div>
-    );
-  }
+  if (!key) notFound();
 
   const { driveId, itemId } = key;
 
   const itemRows = await query<any>(
     `
-    SELECT i.*, d.name AS drive_name, d.drive_type, d.web_url AS drive_web_url, d.quota_used, d.quota_total, d.site_id
+    SELECT i.*, d.name AS drive_name, d.drive_type, d.web_url AS drive_web_url, d.quota_used, d.quota_total,
+           d.owner_display_name, d.owner_email
     FROM msgraph_drive_items i
     JOIN msgraph_drives d ON d.id = i.drive_id
     WHERE i.drive_id = $1 AND i.id = $2
@@ -94,22 +97,16 @@ export default async function ItemDetailPage({ params }: { params: { itemId: str
     [driveId, itemId]
   );
 
-  if (!itemRows.length) {
-    return (
-      <div className="card p-6">
-        <h2 className="font-display text-2xl">Item not found</h2>
-        <p className="mt-2 text-slate">The cached inventory does not include this item.</p>
-      </div>
-    );
-  }
-
+  if (!itemRows.length) notFound();
   const item = itemRows[0];
 
   let liveItem: any = null;
   let livePerms: any[] = [];
   let liveError: string | null = null;
   try {
-    liveItem = await graphGet(`/drives/${driveId}/items/${itemId}?select=id,name,webUrl,createdDateTime,lastModifiedDateTime,createdBy,lastModifiedBy,file,folder,shared,parentReference`);
+    liveItem = await graphGet(
+      `/drives/${driveId}/items/${itemId}?select=id,name,webUrl,createdDateTime,lastModifiedDateTime,createdBy,lastModifiedBy,file,folder,shared,parentReference`
+    );
     const perms = await graphGet(`/drives/${driveId}/items/${itemId}/permissions`);
     livePerms = Array.isArray(perms?.value) ? perms.value : [];
   } catch (err: any) {
@@ -117,11 +114,45 @@ export default async function ItemDetailPage({ params }: { params: { itemId: str
   }
 
   const patterns = getInternalDomainPatterns();
-  const linkPerms = livePerms.filter((perm) => perm.link);
-  const linkBreakdown = new Map<string, number>();
-  for (const perm of linkPerms) {
-    const key = `${perm.link?.scope || "direct"}::${perm.link?.type || "unknown"}`;
-    linkBreakdown.set(key, (linkBreakdown.get(key) || 0) + 1);
+  const linkBreakdownMap = new Map<string, { link_scope: string | null; link_type: string | null; count: number }>();
+  const accessLinks: any[] = [];
+  const permissions: any[] = [];
+
+  for (const [index, perm] of livePerms.entries()) {
+    const link = perm.link || null;
+    if (link) {
+      const scope = link.scope ?? null;
+      const type = link.type ?? null;
+      const keyVal = `${scope ?? "null"}::${type ?? "null"}`;
+      const existing = linkBreakdownMap.get(keyVal) || { link_scope: scope, link_type: type, count: 0 };
+      existing.count += 1;
+      linkBreakdownMap.set(keyVal, existing);
+
+      const inheritedKey = perm.inheritedFrom?.driveId && perm.inheritedFrom?.id ? `${perm.inheritedFrom.driveId}::${perm.inheritedFrom.id}` : null;
+      accessLinks.push({
+        permissionId: perm.id ?? `perm-${index}`,
+        source: perm.inheritedFrom ? "inherited" : "direct",
+        inheritedFromItemId: inheritedKey,
+        link_scope: scope ?? "unknown",
+        link_type: type ?? null,
+        link_webUrl: link.webUrl ?? null,
+        link_expiration: link.expirationDateTime ?? null,
+        preventsDownload: link.preventsDownload ?? null,
+        roles: Array.isArray(perm.roles) ? perm.roles : [],
+      });
+    }
+
+    const principals = extractPrincipals(perm);
+    const inheritedKey = perm.inheritedFrom?.driveId && perm.inheritedFrom?.id ? `${perm.inheritedFrom.driveId}::${perm.inheritedFrom.id}` : null;
+    permissions.push({
+      permissionId: perm.id ?? `perm-${index}`,
+      source: perm.inheritedFrom ? "inherited" : "direct",
+      inheritedFromItemId: inheritedKey,
+      link_scope: link?.scope ?? null,
+      link_type: link?.type ?? null,
+      roles: Array.isArray(perm.roles) ? perm.roles : [],
+      principalCount: principals.length,
+    });
   }
 
   const principalMap = new Map<string, Principal>();
@@ -132,219 +163,205 @@ export default async function ItemDetailPage({ params }: { params: { itemId: str
       const keyVal = principal.email || principal.id || principal.displayName || "unknown";
       const existing = principalMap.get(keyVal) || {
         key: keyVal,
-        displayName: principal.displayName,
-        email: principal.email,
-        type: principal.type,
+        id: principal.id ?? null,
+        displayName: principal.displayName ?? null,
+        email: principal.email ?? null,
+        type: (principal.type as Principal["type"]) ?? "unknown",
         grants: 0,
         viaLinks: 0,
         classification: classifyEmail(principal.email || null, patterns),
       };
+      if (!existing.id && principal.id) existing.id = principal.id;
+      if (!existing.email && principal.email) existing.email = principal.email;
+      if (!existing.displayName && principal.displayName) existing.displayName = principal.displayName;
+      if (existing.type === "unknown" && principal.type) existing.type = principal.type as Principal["type"];
+      if (existing.classification === "unknown") {
+        existing.classification = classifyEmail(existing.email ?? principal.email ?? null, patterns);
+      }
       existing.grants += 1;
       if (viaLink) existing.viaLinks += 1;
       principalMap.set(keyVal, existing);
     }
   }
 
-  const principalList = Array.from(principalMap.values()).sort((a, b) => b.grants - a.grants);
+  const principalList = Array.from(principalMap.values())
+    .map((p) => ({
+      ...p,
+      viaDirect: p.grants - p.viaLinks,
+    }))
+    .sort((a, b) => b.grants - a.grants);
   const guestCount = principalList.filter((p) => p.classification === "guest").length;
   const externalCount = principalList.filter((p) => p.classification === "external").length;
-  const principals = principalList.slice(0, 25);
+
+  const linkBreakdown = Array.from(linkBreakdownMap.values());
+  const hasAnonymousLink = linkBreakdown.some((r) => r.link_scope === "anonymous");
+  const hasOrgLink = linkBreakdown.some((r) => r.link_scope === "organization");
+  const hasUsersLink = linkBreakdown.some((r) => r.link_scope === "users");
+
+  const path = item.normalized_path ? `${item.normalized_path}/${item.name}` : item.path || item.name;
+  const isShared = item.is_shared || linkBreakdown.length > 0;
+
+  const createdAt = liveItem?.createdDateTime || item.created_dt;
+  const modifiedAt = liveItem?.lastModifiedDateTime || item.modified_dt;
+
+  const lastModifiedBy = item.last_modified_by_email || item.last_modified_by_display_name || item.last_modified_by_user_id || "—";
+  const createdBy = item.created_by_email || item.created_by_display_name || item.created_by_user_id || "—";
 
   return (
-    <div className="grid gap-6">
-      <section className="card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="font-display text-2xl">{item.name || item.id}</h2>
-            <div className="mt-1 text-xs uppercase tracking-[0.3em] text-slate/60">Live (Graph) + Cached (DB)</div>
-            <div className="mt-2 flex flex-wrap gap-2 text-xs">
-              <span className="badge bg-white/70 text-slate">{item.is_folder ? "Folder" : "File"}</span>
-              {linkPerms.length > 0 && <span className="badge badge-warn">Shared</span>}
-              {linkPerms.some((perm) => perm.link?.scope === "anonymous") && <span className="badge badge-error">Anonymous link</span>}
-              {linkPerms.some((perm) => perm.link?.scope === "organization") && <span className="badge badge-warn">Org-wide link</span>}
+    <main className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="truncate text-2xl font-semibold">{item.name || item.id}</h1>
+            <Badge variant="outline">{item.is_folder ? "Folder" : "File"}</Badge>
+            {isShared ? <Badge className="border-blue-200 bg-blue-50 text-blue-700">Shared</Badge> : null}
+            {hasAnonymousLink ? <Badge className="border-red-200 bg-red-50 text-red-700">Anonymous link</Badge> : null}
+            {hasOrgLink ? <Badge className="border-amber-200 bg-amber-50 text-amber-800">Org-wide link</Badge> : null}
+            {hasUsersLink ? <Badge className="border-slate-200 bg-slate-50 text-slate-700">Specific users link</Badge> : null}
+          </div>
+          <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{path}</p>
+          <p className="mt-1 truncate text-xs text-muted-foreground">{item.id}</p>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Last modified {formatIsoDateTime(modifiedAt)} • Created {formatIsoDateTime(createdAt)}
+          </p>
+          <p className="mt-2 text-xs uppercase tracking-[0.3em] text-muted-foreground">Live (Graph)</p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          <Link className="text-muted-foreground hover:underline" href="/dashboard/risk">
+            Risk
+          </Link>
+          {item.web_url ? (
+            <a className="text-muted-foreground hover:underline" href={item.web_url} target="_blank" rel="noreferrer">
+              Open in M365
+            </a>
+          ) : null}
+          {item.drive_web_url ? (
+            <a className="text-muted-foreground hover:underline" href={item.drive_web_url} target="_blank" rel="noreferrer">
+              Open drive
+            </a>
+          ) : null}
+        </div>
+      </div>
+
+      {liveError ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Live data unavailable</CardTitle>
+            <CardDescription>{liveError}</CardDescription>
+          </CardHeader>
+        </Card>
+      ) : null}
+
+      <div className="grid gap-3 md:grid-cols-3">
+        <Card>
+          <CardHeader>
+            <CardTitle>Item</CardTitle>
+            <CardDescription>Metadata</CardDescription>
+          </CardHeader>
+          <CardContent className="text-sm">
+            <div className="flex items-baseline justify-between">
+              <span className="text-muted-foreground">Size</span>
+              <span className="font-medium">{item.is_folder ? "—" : formatBytes(item.size)}</span>
             </div>
-            <div className="mt-2 text-xs text-slate">Item ID: {item.id}</div>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Link className="badge bg-white/70 text-slate hover:bg-white" href="/dashboard/risk">
-              Back to Risk
-            </Link>
-            {item.web_url && (
-              <a className="badge bg-amber-100 text-amber-900" href={item.web_url} target="_blank" rel="noreferrer">
-                Open Item
-              </a>
-            )}
-            {item.drive_web_url && (
-              <a className="badge bg-emerald-100 text-emerald-900" href={item.drive_web_url} target="_blank" rel="noreferrer">
-                Open Drive
-              </a>
-            )}
-          </div>
-        </div>
-      </section>
+            <div className="flex items-baseline justify-between">
+              <span className="text-muted-foreground">Last modified by</span>
+              <span className="font-medium">{lastModifiedBy}</span>
+            </div>
+            <div className="flex items-baseline justify-between">
+              <span className="text-muted-foreground">Created by</span>
+              <span className="font-medium">{createdBy}</span>
+            </div>
+          </CardContent>
+        </Card>
 
-      {liveError && (
-        <section className="card p-6">
-          <div className="badge badge-error">{liveError}</div>
-        </section>
-      )}
+        <Card>
+          <CardHeader>
+            <CardTitle>Drive</CardTitle>
+            <CardDescription>Context</CardDescription>
+          </CardHeader>
+          <CardContent className="text-sm">
+            <div className="flex items-baseline justify-between">
+              <span className="text-muted-foreground">Type</span>
+              <span className="font-medium">{item.drive_type ?? "—"}</span>
+            </div>
+            <div className="flex items-baseline justify-between">
+              <span className="text-muted-foreground">Owner</span>
+              <span className="font-medium">{item.owner_email || item.owner_display_name || "—"}</span>
+            </div>
+            <div className="flex items-baseline justify-between">
+              <span className="text-muted-foreground">Quota used</span>
+              <span className="font-medium">
+                {formatBytes(item.quota_used)} / {formatBytes(item.quota_total)}
+              </span>
+            </div>
+          </CardContent>
+        </Card>
 
-      <section className="grid gap-6 md:grid-cols-3">
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Item Metadata</h3>
-          <div className="mt-3 text-sm text-slate">Size</div>
-          <div className="text-2xl font-semibold text-ink">{formatBytes(item.size)}</div>
-          <div className="mt-2 text-xs text-slate">Created: {formatDate(liveItem?.createdDateTime || item.created_dt)}</div>
-          <div className="text-xs text-slate">Last modified: {formatDate(liveItem?.lastModifiedDateTime || item.modified_dt)}</div>
-        </div>
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Drive Context</h3>
-          <div className="mt-3 text-sm text-slate">Drive</div>
-          <div className="text-lg font-semibold text-ink">{item.drive_name || item.drive_id}</div>
-          <div className="text-xs text-slate">Type: {item.drive_type || "--"}</div>
-          <div className="mt-2 text-xs text-slate">Quota: {formatBytes(item.quota_used)} / {formatBytes(item.quota_total)}</div>
-        </div>
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Sharing Exposure</h3>
-          <div className="mt-3 text-sm text-slate">Link shares</div>
-          <div className="text-2xl font-semibold text-ink">{formatNumber(linkPerms.length)}</div>
-          <div className="mt-2 text-sm text-slate">Principals</div>
-          <div className="text-xl font-semibold text-ink">{formatNumber(principals.length)}</div>
-          <div className="mt-2 text-xs text-slate">Guests: {formatNumber(guestCount)} • External: {formatNumber(externalCount)}</div>
-        </div>
-      </section>
+        <Card>
+          <CardHeader>
+            <CardTitle>Sharing</CardTitle>
+            <CardDescription>Exposure summary</CardDescription>
+          </CardHeader>
+          <CardContent className="text-sm">
+            <div className="flex items-baseline justify-between">
+              <span className="text-muted-foreground">Link shares</span>
+              <span className="font-medium">{linkBreakdown.reduce((sum, r) => sum + Number(r.count ?? 0), 0).toLocaleString()}</span>
+            </div>
+            <div className="flex items-baseline justify-between">
+              <span className="text-muted-foreground">Principals</span>
+              <span className="font-medium">{principalList.length.toLocaleString()}</span>
+            </div>
+            <div className="flex items-baseline justify-between">
+              <span className="text-muted-foreground">Guests / external</span>
+              <span className="font-medium">
+                {guestCount.toLocaleString()} / {externalCount.toLocaleString()}
+              </span>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
 
-      <section className="grid gap-6 md:grid-cols-2">
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Access Links</h3>
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-left text-slate/70">
-                <tr>
-                  <th className="py-2">Scope</th>
-                  <th className="py-2">Type</th>
-                  <th className="py-2">Roles</th>
-                  <th className="py-2">Link</th>
-                </tr>
-              </thead>
-              <tbody>
-                {linkPerms.slice(0, 25).map((perm: any) => (
-                  <tr key={perm.id} className="border-t border-white/60">
-                    <td className="py-3 text-ink">{perm.link?.scope || "--"}</td>
-                    <td className="py-3 text-slate">{perm.link?.type || "--"}</td>
-                    <td className="py-3 text-slate">{Array.isArray(perm.roles) ? perm.roles.join(", ") : "--"}</td>
-                    <td className="py-3 text-slate">{perm.link?.webUrl ? "available" : "--"}</td>
-                  </tr>
-                ))}
-                {!linkPerms.length && (
-                  <tr>
-                    <td className="py-3 text-slate" colSpan={4}>No link permissions.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Access links</CardTitle>
+          <CardDescription>Share links (including organization-wide) for this item when available.</CardDescription>
+        </CardHeader>
+        <CardContent className="overflow-x-auto">
+          <ItemAccessLinksTable links={accessLinks} />
+        </CardContent>
+      </Card>
 
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Sharing Breakdown</h3>
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-left text-slate/70">
-                <tr>
-                  <th className="py-2">Scope</th>
-                  <th className="py-2">Type</th>
-                  <th className="py-2">Count</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Array.from(linkBreakdown.entries()).map(([keyVal, count]) => {
-                  const [scope, type] = keyVal.split("::");
-                  return (
-                    <tr key={keyVal} className="border-t border-white/60">
-                      <td className="py-3 text-ink">{scope}</td>
-                      <td className="py-3 text-slate">{type}</td>
-                      <td className="py-3 text-slate">{formatNumber(count)}</td>
-                    </tr>
-                  );
-                })}
-                {!linkBreakdown.size && (
-                  <tr>
-                    <td className="py-3 text-slate" colSpan={3}>No link breakdown.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </section>
+      <div className="grid gap-3 md:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Sharing links</CardTitle>
+            <CardDescription>Current link scopes/types seen on this item</CardDescription>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            <ItemLinkBreakdownTable breakdown={linkBreakdown} />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Principals</CardTitle>
+            <CardDescription>People, groups, and apps with direct grants (excludes link principal)</CardDescription>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            <ItemPrincipalsTable principals={principalList} />
+          </CardContent>
+        </Card>
+      </div>
 
-      <section className="grid gap-6 md:grid-cols-2">
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Principals</h3>
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-left text-slate/70">
-                <tr>
-                  <th className="py-2">Principal</th>
-                  <th className="py-2">Type</th>
-                  <th className="py-2">Classification</th>
-                  <th className="py-2">Grants</th>
-                </tr>
-              </thead>
-              <tbody>
-                {principals.map((principal) => (
-                  <tr key={principal.key} className="border-t border-white/60">
-                    <td className="py-3">
-                      <div className="font-semibold text-ink">{principal.displayName || principal.email || principal.key}</div>
-                      <div className="text-xs text-slate">{principal.email || "--"}</div>
-                    </td>
-                    <td className="py-3 text-slate">{principal.type || "--"}</td>
-                    <td className="py-3 text-slate">{principal.classification}</td>
-                    <td className="py-3 text-slate">{formatNumber(principal.grants)}</td>
-                  </tr>
-                ))}
-                {!principals.length && (
-                  <tr>
-                    <td className="py-3 text-slate" colSpan={4}>No principals available.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Permissions</h3>
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-left text-slate/70">
-                <tr>
-                  <th className="py-2">Permission</th>
-                  <th className="py-2">Roles</th>
-                  <th className="py-2">Link</th>
-                  <th className="py-2">Principals</th>
-                </tr>
-              </thead>
-              <tbody>
-                {livePerms.slice(0, 25).map((perm: any) => (
-                  <tr key={perm.id} className="border-t border-white/60">
-                    <td className="py-3 text-ink">{perm.id}</td>
-                    <td className="py-3 text-slate">{Array.isArray(perm.roles) ? perm.roles.join(", ") : "--"}</td>
-                    <td className="py-3 text-slate">{perm.link?.scope || "direct"}</td>
-                    <td className="py-3 text-slate">{formatNumber(extractPrincipals(perm).length)}</td>
-                  </tr>
-                ))}
-                {!livePerms.length && (
-                  <tr>
-                    <td className="py-3 text-slate" colSpan={4}>No permissions returned.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-    </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Permissions</CardTitle>
+          <CardDescription>Direct vs inherited entries, roles, and principal counts</CardDescription>
+        </CardHeader>
+        <CardContent className="overflow-x-auto">
+          <ItemPermissionsTable permissions={permissions} />
+        </CardContent>
+      </Card>
+    </main>
   );
 }

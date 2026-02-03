@@ -1,4 +1,4 @@
-# DataPosture Dashboard — Pages + API Routes Reference
+# Princeton Sentinel — Pages + API Routes Reference
 
 This document enumerates every **UI page route** and **JSON API route** implemented in this repo, including:
 
@@ -12,7 +12,7 @@ This document enumerates every **UI page route** and **JSON API route** implemen
 ## 1) Auth + access control model
 
 ### Authentication provider
-- **NextAuth** with **Azure AD (Microsoft Entra ID)** provider.
+- **NextAuth** with **Microsoft Entra ID** provider.
 - Sign-in UX is the `/signin` page; the underlying auth handlers live under `/api/auth/*`.
 
 ### Authorization gate (who can access)
@@ -21,8 +21,8 @@ This document enumerates every **UI page route** and **JSON API route** implemen
   - `/api/*` (JSON APIs)
   require:
   1) a valid NextAuth JWT session, and
-  2) membership in the Entra group identified by `DASHBOARD_ALLOWED_GROUP_ID`.
-- `/api/auth/*` is excluded from the gate (to allow sign-in/out callbacks).
+  2) membership in the Entra group identified by `USER_GROUP_ID` (admins must be in `ADMIN_GROUP_ID`).
+- `/api/auth/*`, `/signin`, and `/forbidden` are excluded from the gate (to allow sign-in/out callbacks).
 
 ### Standard error behavior
 - For API routes:
@@ -34,15 +34,15 @@ This document enumerates every **UI page route** and **JSON API route** implemen
 
 ### Relevant env vars
 - Auth:
-  - `AZURE_AD_TENANT_ID`
-  - `AZURE_AD_CLIENT_ID`
-  - `AZURE_AD_CLIENT_SECRET`
+  - `ENTRA_TENANT_ID`
+  - `ENTRA_CLIENT_ID`
+  - `ENTRA_CLIENT_SECRET`
   - `NEXTAUTH_URL`
   - `NEXTAUTH_SECRET`
-  - `DASHBOARD_ALLOWED_GROUP_ID`
+  - `USER_GROUP_ID`
+  - `ADMIN_GROUP_ID`
 - DB:
-  - `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`
-  - `MYSQL_DB_RAW` (schema used by all dashboard queries)
+  - `DATABASE_URL` (Postgres connection string)
 - Sharing classification:
   - `INTERNAL_EMAIL_DOMAINS` (comma-separated; used to classify principals as internal vs external)
 - Risk defaults (optional):

@@ -46,9 +46,12 @@ CREATE TRIGGER trg_touch_job_runs
 AFTER INSERT OR UPDATE OR DELETE ON job_runs
 FOR EACH ROW EXECUTE FUNCTION touch_table_update_log();
 
+CREATE TRIGGER trg_refresh_mvs_job_runs
+AFTER INSERT OR UPDATE OR DELETE ON job_runs
+FOR EACH STATEMENT EXECUTE FUNCTION refresh_impacted_mvs();
+
 -- Seed jobs (no default schedules)
 INSERT INTO jobs (job_id, job_type, tenant_id, config, enabled)
 VALUES
-  (gen_random_uuid(), 'graph_ingest', 'default', '{"permissions_batch_size": 50, "permissions_stale_after_hours": 24, "pull_permissions": true, "sync_group_memberships": true, "group_memberships_users_only": true, "flush_every": 500}'::jsonb, true),
-  (gen_random_uuid(), 'refresh_mv', 'default', '{}'::jsonb, true)
+  (gen_random_uuid(), 'graph_ingest', 'default', '{"permissions_batch_size": 50, "permissions_stale_after_hours": 24, "pull_permissions": true, "sync_group_memberships": true, "group_memberships_users_only": true, "flush_every": 500}'::jsonb, true)
 ON CONFLICT DO NOTHING;

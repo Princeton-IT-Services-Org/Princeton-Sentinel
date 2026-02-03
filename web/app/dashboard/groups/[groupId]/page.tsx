@@ -1,41 +1,41 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
+
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Pagination } from "@/components/pagination";
 import { requireUser } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
-import { formatNumber, safeDecode } from "@/app/lib/format";
-import { getPagination, getParam, getSortDirection, SearchParams } from "@/app/lib/params";
+import { safeDecode } from "@/app/lib/format";
+import { getPagination, getParam, SearchParams } from "@/app/lib/params";
 
-export default async function GroupDetailPage({ params, searchParams }: { params: { groupId: string }; searchParams?: SearchParams }) {
+import { GroupMembersTable } from "./group-members-table";
+
+export const dynamic = "force-dynamic";
+
+export default async function GroupDetailPage({
+  params,
+  searchParams,
+}: {
+  params: { groupId: string };
+  searchParams?: SearchParams;
+}) {
   await requireUser();
 
   const groupId = safeDecode(params.groupId);
-  const search = getParam(searchParams, "q");
-  const { page, pageSize, offset } = getPagination(searchParams, { page: 1, pageSize: 50 });
-  const sort = getParam(searchParams, "sort") || "user";
-  const dir = getSortDirection(searchParams, "asc");
-
-  const sortMap: Record<string, string> = {
-    user: "u.display_name",
-    email: "u.mail",
-  };
-  const sortColumn = sortMap[sort] || "u.display_name";
+  const search = getParam(searchParams, "q") || "";
+  const { page, pageSize } = getPagination(searchParams, { page: 1, pageSize: 50 });
 
   const groupRows = await query<any>(
     `SELECT id, display_name, mail, visibility FROM msgraph_groups WHERE id = $1 AND deleted_at IS NULL`,
     [groupId]
   );
   const group = groupRows[0];
-
-  if (!group) {
-    return (
-      <div className="card p-6">
-        <h2 className="font-display text-2xl">Group not found</h2>
-        <p className="mt-2 text-slate">The cached inventory does not include this group.</p>
-      </div>
-    );
-  }
+  if (!group) notFound();
 
   const memberCounts = await query<any>(
-    `SELECT COUNT(*)::int AS members FROM msgraph_group_memberships WHERE group_id = $1 AND deleted_at IS NULL`,
+    `SELECT member_count::int AS members FROM mv_msgraph_group_member_counts WHERE group_id = $1`,
     [groupId]
   );
 
@@ -53,6 +53,22 @@ export default async function GroupDetailPage({ params, searchParams }: { params
     ? "AND (LOWER(u.display_name) LIKE $2 OR LOWER(u.mail) LIKE $2 OR LOWER(u.user_principal_name) LIKE $2 OR LOWER(m.member_id) LIKE $2)"
     : "";
 
+  const countRows = await query<any>(
+    `
+    SELECT COUNT(*)::int AS total
+    FROM msgraph_group_memberships m
+    LEFT JOIN msgraph_users u ON u.id = m.member_id
+    WHERE m.group_id = $1 AND m.deleted_at IS NULL
+    ${memberClause}
+    `,
+    search ? [groupId, `%${search.toLowerCase()}%`] : [groupId]
+  );
+
+  const total = countRows[0]?.total ?? 0;
+  const totalPages = Math.max(Math.ceil(total / pageSize), 1);
+  const clampedPage = Math.min(page, totalPages);
+  const offset = (clampedPage - 1) * pageSize;
+
   const memberRows = await query<any>(
     `
     SELECT m.member_id, m.member_type, u.display_name, u.mail, u.user_principal_name
@@ -60,129 +76,131 @@ export default async function GroupDetailPage({ params, searchParams }: { params
     LEFT JOIN msgraph_users u ON u.id = m.member_id
     WHERE m.group_id = $1 AND m.deleted_at IS NULL
     ${memberClause}
-    ORDER BY ${sortColumn} ${dir.toUpperCase()} NULLS LAST
+    ORDER BY u.display_name NULLS LAST
     LIMIT $${search ? 3 : 2} OFFSET $${search ? 4 : 3}
     `,
     search ? [groupId, `%${search.toLowerCase()}%`, pageSize, offset] : [groupId, pageSize, offset]
   );
 
+  const totalSites = new Set(drives.map((d: any) => d.site_id).filter(Boolean)).size;
+  const totalDrives = drives.length;
+  const memberCount = memberCounts[0]?.members ?? 0;
+
   return (
-    <div className="grid gap-6">
-      <section className="card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="font-display text-2xl">{group?.display_name || groupId}</h2>
-            <div className="text-sm text-slate">{group?.mail || "--"}</div>
-            <div className="text-xs text-slate">Group ID: {groupId}</div>
-          </div>
-          <Link className="badge bg-white/70 text-slate hover:bg-white" href="/dashboard/groups">
-            Back to Groups
+    <main className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="truncate text-2xl font-semibold">{group.display_name ?? group.mail ?? groupId}</h1>
+          <p className="mt-1 truncate text-xs text-muted-foreground">{groupId}</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {group.visibility ?? "—"} • {memberCount.toLocaleString()} members
+          </p>
+          <p className="mt-2 text-xs uppercase tracking-[0.3em] text-muted-foreground">Cached (DB)</p>
+        </div>
+        <div className="flex items-center gap-3 text-sm">
+          <Link className="text-muted-foreground hover:underline" href="/dashboard/groups">
+            Groups
           </Link>
         </div>
-      </section>
+      </div>
 
-      <section className="grid gap-6 md:grid-cols-3">
-        <div className="card p-6">
-          <div className="text-sm text-slate">Visibility</div>
-          <div className="text-2xl font-semibold text-ink">{group?.visibility || "unknown"}</div>
-        </div>
-        <div className="card p-6">
-          <div className="text-sm text-slate">Members</div>
-          <div className="text-2xl font-semibold text-ink">{formatNumber(memberCounts[0]?.members || 0)}</div>
-        </div>
-        <div className="card p-6">
-          <div className="text-sm text-slate">Drives</div>
-          <div className="text-2xl font-semibold text-ink">{formatNumber(drives.length)}</div>
-        </div>
-      </section>
+      <div className="grid gap-3 md:grid-cols-3">
+        <Card className="text-center">
+          <CardHeader>
+            <CardTitle className="text-3xl font-bold">{memberCount.toLocaleString()}</CardTitle>
+            <CardDescription>Members</CardDescription>
+          </CardHeader>
+        </Card>
+        <Card className="text-center">
+          <CardHeader>
+            <CardTitle className="text-3xl font-bold">{totalSites.toLocaleString()}</CardTitle>
+            <CardDescription>SharePoint sites (via drives)</CardDescription>
+          </CardHeader>
+        </Card>
+        <Card className="text-center">
+          <CardHeader>
+            <CardTitle className="text-3xl font-bold">{totalDrives.toLocaleString()}</CardTitle>
+            <CardDescription>Drives</CardDescription>
+          </CardHeader>
+        </Card>
+      </div>
 
-      <section className="card p-6">
-        <h3 className="font-display text-xl">Group Drives</h3>
-        <div className="mt-4 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="text-left text-slate/70">
-              <tr>
-                <th className="py-2">Drive</th>
-                <th className="py-2">Type</th>
-                <th className="py-2">Site</th>
-              </tr>
-            </thead>
-            <tbody>
-              {drives.map((drive: any) => (
-                <tr key={drive.id} className="border-t border-white/60">
-                  <td className="py-3">
-                    {drive.web_url ? (
-                      <a className="font-semibold text-ink underline decoration-dotted" href={drive.web_url} target="_blank" rel="noreferrer">
-                        {drive.name || drive.id}
-                      </a>
-                    ) : (
-                      <span className="font-semibold text-ink">{drive.name || drive.id}</span>
-                    )}
-                  </td>
-                  <td className="py-3 text-slate">{drive.drive_type || "--"}</td>
-                  <td className="py-3 text-slate">
-                    {drive.site_id ? (
-                      <Link className="underline decoration-dotted" href={`/dashboard/sites/${encodeURIComponent(drive.site_id)}`}>
-                        {drive.site_id}
-                      </Link>
-                    ) : (
-                      "--"
-                    )}
-                  </td>
-                </tr>
-              ))}
-              {!drives.length && (
-                <tr>
-                  <td className="py-3 text-slate" colSpan={3}>No group drives recorded.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      <Card>
+        <CardHeader>
+          <CardTitle>SharePoint</CardTitle>
+          <CardDescription>Best-effort association via `drives.owner_id` and `drives.site_id`.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2 text-sm">
+          {totalDrives ? (
+            drives.map((d: any) => (
+              <div key={d.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3">
+                <div className="min-w-0">
+                  <div className="font-medium">{d.name ?? d.id}</div>
+                  <div className="truncate text-xs text-muted-foreground">
+                    {d.drive_type ?? "—"} • {d.site_id ?? "No SharePoint site id found"}
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  {d.site_id ? (
+                    <Link className="text-muted-foreground hover:underline" href={`/dashboard/sites/${encodeURIComponent(d.site_id)}`}>
+                      Open site
+                    </Link>
+                  ) : null}
+                  {d.web_url ? (
+                    <a className="text-muted-foreground hover:underline" href={d.web_url} target="_blank" rel="noreferrer">
+                      Open drive
+                    </a>
+                  ) : null}
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="text-muted-foreground">No group-owned drives found in the ingest.</div>
+          )}
+        </CardContent>
+      </Card>
 
-      <section className="card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="font-display text-xl">Members</h3>
-          <form className="flex flex-wrap gap-2" method="get">
-            <input
-              name="q"
-              defaultValue={search || ""}
-              placeholder="Search members"
-              className="rounded-lg border border-slate/20 bg-white/80 px-3 py-2 text-sm"
+      <Card>
+        <CardHeader>
+          <CardTitle>Members</CardTitle>
+          <CardDescription>
+            {total.toLocaleString()} members • showing {memberRows.length.toLocaleString()}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="overflow-x-auto space-y-3">
+          <form className="flex flex-wrap items-center gap-2" action={`/dashboard/groups/${encodeURIComponent(groupId)}`} method="get">
+            <Input name="q" placeholder="Search members…" defaultValue={search} className="w-64" />
+            <Input
+              name="pageSize"
+              type="number"
+              min={10}
+              max={200}
+              defaultValue={String(pageSize)}
+              className="w-24"
+              title="Page size"
             />
-            <button className="badge bg-white/70 text-slate hover:bg-white" type="submit">Search</button>
+            <Button type="submit" variant="outline">
+              Apply
+            </Button>
           </form>
-        </div>
-        <div className="mt-4 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="text-left text-slate/70">
-              <tr>
-                <th className="py-2">Member</th>
-                <th className="py-2">Email/UPN</th>
-                <th className="py-2">Type</th>
-              </tr>
-            </thead>
-            <tbody>
-              {memberRows.map((row: any) => (
-                <tr key={`${row.member_id}-${row.member_type}`} className="border-t border-white/60">
-                  <td className="py-3">
-                    <div className="font-semibold text-ink">{row.display_name || row.member_id}</div>
-                    <div className="text-xs text-slate">{row.member_id}</div>
-                  </td>
-                  <td className="py-3 text-slate">{row.mail || row.user_principal_name || "--"}</td>
-                  <td className="py-3 text-slate">{row.member_type}</td>
-                </tr>
-              ))}
-              {!memberRows.length && (
-                <tr>
-                  <td className="py-3 text-slate" colSpan={3}>No members match that filter.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </div>
+          <GroupMembersTable
+            items={memberRows.map((row: any) => ({
+              userId: row.member_id,
+              displayName: row.display_name,
+              email: row.mail,
+              userPrincipalName: row.user_principal_name,
+            }))}
+          />
+        </CardContent>
+      </Card>
+
+      <Pagination
+        pathname={`/dashboard/groups/${encodeURIComponent(groupId)}`}
+        page={clampedPage}
+        pageSize={pageSize}
+        totalItems={total}
+        extraParams={{ q: search || undefined, pageSize }}
+      />
+    </main>
   );
 }

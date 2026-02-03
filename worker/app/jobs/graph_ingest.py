@@ -83,6 +83,111 @@ def _execute_values_dedup_merge_drives(
     return len(deduped), dropped
 
 
+def _load_user_maps(cur) -> tuple[dict[str, str], dict[str, str]]:
+    cur.execute(
+        """
+        SELECT id, mail, user_principal_name
+        FROM msgraph_users
+        WHERE deleted_at IS NULL
+        """
+    )
+    users_by_id: dict[str, str] = {}
+    users_by_email: dict[str, str] = {}
+    for user_id, mail, upn in cur.fetchall():
+        if not user_id:
+            continue
+        users_by_id[user_id] = user_id
+        if isinstance(mail, str) and mail:
+            users_by_email[mail.lower()] = user_id
+        if isinstance(upn, str) and upn:
+            users_by_email[upn.lower()] = user_id
+    return users_by_id, users_by_email
+
+
+def _resolve_identity(
+    identity: Optional[Dict[str, Any]],
+    users_by_id: dict[str, str],
+    users_by_email: dict[str, str],
+) -> tuple[Optional[str], str, Optional[str], Optional[str], Optional[str]]:
+    def to_user_fk(gid: Optional[str], email_like: Optional[str]) -> Optional[str]:
+        if gid and gid in users_by_id:
+            return gid
+        if email_like:
+            key = email_like.lower()
+            if key in users_by_email:
+                return users_by_email[key]
+        return None
+
+    def looks_system(display: Optional[str]) -> bool:
+        if not display:
+            return False
+        d = display.strip().lower()
+        system_names = {
+            "system account",
+            "sharepoint app",
+            "sharepoint",
+            "microsoft office",
+            "sharepoint migration tool",
+        }
+        return d in system_names or "system" in d
+
+    if not identity or not isinstance(identity, dict):
+        return None, "unknown", None, None, None
+
+    for key in ("user", "group", "application", "siteGroup", "siteUser", "device", "site"):
+        if key in identity and isinstance(identity[key], dict):
+            obj = identity[key]
+            disp = obj.get("displayName") or obj.get("name")
+            email = obj.get("email") or obj.get("userPrincipalName")
+            gid = obj.get("id")
+            if key == "user":
+                if (not gid and not email and looks_system(disp)) or looks_system(disp):
+                    return None, "system", disp, None, None
+                return to_user_fk(gid, email), "user", disp, email, gid
+            if key == "group":
+                return None, "group", disp, None, gid
+            if key == "application":
+                return None, "application", disp, None, gid
+            return None, "sharepoint", disp, None, gid
+
+    otype = identity.get("@odata.type") or identity.get("odata.type")
+    if isinstance(otype, str):
+        disp = identity.get("displayName") or identity.get("name")
+        gid = identity.get("id")
+        email = identity.get("email") or identity.get("userPrincipalName")
+        if looks_system(disp) and not gid and not email:
+            return None, "system", disp, None, None
+        if "userIdentity" in otype:
+            return to_user_fk(gid, email), "user", disp, email, gid
+        if "groupIdentity" in otype:
+            return None, "group", disp, None, gid
+        if "appIdentity" in otype or "application" in otype:
+            return None, "application", disp, None, gid
+        if "sharepoint" in otype or "site" in otype or "deviceIdentity" in otype:
+            return None, "sharepoint", disp, None, gid
+
+    disp = identity.get("displayName")
+    if looks_system(disp):
+        return None, "system", disp, None, None
+
+    return None, "unknown", disp, identity.get("email") or identity.get("userPrincipalName"), identity.get("id")
+
+
+def _compute_path_level(normalized_path: Optional[str]) -> Optional[int]:
+    if not normalized_path:
+        return None
+    path = normalized_path
+    if ":" in path:
+        path = path.split(":", 1)[1]
+    path = path.strip()
+    if not path:
+        return 0
+    path = path.lstrip("/")
+    if not path:
+        return 0
+    return len([seg for seg in path.split("/") if seg])
+
+
 def run_graph_ingest(
     config: Dict[str, Any],
     *,
@@ -765,20 +870,63 @@ def _is_personal_site(site_row: Dict[str, Any]) -> bool:
     return hostname.endswith("my.sharepoint.com") or "/personal/" in web_url
 
 
-def _drive_row(drive: Dict[str, Any], *, site_id: Optional[str], owner_id: Optional[str], synced_at: datetime) -> tuple:
+def _drive_row(
+    drive: Dict[str, Any],
+    *,
+    site_id: Optional[str],
+    owner_hint_id: Optional[str],
+    owner_hint_type: Optional[str],
+    synced_at: datetime,
+    users_by_id: dict[str, str],
+    users_by_email: dict[str, str],
+) -> tuple:
     quota = drive.get("quota") or {}
-    owner = drive.get("owner") or {}
-    owner_user = owner.get("user") or {}
+
+    owner_user_id, owner_type, owner_display_name, owner_email, owner_graph_id = _resolve_identity(
+        drive.get("owner"), users_by_id, users_by_email
+    )
+    if owner_hint_id and not owner_graph_id:
+        owner_graph_id = owner_hint_id
+    if owner_hint_id and owner_type in ("unknown", None):
+        owner_type = owner_hint_type or owner_type
+    if owner_hint_type == "user" and owner_hint_id and not owner_user_id:
+        owner_user_id = owner_hint_id
+
+    created_by_user_id, created_by_type, created_by_display_name, created_by_email, created_by_graph_id = _resolve_identity(
+        drive.get("createdBy"), users_by_id, users_by_email
+    )
+    last_modified_by_user_id, last_modified_by_type, last_modified_by_display_name, last_modified_by_email, last_modified_by_graph_id = _resolve_identity(
+        drive.get("lastModifiedBy"), users_by_id, users_by_email
+    )
 
     return (
         drive.get("id"),
         site_id,
         drive.get("name"),
+        drive.get("description"),
         drive.get("driveType"),
         drive.get("webUrl"),
-        owner_user.get("id") or owner_id,
+        owner_user_id or owner_hint_id,
+        owner_type,
+        owner_display_name,
+        owner_email,
+        owner_graph_id,
+        created_by_user_id,
+        created_by_type,
+        created_by_display_name,
+        created_by_email,
+        created_by_graph_id,
+        last_modified_by_user_id,
+        last_modified_by_type,
+        last_modified_by_display_name,
+        last_modified_by_email,
+        last_modified_by_graph_id,
+        drive.get("lastModifiedDateTime"),
         quota.get("total"),
         quota.get("used"),
+        quota.get("remaining"),
+        quota.get("deleted"),
+        quota.get("state"),
         drive.get("createdDateTime"),
         synced_at,
         None,
@@ -788,19 +936,57 @@ def _drive_row(drive: Dict[str, Any], *, site_id: Optional[str], owner_id: Optio
 
 def _ingest_drives(client: GraphClient, *, run_id: str, flush_every: int) -> Dict[str, Any]:
     synced_at = datetime.now(timezone.utc)
+    select = ",".join(
+        [
+            "id",
+            "name",
+            "description",
+            "driveType",
+            "webUrl",
+            "createdDateTime",
+            "lastModifiedDateTime",
+            "owner",
+            "createdBy",
+            "lastModifiedBy",
+            "quota",
+        ]
+    )
     upsert_sql = """
         INSERT INTO msgraph_drives
-          (id, site_id, name, drive_type, web_url, owner_id, quota_total, quota_used,
-           created_dt, synced_at, deleted_at, raw_json)
+          (id, site_id, name, description, drive_type, web_url, owner_id, owner_type,
+           owner_display_name, owner_email, owner_graph_id, created_by_user_id, created_by_type,
+           created_by_display_name, created_by_email, created_by_graph_id, last_modified_by_user_id,
+           last_modified_by_type, last_modified_by_display_name, last_modified_by_email,
+           last_modified_by_graph_id, last_modified_dt, quota_total, quota_used, quota_remaining,
+           quota_deleted, quota_state, created_dt, synced_at, deleted_at, raw_json)
         VALUES %s
         ON CONFLICT (id) DO UPDATE SET
           site_id = EXCLUDED.site_id,
           name = EXCLUDED.name,
+          description = EXCLUDED.description,
           drive_type = EXCLUDED.drive_type,
           web_url = EXCLUDED.web_url,
           owner_id = EXCLUDED.owner_id,
+          owner_type = EXCLUDED.owner_type,
+          owner_display_name = EXCLUDED.owner_display_name,
+          owner_email = EXCLUDED.owner_email,
+          owner_graph_id = EXCLUDED.owner_graph_id,
+          created_by_user_id = EXCLUDED.created_by_user_id,
+          created_by_type = EXCLUDED.created_by_type,
+          created_by_display_name = EXCLUDED.created_by_display_name,
+          created_by_email = EXCLUDED.created_by_email,
+          created_by_graph_id = EXCLUDED.created_by_graph_id,
+          last_modified_by_user_id = EXCLUDED.last_modified_by_user_id,
+          last_modified_by_type = EXCLUDED.last_modified_by_type,
+          last_modified_by_display_name = EXCLUDED.last_modified_by_display_name,
+          last_modified_by_email = EXCLUDED.last_modified_by_email,
+          last_modified_by_graph_id = EXCLUDED.last_modified_by_graph_id,
+          last_modified_dt = EXCLUDED.last_modified_dt,
           quota_total = EXCLUDED.quota_total,
           quota_used = EXCLUDED.quota_used,
+          quota_remaining = EXCLUDED.quota_remaining,
+          quota_deleted = EXCLUDED.quota_deleted,
+          quota_state = EXCLUDED.quota_state,
           created_dt = EXCLUDED.created_dt,
           synced_at = EXCLUDED.synced_at,
           deleted_at = NULL,
@@ -820,6 +1006,7 @@ def _ingest_drives(client: GraphClient, *, run_id: str, flush_every: int) -> Dic
     conn = db.get_conn()
     try:
         cur = conn.cursor()
+        users_by_id, users_by_email = _load_user_maps(cur)
 
         cur.execute("SELECT id, hostname, web_url, raw_json FROM msgraph_sites WHERE deleted_at IS NULL")
         sites = [
@@ -836,10 +1023,20 @@ def _ingest_drives(client: GraphClient, *, run_id: str, flush_every: int) -> Dic
                 site_skipped_personal += 1
                 continue
             try:
-                for drive in client.iter_paged(f"/sites/{site_id}/drives?$top={GRAPH_PAGE_SIZE}"):
+                for drive in client.iter_paged(f"/sites/{site_id}/drives?$top={GRAPH_PAGE_SIZE}&$select={select}"):
                     if not drive.get("id"):
                         continue
-                    batch.append(_drive_row(drive, site_id=site_id, owner_id=None, synced_at=synced_at))
+                    batch.append(
+                        _drive_row(
+                            drive,
+                            site_id=site_id,
+                            owner_hint_id=None,
+                            owner_hint_type=None,
+                            synced_at=synced_at,
+                            users_by_id=users_by_id,
+                            users_by_email=users_by_email,
+                        )
+                    )
                     if len(batch) >= flush_every:
                         executed, dropped = _execute_values_dedup_merge_drives(cur, upsert_sql, batch)
                         conn.commit()
@@ -847,7 +1044,8 @@ def _ingest_drives(client: GraphClient, *, run_id: str, flush_every: int) -> Dic
                         dropped_duplicates += dropped
                         batch = []
             except GraphError as exc:
-                site_skipped_error += 1
+                if exc.status_code not in (403, 404, 410):
+                    site_skipped_error += 1
                 log_job_run_log(
                     run_id=run_id,
                     level="WARN",
@@ -862,11 +1060,26 @@ def _ingest_drives(client: GraphClient, *, run_id: str, flush_every: int) -> Dic
         for group_id in group_ids:
             group_count += 1
             try:
-                drive = client.get_json(f"/groups/{group_id}/drive")
-                if drive.get("id"):
-                    batch.append(_drive_row(drive, site_id=None, owner_id=group_id, synced_at=synced_at))
+                has_drive = False
+                for drive in client.iter_paged(f"/groups/{group_id}/drives?$top={GRAPH_PAGE_SIZE}&$select={select}"):
+                    if not drive.get("id"):
+                        continue
+                    has_drive = True
+                    batch.append(
+                        _drive_row(
+                            drive,
+                            site_id=None,
+                            owner_hint_id=group_id,
+                            owner_hint_type="group",
+                            synced_at=synced_at,
+                            users_by_id=users_by_id,
+                            users_by_email=users_by_email,
+                        )
+                    )
+                if not has_drive:
+                    group_no_drive += 1
             except GraphError as exc:
-                if exc.status_code in (403, 404):
+                if exc.status_code in (403, 404, 410):
                     group_no_drive += 1
                     continue
                 raise
@@ -884,11 +1097,26 @@ def _ingest_drives(client: GraphClient, *, run_id: str, flush_every: int) -> Dic
         for user_id in user_ids:
             user_count += 1
             try:
-                drive = client.get_json(f"/users/{user_id}/drive")
-                if drive.get("id"):
-                    batch.append(_drive_row(drive, site_id=None, owner_id=user_id, synced_at=synced_at))
+                has_drive = False
+                for drive in client.iter_paged(f"/users/{user_id}/drives?$top={GRAPH_PAGE_SIZE}&$select={select}"):
+                    if not drive.get("id"):
+                        continue
+                    has_drive = True
+                    batch.append(
+                        _drive_row(
+                            drive,
+                            site_id=None,
+                            owner_hint_id=user_id,
+                            owner_hint_type="user",
+                            synced_at=synced_at,
+                            users_by_id=users_by_id,
+                            users_by_email=users_by_email,
+                        )
+                    )
+                if not has_drive:
+                    user_no_drive += 1
             except GraphError as exc:
-                if exc.status_code in (403, 404):
+                if exc.status_code in (403, 404, 410):
                     user_no_drive += 1
                     continue
                 raise
@@ -988,8 +1216,10 @@ def _ingest_drive_items(client: GraphClient, *, run_id: str, flush_every: int) -
 
     upsert_active_sql = """
         INSERT INTO msgraph_drive_items
-          (drive_id, id, name, web_url, parent_id, path, is_folder, size, mime_type, file_hash_sha1,
-           created_dt, modified_dt, created_by_user_id, last_modified_by_user_id,
+          (drive_id, id, name, web_url, parent_id, path, normalized_path, path_level, is_folder, child_count,
+           size, mime_type, file_hash_sha1, created_dt, modified_dt, created_by_user_id, created_by_display_name,
+           created_by_email, last_modified_by_user_id, last_modified_by_display_name, last_modified_by_email,
+           is_shared, sp_site_id, sp_list_id, sp_list_item_id, sp_list_item_unique_id,
            permissions_last_synced_at, permissions_last_error_at, permissions_last_error,
            synced_at, deleted_at, raw_json)
         VALUES %s
@@ -998,14 +1228,26 @@ def _ingest_drive_items(client: GraphClient, *, run_id: str, flush_every: int) -
           web_url = EXCLUDED.web_url,
           parent_id = EXCLUDED.parent_id,
           path = EXCLUDED.path,
+          normalized_path = EXCLUDED.normalized_path,
+          path_level = EXCLUDED.path_level,
           is_folder = EXCLUDED.is_folder,
+          child_count = EXCLUDED.child_count,
           size = EXCLUDED.size,
           mime_type = EXCLUDED.mime_type,
           file_hash_sha1 = EXCLUDED.file_hash_sha1,
           created_dt = EXCLUDED.created_dt,
           modified_dt = EXCLUDED.modified_dt,
           created_by_user_id = EXCLUDED.created_by_user_id,
+          created_by_display_name = EXCLUDED.created_by_display_name,
+          created_by_email = EXCLUDED.created_by_email,
           last_modified_by_user_id = EXCLUDED.last_modified_by_user_id,
+          last_modified_by_display_name = EXCLUDED.last_modified_by_display_name,
+          last_modified_by_email = EXCLUDED.last_modified_by_email,
+          is_shared = EXCLUDED.is_shared,
+          sp_site_id = EXCLUDED.sp_site_id,
+          sp_list_id = EXCLUDED.sp_list_id,
+          sp_list_item_id = EXCLUDED.sp_list_item_id,
+          sp_list_item_unique_id = EXCLUDED.sp_list_item_unique_id,
           permissions_last_synced_at = NULL,
           permissions_last_error_at = NULL,
           permissions_last_error = NULL,
@@ -1052,6 +1294,7 @@ def _ingest_drive_items(client: GraphClient, *, run_id: str, flush_every: int) -
         cur.execute("SELECT id FROM msgraph_drives WHERE deleted_at IS NULL")
         drive_ids = [row[0] for row in cur.fetchall()]
         conn.commit()
+        users_by_id, users_by_email = _load_user_maps(cur)
 
         for drive_id in drive_ids:
             drive_count += 1
@@ -1079,8 +1322,15 @@ def _ingest_drive_items(client: GraphClient, *, run_id: str, flush_every: int) -
                                 removed_keys.append((drive_id, item_id))
                             else:
                                 parent_ref = item.get("parentReference") or {}
-                                created_by_user_id = ((item.get("createdBy") or {}).get("user") or {}).get("id")
-                                last_modified_by_user_id = ((item.get("lastModifiedBy") or {}).get("user") or {}).get("id")
+                                normalized_path = parent_ref.get("path")
+                                path_level = _compute_path_level(normalized_path)
+                                created_by_user_id, _, created_by_display_name, created_by_email, _ = _resolve_identity(
+                                    item.get("createdBy"), users_by_id, users_by_email
+                                )
+                                last_modified_by_user_id, _, last_modified_by_display_name, last_modified_by_email, _ = _resolve_identity(
+                                    item.get("lastModifiedBy"), users_by_id, users_by_email
+                                )
+                                sp_ids = item.get("sharepointIds") or {}
                                 active_batch.append(
                                     (
                                         drive_id,
@@ -1089,14 +1339,26 @@ def _ingest_drive_items(client: GraphClient, *, run_id: str, flush_every: int) -
                                         item.get("webUrl"),
                                         parent_ref.get("id"),
                                         _item_path(item),
+                                        normalized_path,
+                                        path_level,
                                         bool(item.get("folder")),
+                                        (item.get("folder") or {}).get("childCount"),
                                         item.get("size"),
                                         (item.get("file") or {}).get("mimeType"),
                                         _item_file_hash_sha1(item),
                                         item.get("createdDateTime"),
                                         item.get("lastModifiedDateTime"),
                                         created_by_user_id,
+                                        created_by_display_name,
+                                        created_by_email,
                                         last_modified_by_user_id,
+                                        last_modified_by_display_name,
+                                        last_modified_by_email,
+                                        bool(item.get("shared") is not None),
+                                        sp_ids.get("siteId"),
+                                        sp_ids.get("listId"),
+                                        sp_ids.get("listItemId"),
+                                        sp_ids.get("listItemUniqueId"),
                                         None,
                                         None,
                                         None,
@@ -1223,41 +1485,60 @@ def _ingest_drive_items(client: GraphClient, *, run_id: str, flush_every: int) -
         conn.close()
 
 
+def _iter_permission_identities(permission: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
+    def yield_from_identityset(identityset: Dict[str, Any]):
+        for kind in ("user", "group", "application", "siteGroup", "siteUser"):
+            obj = identityset.get(kind)
+            if not obj:
+                continue
+            yield {
+                "principal_type": kind,
+                "principal_id": obj.get("id"),
+                "principal_display_name": obj.get("displayName") or obj.get("name"),
+                "principal_email": obj.get("email") or obj.get("userPrincipalName"),
+                "principal_user_principal_name": obj.get("userPrincipalName"),
+                "raw": obj,
+            }
+
+    g2 = permission.get("grantedToV2")
+    if isinstance(g2, dict):
+        yield from yield_from_identityset(g2)
+
+    g = permission.get("grantedTo")
+    if isinstance(g, dict):
+        yield from yield_from_identityset(g)
+
+    g2_list = permission.get("grantedToIdentitiesV2")
+    if isinstance(g2_list, list):
+        for identityset in g2_list:
+            if isinstance(identityset, dict):
+                yield from yield_from_identityset(identityset)
+
+    g_list = permission.get("grantedToIdentities")
+    if isinstance(g_list, list):
+        for identityset in g_list:
+            if isinstance(identityset, dict):
+                yield from yield_from_identityset(identityset)
+
+
 def _extract_grants(permission: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
-    candidates = []
-    if permission.get("grantedTo"):
-        candidates.append(permission.get("grantedTo"))
-    candidates.extend(permission.get("grantedToIdentities", []) or [])
-    candidates.extend(permission.get("grantedToIdentitiesV2", []) or [])
-
     grants = []
-    for candidate in candidates:
-        if not isinstance(candidate, dict):
-            continue
-        identity = candidate.get("user") or candidate.get("group") or candidate.get("siteUser") or candidate.get("application")
-        if not identity or not isinstance(identity, dict):
-            continue
-
-        if candidate.get("user"):
-            principal_type = "user"
-        elif candidate.get("group"):
-            principal_type = "group"
-        elif candidate.get("siteUser"):
-            principal_type = "siteUser"
-        else:
-            principal_type = "application"
-
-        principal_id = identity.get("id")
+    for ident in _iter_permission_identities(permission):
+        principal_id = ident.get("principal_id")
         if not principal_id:
             continue
+        grants.append(ident)
+
+    link = permission.get("link")
+    if isinstance(link, dict) and link:
         grants.append(
             {
-                "principal_type": principal_type,
-                "principal_id": principal_id,
-                "principal_display_name": identity.get("displayName"),
-                "principal_email": identity.get("email"),
-                "principal_user_principal_name": identity.get("userPrincipalName"),
-                "raw": candidate,
+                "principal_type": "link",
+                "principal_id": "link",
+                "principal_display_name": link.get("type"),
+                "principal_email": None,
+                "principal_user_principal_name": None,
+                "raw": link,
             }
         )
 
@@ -1302,10 +1583,11 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
     """
     insert_permissions_sql = """
         INSERT INTO msgraph_drive_item_permissions
-          (drive_id, item_id, permission_id, roles, link_type, link_scope, link_web_url,
+          (drive_id, item_id, permission_id, source, roles, link_type, link_scope, link_web_url,
            link_prevents_download, link_expiration_dt, inherited_from_id, synced_at, deleted_at, raw_json)
         VALUES %s
         ON CONFLICT (drive_id, item_id, permission_id) DO UPDATE SET
+          source = EXCLUDED.source,
           roles = EXCLUDED.roles,
           link_type = EXCLUDED.link_type,
           link_scope = EXCLUDED.link_scope,
@@ -1417,18 +1699,21 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
                         if not perm_id:
                             continue
                         link = perm.get("link") or {}
+                        inherited_from_id = (perm.get("inheritedFrom") or {}).get("id")
+                        source = "inherited" if inherited_from_id else "direct"
                         permission_rows.append(
                             (
                                 drive_id,
                                 item_id,
                                 perm_id,
+                                source,
                                 perm.get("roles"),
                                 link.get("type"),
                                 link.get("scope"),
                                 link.get("webUrl"),
                                 link.get("preventsDownload"),
                                 link.get("expirationDateTime"),
-                                (perm.get("inheritedFrom") or {}).get("id"),
+                                inherited_from_id,
                                 synced_at,
                                 None,
                                 db.jsonb(perm),

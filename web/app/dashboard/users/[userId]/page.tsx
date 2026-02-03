@@ -1,26 +1,40 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
+
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Pagination } from "@/components/pagination";
 import { requireUser } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
-import { formatDate, formatNumber, safeDecode } from "@/app/lib/format";
-import { getPagination, getWindowDays, SearchParams } from "@/app/lib/params";
+import { formatIsoDateTime, safeDecode } from "@/app/lib/format";
+import { getPagination, getParam, getWindowDays, SearchParams } from "@/app/lib/params";
 
-function itemKey(driveId: string, itemId: string) {
-  return encodeURIComponent(`${driveId}::${itemId}`);
-}
+import { UserRecentItemsTable, UserTopSitesTable } from "./user-detail-tables";
 
-export default async function UserDetailPage({ params, searchParams }: { params: { userId: string }; searchParams?: SearchParams }) {
+export const dynamic = "force-dynamic";
+
+export default async function UserDetailPage({
+  params,
+  searchParams,
+}: {
+  params: { userId: string };
+  searchParams?: SearchParams;
+}) {
   await requireUser();
 
   const userId = safeDecode(params.userId);
   const windowDays = getWindowDays(searchParams, 90);
+  const daysParam = getParam(searchParams, "days") || "90";
   const windowStart = windowDays ? new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString() : null;
-  const { page, pageSize, offset } = getPagination(searchParams, { page: 1, pageSize: 25 });
+  const { page, pageSize } = getPagination(searchParams, { page: 1, pageSize: 25 });
 
   const userRows = await query<any>(
     `SELECT id, display_name, mail, user_principal_name FROM msgraph_users WHERE id = $1 AND deleted_at IS NULL`,
     [userId]
   );
   const user = userRows[0];
+  if (!user) notFound();
 
   const summaryRows = await query<any>(
     `
@@ -39,28 +53,12 @@ export default async function UserDetailPage({ params, searchParams }: { params:
 
   const topSites = await query<any>(
     `
-    SELECT
-      CASE WHEN d.site_id IS NULL THEN 'drive:' || d.id ELSE d.site_id END AS site_key,
-      COUNT(*)::int AS modified_items
-    FROM msgraph_drive_items i
-    JOIN msgraph_drives d ON d.id = i.drive_id
-    WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
-      AND i.last_modified_by_user_id = $1
-      ${windowStart ? "AND i.modified_dt >= $2" : ""}
-    GROUP BY CASE WHEN d.site_id IS NULL THEN 'drive:' || d.id ELSE d.site_id END
-    ORDER BY modified_items DESC
-    LIMIT 10
-    `,
-    windowStart ? [userId, windowStart] : [userId]
-  );
-
-  const topSitesWithNames = await query<any>(
-    `
-    SELECT s.site_key, s.title, t.modified_items
+    SELECT s.site_key, s.title, s.web_url, t.modified_items, t.last_modified_dt
     FROM (
       SELECT
         CASE WHEN d.site_id IS NULL THEN 'drive:' || d.id ELSE d.site_id END AS site_key,
-        COUNT(*)::int AS modified_items
+        COUNT(*)::int AS modified_items,
+        MAX(i.modified_dt) AS last_modified_dt
       FROM msgraph_drive_items i
       JOIN msgraph_drives d ON d.id = i.drive_id
       WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
@@ -76,6 +74,23 @@ export default async function UserDetailPage({ params, searchParams }: { params:
     windowStart ? [userId, windowStart] : [userId]
   );
 
+  const countRows = await query<any>(
+    `
+    SELECT COUNT(*)::int AS total
+    FROM msgraph_drive_items i
+    JOIN msgraph_drives d ON d.id = i.drive_id
+    WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
+      AND i.last_modified_by_user_id = $1
+      ${windowStart ? "AND i.modified_dt >= $2" : ""}
+    `,
+    windowStart ? [userId, windowStart] : [userId]
+  );
+
+  const total = countRows[0]?.total ?? 0;
+  const totalPages = Math.max(Math.ceil(total / pageSize), 1);
+  const clampedPage = Math.min(page, totalPages);
+  const offset = (clampedPage - 1) * pageSize;
+
   const recentItems = await query<any>(
     `
     SELECT
@@ -83,10 +98,15 @@ export default async function UserDetailPage({ params, searchParams }: { params:
       i.id,
       i.name,
       i.web_url,
+      i.normalized_path,
+      i.path,
       i.modified_dt,
-      CASE WHEN d.site_id IS NULL THEN 'drive:' || d.id ELSE d.site_id END AS site_key
+      CASE WHEN d.site_id IS NULL THEN 'drive:' || d.id ELSE d.site_id END AS site_key,
+      s.title AS site_title
     FROM msgraph_drive_items i
     JOIN msgraph_drives d ON d.id = i.drive_id
+    LEFT JOIN mv_msgraph_site_inventory s
+      ON s.site_key = CASE WHEN d.site_id IS NULL THEN 'drive:' || d.id ELSE d.site_id END
     WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
       AND i.last_modified_by_user_id = $1
       ${windowStart ? "AND i.modified_dt >= $2" : ""}
@@ -97,93 +117,125 @@ export default async function UserDetailPage({ params, searchParams }: { params:
   );
 
   const summary = summaryRows[0] || {};
+  const displayName = user?.display_name || user?.mail || user?.user_principal_name || userId;
 
   return (
-    <div className="grid gap-6">
-      <section className="card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="font-display text-2xl">{user?.display_name || user?.user_principal_name || user?.mail || userId}</h2>
-            <div className="text-sm text-slate">{user?.mail || user?.user_principal_name}</div>
-            <div className="text-xs text-slate">User ID: {userId}</div>
-          </div>
-          <Link className="badge bg-white/70 text-slate hover:bg-white" href="/dashboard/users">
-            Back to Users
+    <main className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="truncate text-2xl font-semibold">{displayName}</h1>
+          <p className="mt-1 truncate text-xs text-muted-foreground">{userId}</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Window: {windowDays == null ? "All-time" : `${windowDays}d`} • Last modified {formatIsoDateTime(summary.last_modified_dt)} • Last sign-in {formatIsoDateTime(null)}
+          </p>
+          <p className="mt-2 text-xs uppercase tracking-[0.3em] text-muted-foreground">Cached (DB)</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          <Link className="text-muted-foreground hover:underline" href={`/dashboard/users?days=${windowDays == null ? "all" : String(windowDays)}`}>
+            Users
           </Link>
+          <form className="flex flex-wrap items-center gap-2" action={`/dashboard/users/${encodeURIComponent(userId)}`} method="get">
+            <select
+              name="days"
+              defaultValue={daysParam}
+              className="h-9 rounded-md border border-input bg-background px-2 py-1 text-sm"
+              title="Window"
+            >
+              <option value="all">All-time</option>
+              <option value="7">7d</option>
+              <option value="30">30d</option>
+              <option value="90">90d</option>
+              <option value="365">365d</option>
+            </select>
+            <Input
+              name="pageSize"
+              type="number"
+              min={10}
+              max={200}
+              defaultValue={String(pageSize)}
+              className="h-9 w-24"
+              title="Page size"
+            />
+            <Button type="submit" variant="outline" size="sm">
+              Apply
+            </Button>
+          </form>
         </div>
-      </section>
+      </div>
 
-      <section className="grid gap-6 md:grid-cols-4">
-        <div className="card p-6">
-          <div className="text-sm text-slate">Items modified ({windowDays || "all"}d)</div>
-          <div className="text-3xl font-semibold text-ink">{formatNumber(summary.modified_items || 0)}</div>
-        </div>
-        <div className="card p-6">
-          <div className="text-sm text-slate">Sites touched</div>
-          <div className="text-3xl font-semibold text-ink">{formatNumber(summary.sites_touched || 0)}</div>
-        </div>
-        <div className="card p-6">
-          <div className="text-sm text-slate">Last modified</div>
-          <div className="text-xl font-semibold text-ink">{formatDate(summary.last_modified_dt)}</div>
-        </div>
-        <div className="card p-6">
-          <div className="text-sm text-slate">Last sign-in</div>
-          <div className="text-xl font-semibold text-ink">--</div>
-        </div>
-      </section>
+      <div className="grid gap-3 md:grid-cols-4">
+        <Card className="text-center">
+          <CardHeader>
+            <CardTitle className="text-3xl font-bold">{Number(summary.modified_items || 0).toLocaleString()}</CardTitle>
+            <CardDescription>Items last modified ({windowDays == null ? "All-time" : `${windowDays}d`})</CardDescription>
+          </CardHeader>
+        </Card>
+        <Card className="text-center">
+          <CardHeader>
+            <CardTitle className="text-3xl font-bold">{Number(summary.sites_touched || 0).toLocaleString()}</CardTitle>
+            <CardDescription>Sites touched ({windowDays == null ? "All-time" : `${windowDays}d`})</CardDescription>
+          </CardHeader>
+        </Card>
+        <Card className="text-center">
+          <CardHeader>
+            <CardTitle className="text-lg font-semibold">{formatIsoDateTime(summary.last_modified_dt)}</CardTitle>
+            <CardDescription>Last modified</CardDescription>
+          </CardHeader>
+        </Card>
+        <Card className="text-center">
+          <CardHeader>
+            <CardTitle className="text-lg font-semibold">{formatIsoDateTime(null)}</CardTitle>
+            <CardDescription>Last successful sign-in</CardDescription>
+          </CardHeader>
+        </Card>
+      </div>
 
-      <section className="grid gap-6 md:grid-cols-2">
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Top Sites</h3>
-          <div className="mt-4 grid gap-2 text-sm">
-            {(topSitesWithNames.length ? topSitesWithNames : topSites).map((row: any) => (
-              <div key={row.site_key} className="flex items-center justify-between">
-                <Link className="text-ink underline decoration-dotted" href={`/dashboard/sites/${encodeURIComponent(row.site_key)}`}>
-                  {row.title || row.site_key}
-                </Link>
-                <span className="font-semibold text-slate">{formatNumber(row.modified_items)}</span>
-              </div>
-            ))}
-            {!topSites.length && <div className="text-sm text-slate">No site activity.</div>}
-          </div>
-        </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Top sites</CardTitle>
+          <CardDescription>Sites where this user is currently `lastModifiedBy` for items (window: {windowDays == null ? "All-time" : `${windowDays}d`})</CardDescription>
+        </CardHeader>
+        <CardContent className="overflow-x-auto">
+          <UserTopSitesTable
+            sites={topSites.map((row: any) => ({
+              siteId: row.site_key,
+              title: row.title,
+              webUrl: row.web_url,
+              modifiedItems: row.modified_items || 0,
+              lastModifiedDateTime: row.last_modified_dt,
+            }))}
+          />
+        </CardContent>
+      </Card>
 
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Recently Modified Items</h3>
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-left text-slate/70">
-                <tr>
-                  <th className="py-2">Item</th>
-                  <th className="py-2">Modified</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentItems.map((row: any) => (
-                  <tr key={`${row.drive_id}-${row.id}`} className="border-t border-white/60">
-                    <td className="py-3">
-                      <Link className="font-semibold text-ink underline decoration-dotted" href={`/dashboard/items/${itemKey(row.drive_id, row.id)}`}>
-                        {row.name || row.id}
-                      </Link>
-                      <div className="text-xs text-slate">
-                        <Link className="underline decoration-dotted" href={`/dashboard/sites/${encodeURIComponent(row.site_key)}`}>
-                          View site
-                        </Link>
-                      </div>
-                    </td>
-                    <td className="py-3 text-slate">{formatDate(row.modified_dt)}</td>
-                  </tr>
-                ))}
-                {!recentItems.length && (
-                  <tr>
-                    <td className="py-3 text-slate" colSpan={2}>No recent items.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-    </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Recently modified items</CardTitle>
+          <CardDescription>
+            {total.toLocaleString()} items • showing {recentItems.length.toLocaleString()}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="overflow-x-auto space-y-3">
+          <UserRecentItemsTable
+            items={recentItems.map((row: any) => ({
+              itemId: `${row.drive_id}::${row.id}`,
+              name: row.name || row.id,
+              webUrl: row.web_url,
+              normalizedPath: row.normalized_path || row.path,
+              lastModifiedDateTime: row.modified_dt,
+              siteId: row.site_key,
+              siteTitle: row.site_title,
+            }))}
+          />
+          <Pagination
+            pathname={`/dashboard/users/${encodeURIComponent(userId)}`}
+            page={clampedPage}
+            pageSize={pageSize}
+            totalItems={total}
+            extraParams={{ days: windowDays == null ? "all" : String(windowDays), pageSize }}
+          />
+        </CardContent>
+      </Card>
+    </main>
   );
 }

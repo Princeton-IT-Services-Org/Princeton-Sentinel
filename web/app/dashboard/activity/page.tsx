@@ -1,8 +1,13 @@
-import Link from "next/link";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Pagination } from "@/components/pagination";
+import { Button } from "@/components/ui/button";
 import { requireUser } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
-import { formatBytes, formatDate, formatNumber } from "@/app/lib/format";
+import { formatNumber } from "@/app/lib/format";
 import { getPagination, getParam, getSortDirection, getWindowDays, SearchParams } from "@/app/lib/params";
+import { ActivityTable } from "./activity-table";
+import ActivitySummaryGraphsWrapper from "@/components/activity-summary-graphs-wrapper";
 
 function buildSearchFilter(search: string | null) {
   if (!search) return { clause: "", params: [] as any[] };
@@ -11,6 +16,8 @@ function buildSearchFilter(search: string | null) {
     params: [`%${search.toLowerCase()}%`],
   };
 }
+
+export const dynamic = "force-dynamic";
 
 export default async function ActivityPage({ searchParams }: { searchParams?: SearchParams }) {
   await requireUser();
@@ -33,16 +40,13 @@ export default async function ActivityPage({ searchParams }: { searchParams?: Se
   const sortColumn = sortMap[sort] || "last_activity_dt";
   const { clause, params } = buildSearchFilter(search);
 
-  const countRows = await query<any>(
-    `SELECT COUNT(*)::int AS total FROM mv_msgraph_site_inventory ${clause}`,
-    params
-  );
+  const countRows = await query<any>(`SELECT COUNT(*)::int AS total FROM mv_msgraph_site_inventory ${clause}`, params);
   const total = countRows[0]?.total || 0;
 
   const dataRows = await query<any>(
     `
     WITH base AS (
-      SELECT site_key, site_id, title, web_url, is_personal, storage_used_bytes, storage_total_bytes, last_activity_dt
+      SELECT site_key, site_id, title, web_url, is_personal, template, storage_used_bytes, storage_total_bytes, last_activity_dt
       FROM mv_msgraph_site_inventory
       ${clause}
     ), activity AS (
@@ -78,121 +82,88 @@ export default async function ActivityPage({ searchParams }: { searchParams?: Se
     windowStart ? [...params, windowStart, pageSize, offset] : [...params, pageSize, offset]
   );
 
-  const topActiveUsers = [...dataRows]
+  const topSitesByActiveUsers = [...dataRows]
     .sort((a, b) => b.active_users - a.active_users)
-    .slice(0, 10);
-  const topSharesMods = [...dataRows]
-    .sort((a, b) => (b.shares + b.modified_items) - (a.shares + a.modified_items))
-    .slice(0, 10);
+    .slice(0, 10)
+    .map((row) => ({ title: row.title || row.site_id, activeUsers: row.active_users }));
+
+  const topSitesBySharesMods = [...dataRows]
+    .sort((a, b) => b.shares + b.modified_items - (a.shares + a.modified_items))
+    .slice(0, 10)
+    .map((row) => ({ title: row.title || row.site_id, shares: row.shares, mods: row.modified_items }));
 
   return (
-    <div className="grid gap-6">
-      <section className="card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="font-display text-2xl">Site Activity</h2>
-            <p className="text-sm text-slate">Cached (DB) • Window: {windowDays || "all"} days</p>
-          </div>
-          <form className="flex flex-wrap gap-2" method="get">
-            <input
-              name="q"
-              defaultValue={search || ""}
-              placeholder="Search sites"
-              className="rounded-lg border border-slate/20 bg-white/80 px-3 py-2 text-sm"
-            />
-            <input
-              name="days"
-              defaultValue={windowDays ? String(windowDays) : "all"}
-              placeholder="days"
-              className="w-24 rounded-lg border border-slate/20 bg-white/80 px-3 py-2 text-sm"
-            />
-            <button className="badge bg-white/70 text-slate hover:bg-white" type="submit">
-              Apply
-            </button>
-          </form>
+    <main className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Activity</h1>
+          <p className="text-sm text-muted-foreground">
+            Based on items’ current `lastModifiedDateTime` and link permissions. Window: {windowDays ?? "all"}d.
+          </p>
         </div>
-      </section>
+        <form className="flex flex-wrap items-center gap-2" action="/dashboard/activity" method="get">
+          <Input name="q" placeholder="Search sites…" defaultValue={search || ""} className="w-64" />
+          <select
+            name="days"
+            defaultValue={windowDays == null ? "all" : String(windowDays)}
+            className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
+            title="Window"
+          >
+            <option value="all">All-time</option>
+            <option value="7">7d</option>
+            <option value="30">30d</option>
+            <option value="90">90d</option>
+            <option value="365">365d</option>
+          </select>
+          <Input
+            name="pageSize"
+            type="number"
+            min={10}
+            max={200}
+            defaultValue={String(pageSize)}
+            className="w-24"
+            title="Page size"
+          />
+          <Button type="submit" variant="outline">
+            Apply
+          </Button>
+        </form>
+      </div>
 
-      <section className="grid gap-6 md:grid-cols-2">
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Top Sites by Active Users</h3>
-          <div className="mt-4 grid gap-2 text-sm">
-            {topActiveUsers.map((row) => (
-              <div key={row.site_key} className="flex items-center justify-between">
-                <Link className="text-ink underline decoration-dotted" href={`/dashboard/sites/${encodeURIComponent(row.site_key)}`}>
-                  {row.title || row.site_id}
-                </Link>
-                <span className="font-semibold text-slate">{formatNumber(row.active_users)}</span>
-              </div>
-            ))}
-            {!topActiveUsers.length && <div className="text-sm text-slate">No activity.</div>}
-          </div>
-        </div>
+      <div className="flex flex-row gap-4 items-center justify-center">
+        <Card className="w-full max-w-xs text-center shadow-lg border border-gray-200 bg-white">
+          <CardHeader>
+            <CardTitle className="text-3xl font-bold">{formatNumber(total)}</CardTitle>
+            <CardDescription>Total Sites</CardDescription>
+          </CardHeader>
+        </Card>
+      </div>
 
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Top Sites by Shares + Mods</h3>
-          <div className="mt-4 grid gap-2 text-sm">
-            {topSharesMods.map((row) => (
-              <div key={row.site_key} className="flex items-center justify-between">
-                <Link className="text-ink underline decoration-dotted" href={`/dashboard/sites/${encodeURIComponent(row.site_key)}`}>
-                  {row.title || row.site_id}
-                </Link>
-                <span className="font-semibold text-slate">{formatNumber(row.shares + row.modified_items)}</span>
-              </div>
-            ))}
-            {!topSharesMods.length && <div className="text-sm text-slate">No activity.</div>}
-          </div>
-        </div>
-      </section>
+      <ActivitySummaryGraphsWrapper
+        topSitesByActiveUsers={topSitesByActiveUsers}
+        topSitesBySharesMods={topSitesBySharesMods}
+        windowDays={windowDays}
+      />
 
-      <section className="card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="font-display text-xl">Sites</h3>
-          <div className="text-xs text-slate">Showing {dataRows.length} of {formatNumber(total)}</div>
-        </div>
-        <div className="mt-4 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="text-left text-slate/70">
-              <tr>
-                <th className="py-2">Site</th>
-                <th className="py-2">Modified Items</th>
-                <th className="py-2">Shares</th>
-                <th className="py-2">Active Users</th>
-                <th className="py-2">Storage</th>
-                <th className="py-2">Last Activity</th>
-              </tr>
-            </thead>
-            <tbody>
-              {dataRows.map((row) => (
-                <tr key={row.site_key} className="border-t border-white/60">
-                  <td className="py-3">
-                    <div className="font-semibold text-ink">
-                      <Link className="underline decoration-dotted" href={`/dashboard/sites/${encodeURIComponent(row.site_key)}`}>
-                        {row.title || row.site_id}
-                      </Link>
-                    </div>
-                    <div className="text-xs text-slate">{row.is_personal ? "Personal" : "SharePoint"}</div>
-                  </td>
-                  <td className="py-3 text-slate">{formatNumber(row.modified_items)}</td>
-                  <td className="py-3 text-slate">{formatNumber(row.shares)}</td>
-                  <td className="py-3 text-slate">{formatNumber(row.active_users)}</td>
-                  <td className="py-3 text-slate">
-                    {formatBytes(row.storage_used_bytes)} / {formatBytes(row.storage_total_bytes)}
-                  </td>
-                  <td className="py-3 text-slate">{formatDate(row.last_activity_dt)}</td>
-                </tr>
-              ))}
-              {!dataRows.length && (
-                <tr>
-                  <td className="py-3 text-slate" colSpan={6}>
-                    No sites in this window.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Sites</CardTitle>
+          <CardDescription>
+            {formatNumber(total)} sites • showing {formatNumber(dataRows.length)}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="overflow-x-auto">
+          <ActivityTable items={dataRows} windowDays={windowDays} />
+        </CardContent>
+      </Card>
+
+      <Pagination
+        pathname="/dashboard/activity"
+        page={page}
+        pageSize={pageSize}
+        totalItems={total}
+        extraParams={{ q: search || undefined, pageSize, sort, dir, days: windowDays == null ? "all" : windowDays }}
+      />
+    </main>
   );
 }

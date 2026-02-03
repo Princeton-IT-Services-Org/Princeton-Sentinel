@@ -198,6 +198,147 @@ LEFT JOIN personal_links pl ON pl.site_id = b.site_id AND b.is_personal = true;
 CREATE UNIQUE INDEX IF NOT EXISTS mv_msgraph_site_sharing_summary_uidx
 ON mv_msgraph_site_sharing_summary (site_key);
 
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_msgraph_link_breakdown AS
+SELECT
+  link_scope,
+  link_type,
+  COUNT(*)::int AS count
+FROM msgraph_drive_item_permissions
+WHERE deleted_at IS NULL AND link_scope IS NOT NULL
+GROUP BY link_scope, link_type;
+
+CREATE UNIQUE INDEX IF NOT EXISTS mv_msgraph_link_breakdown_uidx
+ON mv_msgraph_link_breakdown ((COALESCE(link_scope, '')), (COALESCE(link_type, '')));
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_msgraph_drive_storage_totals AS
+SELECT
+  1 AS summary_id,
+  SUM(quota_used) AS storage_used,
+  SUM(quota_total) AS storage_total
+FROM msgraph_drives
+WHERE deleted_at IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS mv_msgraph_drive_storage_totals_uidx
+ON mv_msgraph_drive_storage_totals (summary_id);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_msgraph_drive_type_counts AS
+SELECT
+  drive_type,
+  COUNT(*)::int AS count
+FROM msgraph_drives
+WHERE deleted_at IS NULL
+GROUP BY drive_type;
+
+CREATE UNIQUE INDEX IF NOT EXISTS mv_msgraph_drive_type_counts_uidx
+ON mv_msgraph_drive_type_counts ((COALESCE(drive_type, '')));
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_msgraph_drive_top_used AS
+SELECT
+  ROW_NUMBER() OVER (ORDER BY quota_used DESC NULLS LAST) AS rank,
+  id AS drive_id,
+  name,
+  drive_type,
+  web_url,
+  quota_used,
+  quota_total
+FROM msgraph_drives
+WHERE deleted_at IS NULL
+ORDER BY quota_used DESC NULLS LAST
+LIMIT 10;
+
+CREATE UNIQUE INDEX IF NOT EXISTS mv_msgraph_drive_top_used_uidx
+ON mv_msgraph_drive_top_used (rank);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_msgraph_sites_created_month AS
+SELECT
+  date_trunc('month', created_dt) AS month,
+  COUNT(*)::int AS total_count,
+  COUNT(*) FILTER (WHERE is_personal = true)::int AS personal_count,
+  COUNT(*) FILTER (WHERE is_personal = false)::int AS sharepoint_count
+FROM mv_msgraph_site_inventory
+WHERE created_dt IS NOT NULL
+GROUP BY date_trunc('month', created_dt)
+ORDER BY month DESC;
+
+CREATE UNIQUE INDEX IF NOT EXISTS mv_msgraph_sites_created_month_uidx
+ON mv_msgraph_sites_created_month (month);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_msgraph_site_activity_daily AS
+WITH mods AS (
+  SELECT
+    CASE WHEN d.site_id IS NULL THEN 'drive:' || d.id ELSE d.site_id END AS site_key,
+    date_trunc('day', i.modified_dt) AS day,
+    COUNT(*)::int AS modified_items,
+    COUNT(DISTINCT i.last_modified_by_user_id) FILTER (WHERE i.last_modified_by_user_id IS NOT NULL)::int AS active_users
+  FROM msgraph_drive_items i
+  JOIN msgraph_drives d ON d.id = i.drive_id
+  WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL AND i.modified_dt IS NOT NULL
+  GROUP BY CASE WHEN d.site_id IS NULL THEN 'drive:' || d.id ELSE d.site_id END, date_trunc('day', i.modified_dt)
+),
+shares AS (
+  SELECT
+    CASE WHEN d.site_id IS NULL THEN 'drive:' || d.id ELSE d.site_id END AS site_key,
+    date_trunc('day', p.synced_at) AS day,
+    COUNT(*)::int AS shares
+  FROM msgraph_drive_item_permissions p
+  JOIN msgraph_drives d ON d.id = p.drive_id
+  WHERE p.deleted_at IS NULL AND d.deleted_at IS NULL AND p.link_scope IS NOT NULL AND p.synced_at IS NOT NULL
+  GROUP BY CASE WHEN d.site_id IS NULL THEN 'drive:' || d.id ELSE d.site_id END, date_trunc('day', p.synced_at)
+)
+SELECT
+  COALESCE(m.site_key, s.site_key) AS site_key,
+  COALESCE(m.day, s.day) AS day,
+  COALESCE(m.modified_items, 0) AS modified_items,
+  COALESCE(m.active_users, 0) AS active_users,
+  COALESCE(s.shares, 0) AS shares
+FROM mods m
+FULL OUTER JOIN shares s ON s.site_key = m.site_key AND s.day = m.day;
+
+CREATE UNIQUE INDEX IF NOT EXISTS mv_msgraph_site_activity_daily_uidx
+ON mv_msgraph_site_activity_daily (site_key, day);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_msgraph_user_activity_daily AS
+SELECT
+  i.last_modified_by_user_id AS user_id,
+  date_trunc('day', i.modified_dt) AS day,
+  COUNT(*)::int AS modified_items,
+  COUNT(DISTINCT COALESCE(d.site_id, d.id))::int AS sites_touched,
+  MAX(i.modified_dt) AS last_modified_dt
+FROM msgraph_drive_items i
+JOIN msgraph_drives d ON d.id = i.drive_id
+WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
+  AND i.last_modified_by_user_id IS NOT NULL
+  AND i.modified_dt IS NOT NULL
+GROUP BY i.last_modified_by_user_id, date_trunc('day', i.modified_dt);
+
+CREATE UNIQUE INDEX IF NOT EXISTS mv_msgraph_user_activity_daily_uidx
+ON mv_msgraph_user_activity_daily (user_id, day);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_msgraph_group_member_counts AS
+SELECT
+  group_id,
+  COUNT(*)::int AS member_count
+FROM msgraph_group_memberships
+WHERE deleted_at IS NULL
+GROUP BY group_id;
+
+CREATE UNIQUE INDEX IF NOT EXISTS mv_msgraph_group_member_counts_uidx
+ON mv_msgraph_group_member_counts (group_id);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_msgraph_item_link_daily AS
+SELECT
+  drive_id,
+  item_id,
+  link_scope,
+  date_trunc('day', synced_at) AS day,
+  COUNT(*)::int AS link_shares
+FROM msgraph_drive_item_permissions
+WHERE deleted_at IS NULL AND link_scope IS NOT NULL AND synced_at IS NOT NULL
+GROUP BY drive_id, item_id, link_scope, date_trunc('day', synced_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS mv_msgraph_item_link_daily_uidx
+ON mv_msgraph_item_link_daily (drive_id, item_id, link_scope, day);
+
 CREATE UNIQUE INDEX IF NOT EXISTS mv_dependencies_uidx
 ON mv_dependencies (mv_name, table_name);
 
@@ -216,5 +357,18 @@ INSERT INTO mv_dependencies (mv_name, table_name) VALUES
   ('mv_msgraph_site_inventory', 'msgraph_drive_item_permissions'),
   ('mv_msgraph_site_sharing_summary', 'msgraph_sites'),
   ('mv_msgraph_site_sharing_summary', 'msgraph_drives'),
-  ('mv_msgraph_site_sharing_summary', 'msgraph_drive_item_permissions')
+  ('mv_msgraph_site_sharing_summary', 'msgraph_drive_item_permissions'),
+  ('mv_msgraph_link_breakdown', 'msgraph_drive_item_permissions'),
+  ('mv_msgraph_drive_storage_totals', 'msgraph_drives'),
+  ('mv_msgraph_drive_type_counts', 'msgraph_drives'),
+  ('mv_msgraph_drive_top_used', 'msgraph_drives'),
+  ('mv_msgraph_sites_created_month', 'msgraph_sites'),
+  ('mv_msgraph_sites_created_month', 'msgraph_drives'),
+  ('mv_msgraph_site_activity_daily', 'msgraph_drive_items'),
+  ('mv_msgraph_site_activity_daily', 'msgraph_drive_item_permissions'),
+  ('mv_msgraph_site_activity_daily', 'msgraph_drives'),
+  ('mv_msgraph_user_activity_daily', 'msgraph_drive_items'),
+  ('mv_msgraph_user_activity_daily', 'msgraph_drives'),
+  ('mv_msgraph_group_member_counts', 'msgraph_group_memberships'),
+  ('mv_msgraph_item_link_daily', 'msgraph_drive_item_permissions')
 ON CONFLICT DO NOTHING;

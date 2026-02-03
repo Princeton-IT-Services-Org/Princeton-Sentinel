@@ -1,9 +1,14 @@
-import Link from "next/link";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Pagination } from "@/components/pagination";
+import { Button } from "@/components/ui/button";
 import { requireUser } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
-import { formatDate, formatNumber } from "@/app/lib/format";
+import { formatNumber } from "@/app/lib/format";
 import { getPagination, getParam, getSortDirection, SearchParams } from "@/app/lib/params";
 import { getInternalDomainPatterns } from "@/app/lib/internalDomains";
+import { SharingSummaryBarChartClient, SharingSummaryPieChartClient } from "@/components/sharing-summary-graphs-client";
+import { SharingLinkBreakdownTable, SharingSitesTable } from "./sharing-tables";
 
 function buildSearchFilter(search: string | null) {
   if (!search) return { clause: "", params: [] as any[] };
@@ -12,6 +17,8 @@ function buildSearchFilter(search: string | null) {
     params: [`%${search.toLowerCase()}%`],
   };
 }
+
+export const dynamic = "force-dynamic";
 
 export default async function SharingPage({ searchParams }: { searchParams?: SearchParams }) {
   await requireUser();
@@ -37,19 +44,22 @@ export default async function SharingPage({ searchParams }: { searchParams?: Sea
 
   const breakdownRows = await query<any>(
     `
-    SELECT link_scope, link_type, COUNT(*)::int AS count
-    FROM msgraph_drive_item_permissions
-    WHERE deleted_at IS NULL
-    GROUP BY link_scope, link_type
+    SELECT link_scope, link_type, count
+    FROM mv_msgraph_link_breakdown
     ORDER BY count DESC
     LIMIT $1 OFFSET $2
     `,
     [lbPageSize, (lbPage - 1) * lbPageSize]
   );
 
-  const totalLinksRows = await query<any>(
-    `SELECT COUNT(*)::int AS total FROM msgraph_drive_item_permissions WHERE deleted_at IS NULL AND link_scope IS NOT NULL`
+  const breakdownAllRows = await query<any>(
+    `
+    SELECT link_scope, link_type, count
+    FROM mv_msgraph_link_breakdown
+    ORDER BY count DESC
+    `
   );
+  const totalLinksRows = await query<any>("SELECT SUM(count)::int AS total FROM mv_msgraph_link_breakdown");
 
   const topSites = await query<any>(
     `
@@ -61,10 +71,7 @@ export default async function SharingPage({ searchParams }: { searchParams?: Sea
     `
   );
 
-  const countRows = await query<any>(
-    `SELECT COUNT(*)::int AS total FROM mv_msgraph_site_inventory i ${clause}`,
-    params
-  );
+  const countRows = await query<any>(`SELECT COUNT(*)::int AS total FROM mv_msgraph_site_inventory i ${clause}`, params);
   const total = countRows[0]?.total || 0;
 
   const siteRows = await query<any>(
@@ -128,147 +135,126 @@ export default async function SharingPage({ searchParams }: { searchParams?: Sea
 
   const totalLinks = totalLinksRows[0]?.total || 0;
 
+  const totalSites = topSites.map((row: any) => ({ label: row.title || row.site_key, value: row.sharing_links || 0 }));
+  const pieData = breakdownAllRows.map((row: any) => ({
+    label: `${row.link_scope || "unknown"}:${row.link_type || "unknown"}`,
+    value: row.count,
+  }));
+
+  const lbTotal = breakdownAllRows.length;
+
+  const siteRowsEnriched = siteRows.map((row: any) => {
+    const external = externalMap.get(row.site_key) || { guest_users: 0, external_users: 0 };
+    return {
+      ...row,
+      distinctGuests: external.guest_users,
+      distinctExternalUsers: external.external_users,
+    };
+  });
+
   return (
-    <div className="grid gap-6">
-      <section className="card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="font-display text-2xl">Sharing Overview</h2>
-            <p className="text-sm text-slate">Cached (DB) • Global link inventory with per-site posture.</p>
-          </div>
-          <form className="flex flex-wrap gap-2" method="get">
-            <input
-              name="q"
-              defaultValue={search || ""}
-              placeholder="Search sites"
-              className="rounded-lg border border-slate/20 bg-white/80 px-3 py-2 text-sm"
-            />
-            <input
-              name="externalThreshold"
-              defaultValue={externalThreshold}
-              className="w-28 rounded-lg border border-slate/20 bg-white/80 px-3 py-2 text-sm"
-            />
-            <button className="badge bg-white/70 text-slate hover:bg-white" type="submit">
-              Apply
-            </button>
-          </form>
+    <main className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Sharing</h1>
+          <p className="text-sm text-muted-foreground">Sharing links and external access signals.</p>
         </div>
-      </section>
+        <form className="flex flex-wrap items-center gap-2" action="/dashboard/sharing" method="get">
+          <Input name="q" placeholder="Search sites…" defaultValue={search || ""} className="w-64" />
+          <Input
+            name="externalThreshold"
+            type="number"
+            min={0}
+            max={10000}
+            defaultValue={String(externalThreshold)}
+            className="w-28"
+            title="Oversharing threshold"
+          />
+          <Input
+            name="pageSize"
+            type="number"
+            min={10}
+            max={200}
+            defaultValue={String(pageSize)}
+            className="w-24"
+            title="Page size"
+          />
+          <Button type="submit" variant="outline">
+            Apply
+          </Button>
+        </form>
+      </div>
 
-      <section className="grid gap-6 md:grid-cols-2">
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Total Links</h3>
-          <div className="mt-3 text-3xl font-semibold text-ink">{formatNumber(totalLinks)}</div>
-          <div className="mt-4 text-sm text-slate">Top 10 sites by total links</div>
-          <div className="mt-3 grid gap-2 text-sm">
-            {topSites.map((row: any) => (
-              <div key={row.site_key} className="flex items-center justify-between">
-                <Link className="text-ink underline decoration-dotted" href={`/dashboard/sites/${encodeURIComponent(row.site_key)}`}>
-                  {row.title || row.site_key}
-                </Link>
-                <span className="font-semibold text-slate">{formatNumber(row.sharing_links)}</span>
-              </div>
-            ))}
-            {!topSites.length && <div className="text-sm text-slate">No sharing data yet.</div>}
-          </div>
-        </div>
+      <div className="flex flex-row gap-4 items-center justify-center">
+        <Card className="w-full max-w-xs text-center shadow-lg border border-gray-200 bg-white">
+          <CardHeader>
+            <CardTitle className="text-3xl font-bold">{formatNumber(totalLinks)}</CardTitle>
+            <CardDescription>Total Links</CardDescription>
+          </CardHeader>
+        </Card>
+      </div>
 
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Link Breakdown</h3>
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-left text-slate/70">
-                <tr>
-                  <th className="py-2">Scope</th>
-                  <th className="py-2">Type</th>
-                  <th className="py-2">Count</th>
-                </tr>
-              </thead>
-              <tbody>
-              {breakdownRows.map((row: any) => {
-                const scopeParam = row.link_scope === null ? "null" : row.link_scope;
-                const typeParam = row.link_type === null ? "null" : row.link_type;
-                return (
-                  <tr key={`${scopeParam}-${typeParam}`} className="border-t border-white/60">
-                    <td className="py-3 text-ink">
-                      <Link
-                        className="underline decoration-dotted"
-                        href={`/dashboard/sharing/links?scope=${encodeURIComponent(scopeParam)}&type=${encodeURIComponent(typeParam)}`}
-                      >
-                        {row.link_scope || "(direct)"}
-                      </Link>
-                    </td>
-                    <td className="py-3 text-slate">{row.link_type || "--"}</td>
-                    <td className="py-3 text-slate">{formatNumber(row.count)}</td>
-                  </tr>
-                );
-              })}
-                {!breakdownRows.length && (
-                  <tr>
-                    <td className="py-3 text-slate" colSpan={3}>
-                      No link data.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </section>
+      <div className="w-full flex flex-col md:flex-row gap-6 items-center justify-center my-2">
+        <Card className="w-full md:w-1/2 max-w-xl flex flex-col items-center justify-center shadow-lg border border-gray-200 bg-white">
+          <CardHeader>
+            <CardTitle>Top 10 Sites by Links</CardTitle>
+          </CardHeader>
+          <CardContent className="w-full flex items-center justify-center">
+            <div className="w-full h-72 flex items-center justify-center">
+              <SharingSummaryBarChartClient data={totalSites} label="Links" xTitle="Links" />
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="w-full md:w-1/2 max-w-xl flex flex-col items-center justify-center shadow-lg border border-gray-200 bg-white">
+          <CardHeader>
+            <CardTitle>Link Scope+Type Breakdown</CardTitle>
+          </CardHeader>
+          <CardContent className="w-full flex items-center justify-center">
+            <div className="w-full h-72 flex items-center justify-center">
+              <SharingSummaryPieChartClient data={pieData} />
+            </div>
+          </CardContent>
+        </Card>
+      </div>
 
-      <section className="card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="font-display text-xl">Sites</h3>
-          <div className="text-xs text-slate">Showing {siteRows.length} of {formatNumber(total)}</div>
-        </div>
-        <div className="mt-4 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="text-left text-slate/70">
-              <tr>
-                <th className="py-2">Site</th>
-                <th className="py-2">Total Links</th>
-                <th className="py-2">Anonymous</th>
-                <th className="py-2">Guests</th>
-                <th className="py-2">External</th>
-                <th className="py-2">Last Share</th>
-              </tr>
-            </thead>
-            <tbody>
-              {siteRows.map((row: any) => {
-                const external = externalMap.get(row.site_key) || { guest_users: 0, external_users: 0 };
-                const oversharing = externalThreshold > 0 && external.external_users >= externalThreshold;
-                return (
-                  <tr key={row.site_key} className="border-t border-white/60">
-                    <td className="py-3">
-                      <div className="font-semibold text-ink">
-                        <Link className="underline decoration-dotted" href={`/dashboard/sites/${encodeURIComponent(row.site_key)}`}>
-                          {row.title || row.site_id}
-                        </Link>
-                      </div>
-                      <div className="flex flex-wrap gap-2 text-xs text-slate">
-                        {oversharing && <span className="badge badge-error">Oversharing</span>}
-                        {row.anonymous_links > 0 && <span className="badge badge-warn">Anonymous</span>}
-                      </div>
-                    </td>
-                    <td className="py-3 text-slate">{formatNumber(row.sharing_links || 0)}</td>
-                    <td className="py-3 text-slate">{formatNumber(row.anonymous_links || 0)}</td>
-                    <td className="py-3 text-slate">{formatNumber(external.guest_users || 0)}</td>
-                    <td className="py-3 text-slate">{formatNumber(external.external_users || 0)}</td>
-                    <td className="py-3 text-slate">{formatDate(row.last_shared_at)}</td>
-                  </tr>
-                );
-              })}
-              {!siteRows.length && (
-                <tr>
-                  <td className="py-3 text-slate" colSpan={6}>
-                    No sites match that filter.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Link breakdown</CardTitle>
+          <CardDescription>From permissions link scope and type.</CardDescription>
+        </CardHeader>
+        <CardContent className="overflow-x-auto space-y-3">
+          <SharingLinkBreakdownTable breakdown={breakdownRows} />
+          <Pagination
+            pathname="/dashboard/sharing"
+            page={lbPage}
+            pageSize={lbPageSize}
+            totalItems={lbTotal}
+            pageParam="lbPage"
+            pageSizeParam="lbPageSize"
+            extraParams={{ q: search || undefined, externalThreshold, page, pageSize, sort, dir }}
+          />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Sites</CardTitle>
+          <CardDescription>
+            {formatNumber(total)} sites • showing {formatNumber(siteRowsEnriched.length)} • external threshold {externalThreshold}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="overflow-x-auto">
+          <SharingSitesTable sites={siteRowsEnriched} externalThreshold={externalThreshold} />
+        </CardContent>
+      </Card>
+
+      <Pagination
+        pathname="/dashboard/sharing"
+        page={page}
+        pageSize={pageSize}
+        totalItems={total}
+        extraParams={{ q: search || undefined, externalThreshold, pageSize, sort, dir, lbPage, lbPageSize }}
+      />
+    </main>
   );
 }

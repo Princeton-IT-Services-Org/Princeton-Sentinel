@@ -1,25 +1,27 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
+
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { requireUser } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
-import { formatDate, formatNumber, safeDecode } from "@/app/lib/format";
+import { safeDecode } from "@/app/lib/format";
 import { getInternalDomainPatterns } from "@/app/lib/internalDomains";
 
-function itemKey(driveId: string, itemId: string) {
-  return encodeURIComponent(`${driveId}::${itemId}`);
-}
+import {
+  SiteExternalPrincipalsTable,
+  SiteMostSharedItemsTable,
+  SiteSharingLinkBreakdownTable,
+} from "./site-sharing-tables";
+
+export const dynamic = "force-dynamic";
 
 export default async function SiteSharingPage({ params }: { params: { siteId: string } }) {
   await requireUser();
 
   const rawId = safeDecode(params.siteId);
   const siteRows = await query<any>("SELECT * FROM mv_msgraph_site_inventory WHERE site_key = $1", [rawId]);
-  if (!siteRows.length) {
-    return (
-      <div className="card p-6">
-        <h2 className="font-display text-2xl">Site not found</h2>
-      </div>
-    );
-  }
+  if (!siteRows.length) notFound();
+
   const site = siteRows[0];
   const isPersonal = site.is_personal === true;
 
@@ -98,121 +100,68 @@ export default async function SiteSharingPage({ params }: { params: { siteId: st
   );
 
   return (
-    <div className="grid gap-6">
-      <section className="card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h2 className="font-display text-2xl">{site.title || site.site_id} — Sharing</h2>
-            <div className="text-sm text-slate">Link breakdown and external principals.</div>
-          </div>
-          <Link className="badge bg-white/70 text-slate hover:bg-white" href={`/dashboard/sites/${encodeURIComponent(site.site_key)}`}>
-            Back to Site
+    <main className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="truncate text-2xl font-semibold">{site.title || site.site_id}: Sharing</h1>
+          <p className="text-sm text-muted-foreground">Breakdown of sharing links and external principals.</p>
+          <p className="mt-2 text-xs uppercase tracking-[0.3em] text-muted-foreground">Cached (DB)</p>
+        </div>
+        <div className="flex items-center gap-3 text-sm">
+          <Link className="text-muted-foreground hover:underline" href={`/dashboard/sites/${encodeURIComponent(site.site_key)}`}>
+            Overview
+          </Link>
+          <Link className="text-muted-foreground hover:underline" href={`/dashboard/sites/${encodeURIComponent(site.site_key)}/files`}>
+            Files
           </Link>
         </div>
-      </section>
+      </div>
 
-      <section className="card p-6">
-        <h3 className="font-display text-xl">Link Breakdown</h3>
-        <div className="mt-4 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="text-left text-slate/70">
-              <tr>
-                <th className="py-2">Scope</th>
-                <th className="py-2">Type</th>
-                <th className="py-2">Count</th>
-              </tr>
-            </thead>
-            <tbody>
-              {linkBreakdown.map((row: any) => (
-                <tr key={`${row.link_scope || "null"}-${row.link_type || "null"}`} className="border-t border-white/60">
-                  <td className="py-3 text-ink">{row.link_scope || "(direct)"}</td>
-                  <td className="py-3 text-slate">{row.link_type || "--"}</td>
-                  <td className="py-3 text-slate">{formatNumber(row.count)}</td>
-                </tr>
-              ))}
-              {!linkBreakdown.length && (
-                <tr>
-                  <td className="py-3 text-slate" colSpan={3}>
-                    No sharing links recorded.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      <Card>
+        <CardHeader>
+          <CardTitle>Link breakdown</CardTitle>
+          <CardDescription>By scope and type</CardDescription>
+        </CardHeader>
+        <CardContent className="overflow-x-auto">
+          <SiteSharingLinkBreakdownTable breakdown={linkBreakdown} />
+        </CardContent>
+      </Card>
 
-      <section className="grid gap-6 md:grid-cols-2">
-        <div className="card p-6">
-          <h3 className="font-display text-xl">External Principals</h3>
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-left text-slate/70">
-                <tr>
-                  <th className="py-2">Email</th>
-                  <th className="py-2">Type</th>
-                  <th className="py-2">Grants</th>
-                  <th className="py-2">Last Grant</th>
-                </tr>
-              </thead>
-              <tbody>
-                {externalPrincipals.map((row: any) => (
-                  <tr key={row.email} className="border-t border-white/60">
-                    <td className="py-3 text-ink">{row.email}</td>
-                    <td className="py-3 text-slate">{row.kind}</td>
-                    <td className="py-3 text-slate">{formatNumber(row.grants)}</td>
-                    <td className="py-3 text-slate">{formatDate(row.last_grant)}</td>
-                  </tr>
-                ))}
-                {!externalPrincipals.length && (
-                  <tr>
-                    <td className="py-3 text-slate" colSpan={4}>
-                      No guest or external principals detected.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>External principals</CardTitle>
+          <CardDescription>Guests (`#EXT#`) and non-internal domains</CardDescription>
+        </CardHeader>
+        <CardContent className="overflow-x-auto">
+          <SiteExternalPrincipalsTable
+            principals={externalPrincipals.map((row: any) => ({
+              email: row.email,
+              type: row.kind,
+              grants: row.grants ?? 0,
+              lastGrantedDateTime: row.last_grant,
+            }))}
+          />
+        </CardContent>
+      </Card>
 
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Most Shared Items</h3>
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-left text-slate/70">
-                <tr>
-                  <th className="py-2">Item</th>
-                  <th className="py-2">Sharing Links</th>
-                  <th className="py-2">Permissions</th>
-                  <th className="py-2">Last Shared</th>
-                </tr>
-              </thead>
-              <tbody>
-                {mostShared.map((row: any) => (
-                  <tr key={`${row.drive_id}-${row.id}`} className="border-t border-white/60">
-                    <td className="py-3">
-                      <Link className="font-semibold text-ink underline decoration-dotted" href={`/dashboard/items/${itemKey(row.drive_id, row.id)}`}>
-                        {row.name || row.id}
-                      </Link>
-                    </td>
-                    <td className="py-3 text-slate">{formatNumber(row.sharing_links)}</td>
-                    <td className="py-3 text-slate">{formatNumber(row.permissions)}</td>
-                    <td className="py-3 text-slate">{formatDate(row.last_shared)}</td>
-                  </tr>
-                ))}
-                {!mostShared.length && (
-                  <tr>
-                    <td className="py-3 text-slate" colSpan={4}>
-                      No sharing activity.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-    </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Most shared items</CardTitle>
+          <CardDescription>Ranked by sharing links and total permissions</CardDescription>
+        </CardHeader>
+        <CardContent className="overflow-x-auto">
+          <SiteMostSharedItemsTable
+            items={mostShared.map((row: any) => ({
+              itemId: `${row.drive_id}::${row.id}`,
+              name: row.name || row.id,
+              webUrl: row.web_url,
+              sharingLinks: row.sharing_links ?? 0,
+              permissions: row.permissions ?? 0,
+              lastSharedDateTime: row.last_shared,
+            }))}
+          />
+        </CardContent>
+      </Card>
+    </main>
   );
 }

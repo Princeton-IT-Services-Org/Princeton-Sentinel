@@ -1,36 +1,44 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
+
 import { requireUser } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
-import { formatDate, formatNumber } from "@/app/lib/format";
 import { getPagination, getParam, SearchParams } from "@/app/lib/params";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Pagination } from "@/components/pagination";
 
-function itemKey(driveId: string, itemId: string) {
-  return encodeURIComponent(`${driveId}::${itemId}`);
+import { SharingLinkItemsTable } from "./link-items-table";
+
+export const dynamic = "force-dynamic";
+
+function parseNullable(value: string | null) {
+  if (value == null) return null;
+  const decoded = value.trim();
+  if (!decoded) return null;
+  if (decoded === "null" || decoded === "unknown") return null;
+  return decoded;
 }
 
 export default async function SharingLinksPage({ searchParams }: { searchParams?: SearchParams }) {
   await requireUser();
 
-  const scope = getParam(searchParams, "scope");
-  const type = getParam(searchParams, "type");
-  const search = getParam(searchParams, "q");
-  const { page, pageSize, offset } = getPagination(searchParams, { page: 1, pageSize: 50 });
+  const scopeRaw = getParam(searchParams, "scope");
+  const typeRaw = getParam(searchParams, "type");
+  if (scopeRaw == null || typeRaw == null) notFound();
 
-  if (scope === null || type === null) {
-    return (
-      <div className="card p-6">
-        <h2 className="font-display text-2xl">Missing scope/type</h2>
-        <p className="mt-2 text-slate">Provide scope and type query params.</p>
-      </div>
-    );
-  }
+  const scope = parseNullable(scopeRaw);
+  const type = parseNullable(typeRaw);
+  const search = getParam(searchParams, "q") || "";
+  const { page, pageSize } = getPagination(searchParams, { page: 1, pageSize: 50 });
 
   const params: any[] = [];
   let idx = 1;
-  const scopeFilter = scope === "null" ? "p.link_scope IS NULL" : `p.link_scope = $${idx++}`;
-  if (scope !== "null") params.push(scope);
-  const typeFilter = type === "null" ? "p.link_type IS NULL" : `p.link_type = $${idx++}`;
-  if (type !== "null") params.push(type);
+  const scopeFilter = scope === null ? "p.link_scope IS NULL" : `p.link_scope = $${idx++}`;
+  if (scope !== null) params.push(scope);
+  const typeFilter = type === null ? "p.link_type IS NULL" : `p.link_type = $${idx++}`;
+  if (type !== null) params.push(type);
 
   let searchClause = "";
   if (search) {
@@ -39,82 +47,118 @@ export default async function SharingLinksPage({ searchParams }: { searchParams?
     idx += 1;
   }
 
-  const limitParam = `$${idx}`;
-  const offsetParam = `$${idx + 1}`;
-  params.push(pageSize, offset);
-
-  const rows = await query<any>(
+  const countRows = await query<any>(
     `
-    SELECT i.drive_id, i.id, i.name, i.web_url, i.path, MAX(p.synced_at) AS last_shared, COUNT(*)::int AS links
+    SELECT COUNT(DISTINCT (i.drive_id, i.id))::int AS total
     FROM msgraph_drive_item_permissions p
     JOIN msgraph_drive_items i ON i.drive_id = p.drive_id AND i.id = p.item_id
     WHERE p.deleted_at IS NULL AND i.deleted_at IS NULL
       AND ${scopeFilter}
       AND ${typeFilter}
       ${searchClause}
-    GROUP BY i.drive_id, i.id, i.name, i.web_url, i.path
-    ORDER BY links DESC NULLS LAST
-    LIMIT ${limitParam} OFFSET ${offsetParam}
     `,
     params
   );
 
-  return (
-    <div className="grid gap-6">
-      <section className="card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h2 className="font-display text-2xl">Sharing Drilldown</h2>
-            <div className="text-sm text-slate">Scope: {scope} • Type: {type}</div>
-          </div>
-          <form method="get" className="flex flex-wrap gap-2">
-            <input type="hidden" name="scope" value={scope} />
-            <input type="hidden" name="type" value={type} />
-            <input
-              name="q"
-              defaultValue={search || ""}
-              placeholder="Search items"
-              className="rounded-lg border border-slate/20 bg-white/80 px-3 py-2 text-sm"
-            />
-            <button className="badge bg-white/70 text-slate hover:bg-white" type="submit">Search</button>
-          </form>
-        </div>
-      </section>
+  const total = countRows[0]?.total ?? 0;
+  const totalPages = Math.max(Math.ceil(total / pageSize), 1);
+  const clampedPage = Math.min(page, totalPages);
+  const offset = (clampedPage - 1) * pageSize;
 
-      <section className="card p-6">
-        <div className="mt-2 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="text-left text-slate/70">
-              <tr>
-                <th className="py-2">Item</th>
-                <th className="py-2">Links</th>
-                <th className="py-2">Last Shared</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row: any) => (
-                <tr key={`${row.drive_id}-${row.id}`} className="border-t border-white/60">
-                  <td className="py-3">
-                    <div className="font-semibold text-ink">
-                      <Link className="underline decoration-dotted" href={`/dashboard/items/${itemKey(row.drive_id, row.id)}`}>
-                        {row.name || row.id}
-                      </Link>
-                    </div>
-                    <div className="text-xs text-slate">{row.path || "--"}</div>
-                  </td>
-                  <td className="py-3 text-slate">{formatNumber(row.links)}</td>
-                  <td className="py-3 text-slate">{formatDate(row.last_shared)}</td>
-                </tr>
-              ))}
-              {!rows.length && (
-                <tr>
-                  <td className="py-3 text-slate" colSpan={3}>No matching items.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+  const listParams = [...params, pageSize, offset];
+  const limitParam = `$${params.length + 1}`;
+  const offsetParam = `$${params.length + 2}`;
+
+  const rows = await query<any>(
+    `
+    SELECT
+      i.drive_id,
+      i.id,
+      i.name,
+      i.web_url,
+      i.normalized_path,
+      i.path,
+      i.is_folder,
+      i.size,
+      MAX(i.modified_dt) AS last_modified_dt,
+      COUNT(p.permission_id)::int AS matching_permissions
+    FROM msgraph_drive_item_permissions p
+    JOIN msgraph_drive_items i ON i.drive_id = p.drive_id AND i.id = p.item_id
+    WHERE p.deleted_at IS NULL AND i.deleted_at IS NULL
+      AND ${scopeFilter}
+      AND ${typeFilter}
+      ${searchClause}
+    GROUP BY i.drive_id, i.id, i.name, i.web_url, i.normalized_path, i.path, i.is_folder, i.size
+    ORDER BY matching_permissions DESC NULLS LAST
+    LIMIT ${limitParam} OFFSET ${offsetParam}
+    `,
+    listParams
+  );
+
+  const items = rows.map((row: any) => ({
+    itemId: `${row.drive_id}::${row.id}`,
+    name: row.name || row.id,
+    webUrl: row.web_url,
+    normalizedPath: row.normalized_path || row.path,
+    isFolder: row.is_folder ?? false,
+    size: row.size,
+    lastModifiedDateTime: row.last_modified_dt,
+    matchingPermissions: row.matching_permissions ?? 0,
+  }));
+
+  const title = `${scope ?? "—"} / ${type ?? "—"}`;
+
+  return (
+    <main className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="truncate text-2xl font-semibold">Sharing links: {title}</h1>
+          <p className="text-sm text-muted-foreground">Items that contribute to this link scope/type bucket.</p>
+          <p className="mt-2 text-xs uppercase tracking-[0.3em] text-muted-foreground">Cached (DB)</p>
         </div>
-      </section>
-    </div>
+        <div className="flex items-center gap-3 text-sm">
+          <Link className="text-muted-foreground hover:underline" href="/dashboard/sharing">
+            Sharing
+          </Link>
+        </div>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Items</CardTitle>
+          <CardDescription>
+            {total.toLocaleString()} items • showing {items.length.toLocaleString()}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="overflow-x-auto space-y-3">
+          <form className="flex flex-wrap items-center gap-2" action="/dashboard/sharing/links" method="get">
+            <input type="hidden" name="scope" value={scopeRaw} />
+            <input type="hidden" name="type" value={typeRaw} />
+            <Input name="q" placeholder="Search items…" defaultValue={search} className="w-64" />
+            <Input
+              name="pageSize"
+              type="number"
+              min={10}
+              max={200}
+              defaultValue={String(pageSize)}
+              className="w-24"
+              title="Page size"
+            />
+            <Button type="submit" variant="outline">
+              Apply
+            </Button>
+          </form>
+          <SharingLinkItemsTable items={items} />
+        </CardContent>
+      </Card>
+
+      <Pagination
+        pathname="/dashboard/sharing/links"
+        page={clampedPage}
+        pageSize={pageSize}
+        totalItems={total}
+        extraParams={{ scope: scopeRaw, type: typeRaw, q: search || undefined, pageSize }}
+      />
+    </main>
   );
 }

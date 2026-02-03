@@ -5,6 +5,20 @@ export function formatDate(value?: string | null) {
   return date.toLocaleString();
 }
 
+export function formatIsoDate(value?: string | null) {
+  if (!value) return "--";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "--";
+  return date.toLocaleDateString();
+}
+
+export function formatIsoDateTime(value?: string | null) {
+  if (!value) return "--";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "--";
+  return date.toLocaleString();
+}
+
 export function formatDateShort(value?: string | null) {
   if (!value) return "--";
   const date = new Date(value);
