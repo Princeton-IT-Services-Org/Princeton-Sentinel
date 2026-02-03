@@ -1,0 +1,108 @@
+import { requireAdmin } from "@/app/lib/auth";
+
+async function fetchWorker(path: string) {
+  const base = process.env.WORKER_API_URL;
+  if (!base) throw new Error("WORKER_API_URL not set");
+  const res = await fetch(`${base}${path}`, {
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Worker error ${res.status}: ${text}`);
+  }
+  return res.json();
+}
+
+export default async function AdminPage() {
+  await requireAdmin();
+
+  let health: any = null;
+  let status: any = null;
+  let error: string | null = null;
+
+  try {
+    health = await fetchWorker("/health");
+    status = await fetchWorker("/jobs/status");
+  } catch (err: any) {
+    error = err?.message || "Failed to reach worker";
+  }
+
+  return (
+    <div className="grid gap-6">
+      <section className="card p-6">
+        <h2 className="font-display text-2xl">Worker Status</h2>
+        {error ? (
+          <div className="mt-3 badge badge-error">{error}</div>
+        ) : (
+          <div className="mt-4 grid gap-3 md:grid-cols-3">
+            <div className="rounded-xl bg-white/70 p-4">
+              <div className="text-sm text-slate">Health</div>
+              <div className="text-lg font-semibold text-ink">{health?.ok ? "OK" : "Degraded"}</div>
+            </div>
+            <div className="rounded-xl bg-white/70 p-4">
+              <div className="text-sm text-slate">DB</div>
+              <div className="text-lg font-semibold text-ink">{health?.db ? "Connected" : "Down"}</div>
+            </div>
+            <div className="rounded-xl bg-white/70 p-4">
+              <div className="text-sm text-slate">Scheduler</div>
+              <div className="text-xs text-slate">{health?.scheduler?.last_tick || "--"}</div>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="card p-6">
+        <h2 className="font-display text-2xl">Run Controls</h2>
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="text-left text-slate/70">
+              <tr>
+                <th className="py-2">Job</th>
+                <th className="py-2">Enabled</th>
+                <th className="py-2">Schedule</th>
+                <th className="py-2">Next Run</th>
+                <th className="py-2">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(status?.jobs || []).map((row: any) => (
+                <tr key={`${row.job_id}-${row.schedule_id || "none"}`} className="border-t border-white/60">
+                  <td className="py-3 font-semibold text-ink">{row.job_type}</td>
+                  <td className="py-3">
+                    <span className={row.enabled ? "badge badge-ok" : "badge badge-error"}>
+                      {row.enabled ? "Enabled" : "Disabled"}
+                    </span>
+                  </td>
+                  <td className="py-3 text-slate">{row.cron_expr || "--"}</td>
+                  <td className="py-3 text-slate">{row.next_run_at || "--"}</td>
+                  <td className="py-3">
+                    <div className="flex flex-wrap gap-2">
+                      <form action="/api/worker/run-now" method="post">
+                        <input type="hidden" name="job_id" value={row.job_id} />
+                        <button className="badge bg-amber-100 text-amber-900" type="submit">
+                          Run Now
+                        </button>
+                      </form>
+                      <form action="/api/worker/pause" method="post">
+                        <input type="hidden" name="job_id" value={row.job_id} />
+                        <button className="badge bg-white/70 text-slate" type="submit">
+                          Pause
+                        </button>
+                      </form>
+                      <form action="/api/worker/resume" method="post">
+                        <input type="hidden" name="job_id" value={row.job_id} />
+                        <button className="badge bg-emerald-100 text-emerald-900" type="submit">
+                          Resume
+                        </button>
+                      </form>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  );
+}
