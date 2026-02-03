@@ -8,6 +8,8 @@ ALLOWED_MVS = {
     "mv_msgraph_inventory_summary",
     "mv_msgraph_sharing_posture_summary",
     "mv_latest_job_runs",
+    "mv_msgraph_site_inventory",
+    "mv_msgraph_site_sharing_summary",
 }
 
 

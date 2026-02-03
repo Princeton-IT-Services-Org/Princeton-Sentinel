@@ -1,11 +1,11 @@
-import { NextResponse } from "next/server";
-import { query } from "@/app/lib/db";
 import { requireAdmin } from "@/app/lib/auth";
-export const dynamic = "force-dynamic";
+import { query } from "@/app/lib/db";
+import RunsTable from "@/app/runs/RunsTable";
 
-export async function GET() {
+export default async function RunsPage() {
   await requireAdmin();
-  const rows = await query(
+
+  const runs = await query<any>(
     `
     SELECT
       r.run_id,
@@ -31,5 +31,11 @@ export async function GET() {
     LIMIT 200
     `
   );
-  return NextResponse.json({ runs: rows });
+
+  return (
+    <div className="card p-6">
+      <h2 className="font-display text-2xl">Job Runs</h2>
+      <RunsTable initialRuns={runs} />
+    </div>
+  );
 }

@@ -19,9 +19,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       <body className="font-sans">
         <div className="min-h-screen">
           <header className="px-6 py-5">
-            <div className="mx-auto flex max-w-6xl items-center justify-between">
+            <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4">
               <div className="flex items-center gap-4">
-                <div className="h-10 w-10 rounded-2xl bg-pine text-white grid place-items-center font-display text-xl shadow-glow">
+                <div className="grid h-10 w-10 place-items-center rounded-2xl bg-pine text-xl font-display text-white shadow-glow">
                   PS
                 </div>
                 <div>
@@ -29,44 +29,61 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   <div className="text-xs uppercase tracking-[0.3em] text-slate/70">Data Posture Dashboard</div>
                 </div>
               </div>
+
               <div className="flex items-center gap-3 text-sm">
                 {session ? (
-                  <>
-                    <span className="text-slate/70">{session.user?.email}</span>
-                    <Link href="/api/auth/signout" className="badge badge-warn">Sign out</Link>
-                  </>
+                  <details className="relative">
+                    <summary className="badge bg-white/80 text-slate hover:bg-white cursor-pointer">
+                      {session.user?.email || "Account"}
+                    </summary>
+                    <div className="absolute right-0 z-20 mt-2 w-52 rounded-2xl border border-white/60 bg-white/95 p-2 shadow-glow">
+                      <div className="px-3 py-2 text-xs uppercase tracking-[0.2em] text-slate/60">Account</div>
+                      {canAdmin && (
+                        <Link className="block rounded-lg px-3 py-2 text-sm text-ink hover:bg-sand" href="/admin">
+                          Admin Console
+                        </Link>
+                      )}
+                      <Link className="block rounded-lg px-3 py-2 text-sm text-ink hover:bg-sand" href="/api/auth/signout">
+                        Sign out
+                      </Link>
+                    </div>
+                  </details>
                 ) : (
-                  <Link href="/api/auth/signin" className="badge badge-ok">Sign in</Link>
+                  <Link href="/api/auth/signin" className="badge badge-ok">
+                    Sign in
+                  </Link>
                 )}
               </div>
             </div>
           </header>
 
-          <nav className="px-6">
-            <div className="mx-auto flex max-w-6xl flex-wrap gap-3">
-              <Link className="badge bg-white/70 text-slate hover:bg-white" href="/">
-                Overview
-              </Link>
-              {canUser && (
-                <>
-                  <Link className="badge bg-white/70 text-slate hover:bg-white" href="/analytics">
-                    Analytics
-                  </Link>
-                  <Link className="badge bg-white/70 text-slate hover:bg-white" href="/jobs">
-                    Jobs
-                  </Link>
-                  <Link className="badge bg-white/70 text-slate hover:bg-white" href="/runs">
-                    Runs
-                  </Link>
-                </>
-              )}
-              {canAdmin && (
-                <Link className="badge bg-white/70 text-slate hover:bg-white" href="/admin">
-                  Admin
+          {canUser && (
+            <nav className="px-6">
+              <div className="mx-auto flex max-w-6xl flex-wrap gap-3">
+                <Link className="badge bg-white/70 text-slate hover:bg-white" href="/">
+                  Overview
                 </Link>
-              )}
-            </div>
-          </nav>
+                <Link className="badge bg-white/70 text-slate hover:bg-white" href="/dashboard/sites">
+                  Sites
+                </Link>
+                <Link className="badge bg-white/70 text-slate hover:bg-white" href="/dashboard/activity">
+                  Activity
+                </Link>
+                <Link className="badge bg-white/70 text-slate hover:bg-white" href="/dashboard/sharing">
+                  Sharing
+                </Link>
+                <Link className="badge bg-white/70 text-slate hover:bg-white" href="/dashboard/risk">
+                  Risk
+                </Link>
+                <Link className="badge bg-white/70 text-slate hover:bg-white" href="/dashboard/users">
+                  Users
+                </Link>
+                <Link className="badge bg-white/70 text-slate hover:bg-white" href="/dashboard/groups">
+                  Groups
+                </Link>
+              </div>
+            </nav>
+          )}
 
           <main className="px-6 py-8">
             <div className="mx-auto max-w-6xl">{children}</div>

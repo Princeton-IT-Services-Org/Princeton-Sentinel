@@ -17,6 +17,14 @@ body {
   min-height: 100vh;
 }
 
+summary {
+  list-style: none;
+}
+
+summary::-webkit-details-marker {
+  display: none;
+}
+
 .card {
   @apply bg-white/80 backdrop-blur border border-white/50 rounded-2xl shadow-glow;
 }

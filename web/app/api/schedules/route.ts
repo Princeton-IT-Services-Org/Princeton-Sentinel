@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { query } from "@/app/lib/db";
-import { requireUser } from "@/app/lib/auth";
+import { requireAdmin } from "@/app/lib/auth";
 import { writeAuditEvent } from "@/app/lib/audit";
 export const dynamic = "force-dynamic";
 
@@ -18,7 +18,7 @@ async function parseBody(req: Request) {
 }
 
 export async function GET() {
-  await requireUser();
+  await requireAdmin();
   const rows = await query(
     `
     SELECT schedule_id, job_id, cron_expr, next_run_at, enabled
@@ -30,7 +30,7 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  const { session } = await requireUser();
+  const { session } = await requireAdmin();
   const body: any = await parseBody(req);
   const action = body.action || "create";
 
@@ -63,7 +63,7 @@ export async function POST(req: Request) {
       details: { job_id: jobId, cron_expr: cronExpr },
     });
 
-    return NextResponse.redirect(new URL("/jobs", req.url));
+    return NextResponse.redirect(new URL("/admin/jobs", req.url));
   }
 
   if (action === "toggle") {
@@ -83,7 +83,7 @@ export async function POST(req: Request) {
       details: {},
     });
 
-    return NextResponse.redirect(new URL("/jobs", req.url));
+    return NextResponse.redirect(new URL("/admin/jobs", req.url));
   }
 
   return NextResponse.json({ error: "unsupported_action" }, { status: 400 });
