@@ -50,3 +50,18 @@ export async function graphGet(path: string) {
   }
   return res.json();
 }
+
+export async function graphDelete(path: string) {
+  const token = await getAppToken();
+  const res = await fetch(`${graphBase}${path}`, {
+    method: "DELETE",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Graph error ${res.status}: ${text}`);
+  }
+}

@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { requireUser } from "@/app/lib/auth";
+import { isAdmin, requireUser } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
 import { graphGet } from "@/app/lib/graph";
 import { formatBytes, formatIsoDateTime, safeDecode } from "@/app/lib/format";
@@ -20,6 +20,8 @@ type Principal = {
   grants: number;
   viaLinks: number;
   classification: "guest" | "external" | "internal" | "unknown";
+  permissionIds: string[];
+  directPermissionIds: string[];
 };
 
 function splitItemKey(raw: string) {
@@ -79,7 +81,8 @@ function extractPrincipals(permission: any): Array<{ id?: string; displayName?: 
 export const dynamic = "force-dynamic";
 
 export default async function ItemDetailPage({ params }: { params: { itemId: string } }) {
-  await requireUser();
+  const { groups } = await requireUser();
+  const admin = isAdmin(groups);
 
   const key = splitItemKey(params.itemId);
   if (!key) notFound();
@@ -117,9 +120,19 @@ export default async function ItemDetailPage({ params }: { params: { itemId: str
   const linkBreakdownMap = new Map<string, { link_scope: string | null; link_type: string | null; count: number }>();
   const accessLinks: any[] = [];
   const permissions: any[] = [];
+  type PrincipalAccum = Omit<Principal, "permissionIds" | "directPermissionIds"> & {
+    permissionIds: Set<string>;
+    directPermissionIds: Set<string>;
+  };
+  const principalMap = new Map<string, PrincipalAccum>();
 
   for (const [index, perm] of livePerms.entries()) {
+    const permId = perm.id ?? `perm-${index}`;
     const link = perm.link || null;
+    const roles = Array.isArray(perm.roles) ? perm.roles : [];
+    const inheritedKey = perm.inheritedFrom?.driveId && perm.inheritedFrom?.id ? `${perm.inheritedFrom.driveId}::${perm.inheritedFrom.id}` : null;
+    const source: "direct" | "inherited" = perm.inheritedFrom ? "inherited" : "direct";
+    const isOwnerRole = roles.some((role) => typeof role === "string" && role.toLowerCase().includes("owner"));
     if (link) {
       const scope = link.scope ?? null;
       const type = link.type ?? null;
@@ -128,49 +141,47 @@ export default async function ItemDetailPage({ params }: { params: { itemId: str
       existing.count += 1;
       linkBreakdownMap.set(keyVal, existing);
 
-      const inheritedKey = perm.inheritedFrom?.driveId && perm.inheritedFrom?.id ? `${perm.inheritedFrom.driveId}::${perm.inheritedFrom.id}` : null;
       accessLinks.push({
-        permissionId: perm.id ?? `perm-${index}`,
-        source: perm.inheritedFrom ? "inherited" : "direct",
+        permissionId: permId,
+        source,
         inheritedFromItemId: inheritedKey,
         link_scope: scope ?? "unknown",
         link_type: type ?? null,
         link_webUrl: link.webUrl ?? null,
         link_expiration: link.expirationDateTime ?? null,
         preventsDownload: link.preventsDownload ?? null,
-        roles: Array.isArray(perm.roles) ? perm.roles : [],
+        roles,
       });
     }
 
     const principals = extractPrincipals(perm);
-    const inheritedKey = perm.inheritedFrom?.driveId && perm.inheritedFrom?.id ? `${perm.inheritedFrom.driveId}::${perm.inheritedFrom.id}` : null;
     permissions.push({
-      permissionId: perm.id ?? `perm-${index}`,
-      source: perm.inheritedFrom ? "inherited" : "direct",
+      permissionId: permId,
+      source,
       inheritedFromItemId: inheritedKey,
       link_scope: link?.scope ?? null,
       link_type: link?.type ?? null,
-      roles: Array.isArray(perm.roles) ? perm.roles : [],
+      roles,
       principalCount: principals.length,
+      isOwnerRole,
     });
-  }
-
-  const principalMap = new Map<string, Principal>();
-  for (const perm of livePerms) {
-    const principals = extractPrincipals(perm);
-    const viaLink = !!perm.link;
+    const viaLink = !!link;
     for (const principal of principals) {
       const keyVal = principal.email || principal.id || principal.displayName || "unknown";
-      const existing = principalMap.get(keyVal) || {
-        key: keyVal,
-        id: principal.id ?? null,
-        displayName: principal.displayName ?? null,
-        email: principal.email ?? null,
-        type: (principal.type as Principal["type"]) ?? "unknown",
-        grants: 0,
-        viaLinks: 0,
-        classification: classifyEmail(principal.email || null, patterns),
-      };
+      const existing =
+        principalMap.get(keyVal) ||
+        ({
+          key: keyVal,
+          id: principal.id ?? null,
+          displayName: principal.displayName ?? null,
+          email: principal.email ?? null,
+          type: (principal.type as Principal["type"]) ?? "unknown",
+          grants: 0,
+          viaLinks: 0,
+          classification: classifyEmail(principal.email || null, patterns),
+          permissionIds: new Set<string>(),
+          directPermissionIds: new Set<string>(),
+        } satisfies PrincipalAccum);
       if (!existing.id && principal.id) existing.id = principal.id;
       if (!existing.email && principal.email) existing.email = principal.email;
       if (!existing.displayName && principal.displayName) existing.displayName = principal.displayName;
@@ -180,15 +191,24 @@ export default async function ItemDetailPage({ params }: { params: { itemId: str
       }
       existing.grants += 1;
       if (viaLink) existing.viaLinks += 1;
+      existing.permissionIds.add(permId);
+      if (source === "direct") {
+        existing.directPermissionIds.add(permId);
+      }
       principalMap.set(keyVal, existing);
     }
   }
 
   const principalList = Array.from(principalMap.values())
-    .map((p) => ({
-      ...p,
-      viaDirect: p.grants - p.viaLinks,
-    }))
+    .map((p) => {
+      const { permissionIds, directPermissionIds, ...rest } = p;
+      return {
+        ...rest,
+        permissionIds: Array.from(permissionIds),
+        directPermissionIds: Array.from(directPermissionIds),
+        viaDirect: rest.grants - rest.viaLinks,
+      };
+    })
     .sort((a, b) => b.grants - a.grants);
   const guestCount = principalList.filter((p) => p.classification === "guest").length;
   const externalCount = principalList.filter((p) => p.classification === "external").length;
@@ -332,7 +352,7 @@ export default async function ItemDetailPage({ params }: { params: { itemId: str
         </CardContent>
       </Card>
 
-      <div className="grid gap-3 md:grid-cols-2">
+      <div className="grid gap-3">
         <Card>
           <CardHeader>
             <CardTitle>Sharing links</CardTitle>
@@ -348,7 +368,7 @@ export default async function ItemDetailPage({ params }: { params: { itemId: str
             <CardDescription>People, groups, and apps with direct grants (excludes link principal)</CardDescription>
           </CardHeader>
           <CardContent className="overflow-x-auto">
-            <ItemPrincipalsTable principals={principalList} />
+            <ItemPrincipalsTable principals={principalList} isAdmin={admin} driveId={driveId} itemId={itemId} />
           </CardContent>
         </Card>
       </div>
@@ -359,7 +379,7 @@ export default async function ItemDetailPage({ params }: { params: { itemId: str
           <CardDescription>Direct vs inherited entries, roles, and principal counts</CardDescription>
         </CardHeader>
         <CardContent className="overflow-x-auto">
-          <ItemPermissionsTable permissions={permissions} />
+          <ItemPermissionsTable permissions={permissions} isAdmin={admin} driveId={driveId} itemId={itemId} />
         </CardContent>
       </Card>
     </main>

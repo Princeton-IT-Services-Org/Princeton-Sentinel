@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import * as React from "react";
+import { useRouter } from "next/navigation";
 
 import { SortableTable } from "@/components/sortable-table";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { formatIsoDateTime } from "@/app/lib/format";
 
 type LinkBreakdownRow = {
@@ -34,6 +36,7 @@ type PrincipalRow = {
   grants: number;
   viaLinks: number;
   viaDirect: number;
+  directPermissionIds: string[];
 };
 
 type PermissionRow = {
@@ -44,7 +47,40 @@ type PermissionRow = {
   link_type: string | null;
   roles: string[];
   principalCount: number;
+  isOwnerRole: boolean;
 };
+
+async function errorMessageFromResponse(res: Response): Promise<string> {
+  try {
+    const text = await res.text();
+    if (text) {
+      try {
+        const data = JSON.parse(text);
+        if (data?.error) return String(data.error);
+      } catch {
+        // ignore parse errors
+      }
+      return text;
+    }
+  } catch {
+    // ignore read errors
+  }
+  return `Request failed with status ${res.status}`;
+}
+
+async function deletePermission(driveId: string, itemId: string, permissionId: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch("/api/graph/drive-item-permissions", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ driveId, itemId, permissionId }),
+    });
+    if (res.ok) return { ok: true };
+    return { ok: false, error: await errorMessageFromResponse(res) };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || "Request failed" };
+  }
+}
 
 export function ItemLinkBreakdownTable({ breakdown }: { breakdown: LinkBreakdownRow[] }) {
   const columns = React.useMemo(
@@ -147,9 +183,28 @@ function badgeForClassification(c: PrincipalRow["classification"]) {
   }
 }
 
-export function ItemPrincipalsTable({ principals }: { principals: PrincipalRow[] }) {
-  const columns = React.useMemo(
-    () => [
+export function ItemPrincipalsTable({
+  principals,
+  isAdmin,
+  driveId,
+  itemId,
+}: {
+  principals: PrincipalRow[];
+  isAdmin: boolean;
+  driveId: string;
+  itemId: string;
+}) {
+  const router = useRouter();
+  const [actionErrors, setActionErrors] = React.useState<Record<string, string>>({});
+  const [actionBusy, setActionBusy] = React.useState<Record<string, boolean>>({});
+
+  const rowKey = React.useCallback(
+    (p: PrincipalRow) => `${p.type}:${p.id ?? p.email ?? p.displayName ?? "unknown"}`,
+    []
+  );
+
+  const columns = React.useMemo(() => {
+    const base = [
       {
         id: "principal",
         header: "Principal",
@@ -185,16 +240,88 @@ export function ItemPrincipalsTable({ principals }: { principals: PrincipalRow[]
         sortValue: (p: PrincipalRow) => p.viaLinks,
         cell: (p: PrincipalRow) => <span className="text-muted-foreground">{p.viaLinks.toLocaleString()}</span>,
       },
-    ],
-    []
-  );
+    ];
 
-  return <SortableTable items={principals} columns={columns} getRowKey={(p) => `${p.type}:${p.id ?? p.email ?? p.displayName}`} emptyMessage="No principals found." />;
+    if (!isAdmin) return base;
+
+    base.push({
+      id: "actions",
+      header: "Actions",
+      sortValue: () => 0,
+      cell: (p: PrincipalRow) => {
+        const key = rowKey(p);
+        const error = actionErrors[key];
+        const busy = actionBusy[key];
+        const canRevoke = p.directPermissionIds.length > 0;
+        return (
+          <div className="flex flex-col gap-1">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!canRevoke || busy}
+              onClick={async () => {
+                if (!canRevoke || busy) return;
+                const confirmed = window.confirm("Revoke explicit access for this principal?");
+                if (!confirmed) return;
+                setActionBusy((prev) => ({ ...prev, [key]: true }));
+                setActionErrors((prev) => {
+                  const next = { ...prev };
+                  delete next[key];
+                  return next;
+                });
+
+                const results = await Promise.all(
+                  p.directPermissionIds.map((permissionId) => deletePermission(driveId, itemId, permissionId))
+                );
+                const failures = results.filter((r) => !r.ok);
+                if (failures.length) {
+                  const firstError = failures[0].error || "Permission revoke failed";
+                  setActionErrors((prev) => ({
+                    ...prev,
+                    [key]: `${failures.length} permissions failed to revoke: ${firstError}`,
+                  }));
+                } else {
+                  setActionErrors((prev) => {
+                    const next = { ...prev };
+                    delete next[key];
+                    return next;
+                  });
+                  router.refresh();
+                }
+                setActionBusy((prev) => ({ ...prev, [key]: false }));
+              }}
+            >
+              {busy ? "Revoking..." : "Revoke"}
+            </Button>
+            {error ? <div className="text-xs text-red-600">{error}</div> : null}
+          </div>
+        );
+      },
+    });
+
+    return base;
+  }, [actionBusy, actionErrors, driveId, itemId, isAdmin, rowKey, router]);
+
+  return <SortableTable items={principals} columns={columns} getRowKey={rowKey} emptyMessage="No principals found." />;
 }
 
-export function ItemPermissionsTable({ permissions }: { permissions: PermissionRow[] }) {
-  const columns = React.useMemo(
-    () => [
+export function ItemPermissionsTable({
+  permissions,
+  isAdmin,
+  driveId,
+  itemId,
+}: {
+  permissions: PermissionRow[];
+  isAdmin: boolean;
+  driveId: string;
+  itemId: string;
+}) {
+  const router = useRouter();
+  const [actionErrors, setActionErrors] = React.useState<Record<string, string>>({});
+  const [actionBusy, setActionBusy] = React.useState<Record<string, boolean>>({});
+
+  const columns = React.useMemo(() => {
+    const base = [
       {
         id: "perm",
         header: "Permission",
@@ -241,9 +368,62 @@ export function ItemPermissionsTable({ permissions }: { permissions: PermissionR
         sortValue: (p: PermissionRow) => p.principalCount,
         cell: (p: PermissionRow) => <span className="text-muted-foreground">{p.principalCount.toLocaleString()}</span>,
       },
-    ],
-    []
-  );
+    ];
+
+    if (!isAdmin) return base;
+
+    base.push({
+      id: "actions",
+      header: "Actions",
+      sortValue: () => 0,
+      cell: (p: PermissionRow) => {
+        const error = actionErrors[p.permissionId];
+        const busy = actionBusy[p.permissionId];
+        const canRevoke = !p.isOwnerRole;
+        return (
+          <div className="flex flex-col gap-1">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!canRevoke || busy}
+              onClick={async () => {
+                if (!canRevoke || busy) return;
+                const confirmed = window.confirm("Revoke this permission?");
+                if (!confirmed) return;
+                setActionBusy((prev) => ({ ...prev, [p.permissionId]: true }));
+                setActionErrors((prev) => {
+                  const next = { ...prev };
+                  delete next[p.permissionId];
+                  return next;
+                });
+
+                const result = await deletePermission(driveId, itemId, p.permissionId);
+                if (!result.ok) {
+                  setActionErrors((prev) => ({
+                    ...prev,
+                    [p.permissionId]: result.error || "Permission revoke failed",
+                  }));
+                } else {
+                  setActionErrors((prev) => {
+                    const next = { ...prev };
+                    delete next[p.permissionId];
+                    return next;
+                  });
+                  router.refresh();
+                }
+                setActionBusy((prev) => ({ ...prev, [p.permissionId]: false }));
+              }}
+            >
+              {busy ? "Revoking..." : "Revoke"}
+            </Button>
+            {error ? <div className="text-xs text-red-600">{error}</div> : null}
+          </div>
+        );
+      },
+    });
+
+    return base;
+  }, [actionBusy, actionErrors, driveId, itemId, isAdmin, router]);
 
   return <SortableTable items={permissions} columns={columns} getRowKey={(p) => p.permissionId} emptyMessage="No permissions found." />;
 }

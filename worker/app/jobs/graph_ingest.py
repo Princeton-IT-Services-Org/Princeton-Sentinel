@@ -1501,18 +1501,21 @@ def _iter_permission_identities(permission: Dict[str, Any]) -> Iterable[Dict[str
             }
 
     g2 = permission.get("grantedToV2")
-    if isinstance(g2, dict):
-        yield from yield_from_identityset(g2)
+    g2_list = permission.get("grantedToIdentitiesV2")
+    has_v2 = isinstance(g2, dict) or (isinstance(g2_list, list) and len(g2_list) > 0)
+
+    if has_v2:
+        if isinstance(g2, dict):
+            yield from yield_from_identityset(g2)
+        if isinstance(g2_list, list):
+            for identityset in g2_list:
+                if isinstance(identityset, dict):
+                    yield from yield_from_identityset(identityset)
+        return
 
     g = permission.get("grantedTo")
     if isinstance(g, dict):
         yield from yield_from_identityset(g)
-
-    g2_list = permission.get("grantedToIdentitiesV2")
-    if isinstance(g2_list, list):
-        for identityset in g2_list:
-            if isinstance(identityset, dict):
-                yield from yield_from_identityset(identityset)
 
     g_list = permission.get("grantedToIdentities")
     if isinstance(g_list, list):
