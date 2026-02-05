@@ -1,5 +1,6 @@
 import { requireAdmin } from "@/app/lib/auth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import LocalDateTime from "@/components/local-date-time";
 
 async function fetchWorker(path: string) {
   const base = process.env.WORKER_API_URL;
@@ -49,7 +50,9 @@ export default async function AdminPage() {
               </div>
               <div className="rounded-xl bg-white/70 p-4">
                 <div className="text-sm text-slate">Scheduler</div>
-                <div className="text-xs text-slate">{health?.scheduler?.last_tick || "--"}</div>
+                <div className="text-xs text-slate">
+                  <LocalDateTime value={health?.scheduler?.last_tick} />
+                </div>
               </div>
             </div>
           )}
@@ -81,7 +84,9 @@ export default async function AdminPage() {
                     </span>
                   </td>
                   <td className="py-3 text-slate">{row.cron_expr || "--"}</td>
-                  <td className="py-3 text-slate">{row.next_run_at || "--"}</td>
+                  <td className="py-3 text-slate">
+                    <LocalDateTime value={row.next_run_at} />
+                  </td>
                   <td className="py-3">
                     <div className="flex flex-wrap gap-2">
                       <form action="/api/worker/run-now" method="post">

@@ -46,6 +46,28 @@ def _run_due_schedule():
         cur = conn.cursor()
         cur.execute(
             """
+            SELECT schedule_id, cron_expr
+            FROM job_schedules
+            WHERE enabled = true
+              AND next_run_at IS NULL
+            ORDER BY schedule_id
+            FOR UPDATE SKIP LOCKED
+            LIMIT 1
+            """
+        )
+        row = cur.fetchone()
+        if row:
+            schedule_id, cron_expr = row
+            next_run_at = _compute_next_run(cron_expr)
+            cur.execute(
+                "UPDATE job_schedules SET next_run_at = %s WHERE schedule_id = %s",
+                [next_run_at, schedule_id],
+            )
+            conn.commit()
+            return
+
+        cur.execute(
+            """
             SELECT js.schedule_id, js.job_id, js.cron_expr, j.job_type, j.config
             FROM job_schedules js
             JOIN jobs j ON j.job_id = js.job_id

@@ -46,7 +46,7 @@ export async function POST(req: Request) {
     await query(
       `
       INSERT INTO job_schedules (schedule_id, job_id, cron_expr, next_run_at, enabled)
-      VALUES ($1, $2, $3, COALESCE($4::timestamptz, now()), $5)
+      VALUES ($1, $2, $3, $4::timestamptz, $5)
       `,
       [scheduleId, jobId, cronExpr, nextRunAt, true]
     );

@@ -1,7 +1,7 @@
 import { query } from "@/app/lib/db";
 import { requireAdmin } from "@/app/lib/auth";
-import { formatDate } from "@/app/lib/format";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import LocalDateTime from "@/components/local-date-time";
 
 export default async function AnalyticsPage() {
   await requireAdmin();
@@ -23,7 +23,8 @@ export default async function AnalyticsPage() {
         <CardHeader className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <CardTitle>Inventory Summary</CardTitle>
           <span className="text-xs uppercase tracking-[0.3em] text-slate/60">
-            Cached (DB) -- Last refreshed at {formatDate(refreshMap.get("mv_msgraph_inventory_summary"))}
+            Cached (DB) -- Last refreshed at{" "}
+            <LocalDateTime value={refreshMap.get("mv_msgraph_inventory_summary")} />
           </span>
         </CardHeader>
         <CardContent>
@@ -61,7 +62,8 @@ export default async function AnalyticsPage() {
         <CardHeader className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <CardTitle>Sharing Posture</CardTitle>
           <span className="text-xs uppercase tracking-[0.3em] text-slate/60">
-            Cached (DB) -- Last refreshed at {formatDate(refreshMap.get("mv_msgraph_sharing_posture_summary"))}
+            Cached (DB) -- Last refreshed at{" "}
+            <LocalDateTime value={refreshMap.get("mv_msgraph_sharing_posture_summary")} />
           </span>
         </CardHeader>
         <CardContent>

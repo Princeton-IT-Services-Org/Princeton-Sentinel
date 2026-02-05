@@ -1,7 +1,7 @@
 import { requireAdmin } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
-import { formatDate } from "@/app/lib/format";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import LocalDateTime from "@/components/local-date-time";
 
 export default async function JobsPage() {
   await requireAdmin();
@@ -52,7 +52,9 @@ export default async function JobsPage() {
                       </span>
                     )}
                   </td>
-                  <td className="py-3 text-slate">{formatDate(row.next_run_at)}</td>
+                  <td className="py-3 text-slate">
+                    <LocalDateTime value={row.next_run_at} />
+                  </td>
                   <td className="py-3">
                     <div className="flex flex-wrap gap-2">
                       <form action="/api/jobs" method="post">
