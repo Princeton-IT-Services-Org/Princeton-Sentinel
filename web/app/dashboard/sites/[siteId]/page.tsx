@@ -10,6 +10,7 @@ import { getParam, getWindowDays, SearchParams } from "@/app/lib/params";
 import { getInternalDomainPatterns } from "@/app/lib/internalDomains";
 
 import { SiteActivityTrendTable, SiteTopUsersTable } from "./site-detail-tables";
+import { PERSONAL_DRIVES_CTE, resolveSite } from "./site-utils";
 
 export const dynamic = "force-dynamic";
 
@@ -23,108 +24,224 @@ export default async function SiteDetailPage({
   await requireUser();
 
   const rawId = safeDecode(params.siteId);
-  const siteRows = await query<any>(`SELECT * FROM mv_msgraph_site_inventory WHERE site_key = $1`, [rawId]);
-  if (!siteRows.length) notFound();
-
-  const site = siteRows[0];
-  const isPersonal = site.is_personal === true;
+  const resolved = await resolveSite(rawId);
+  if (!resolved) notFound();
+  const site = resolved.site;
+  const isPersonal = resolved.mode === "personal";
+  const personalBaseUrl = resolved.personalBaseUrl || site.site_key;
   const windowDays = getWindowDays(searchParams, 90);
   const daysParam = getParam(searchParams, "days") || "90";
   const windowStart = windowDays ? new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString() : null;
 
-  const activitySummaryRows = await query<any>(
-    `
-    SELECT
-      COALESCE(SUM(modified_items), 0)::int AS modified_items,
-      COALESCE(SUM(shares), 0)::int AS shares
-    FROM mv_msgraph_site_activity_daily
-    WHERE site_key = $1
-      ${windowStart ? "AND day >= $2" : ""}
-    `,
-    windowStart ? [site.site_key, windowStart] : [site.site_key]
-  );
+  const activitySummaryRows = isPersonal
+    ? await query<any>(
+        `
+        ${PERSONAL_DRIVES_CTE}
+        , mods AS (
+          SELECT COUNT(*)::int AS modified_items
+          FROM msgraph_drive_items i
+          JOIN personal_drives d ON d.id = i.drive_id
+          WHERE i.deleted_at IS NULL AND i.modified_dt IS NOT NULL
+          ${windowStart ? "AND i.modified_dt >= $2" : ""}
+        ), shares AS (
+          SELECT COUNT(*)::int AS shares
+          FROM msgraph_drive_item_permissions p
+          JOIN personal_drives d ON d.id = p.drive_id
+          WHERE p.deleted_at IS NULL AND p.link_scope IS NOT NULL AND p.synced_at IS NOT NULL
+          ${windowStart ? "AND p.synced_at >= $2" : ""}
+        )
+        SELECT
+          COALESCE(mods.modified_items, 0)::int AS modified_items,
+          COALESCE(shares.shares, 0)::int AS shares
+        FROM mods CROSS JOIN shares
+        `,
+        windowStart ? [personalBaseUrl, windowStart] : [personalBaseUrl]
+      )
+    : await query<any>(
+        `
+        SELECT
+          COALESCE(SUM(modified_items), 0)::int AS modified_items,
+          COALESCE(SUM(shares), 0)::int AS shares
+        FROM mv_msgraph_site_activity_daily
+        WHERE site_key = $1
+          ${windowStart ? "AND day >= $2" : ""}
+        `,
+        windowStart ? [site.site_key, windowStart] : [site.site_key]
+      );
 
-  const activitySeriesRows = await query<any>(
-    `
-    SELECT day, modified_items, shares
-    FROM mv_msgraph_site_activity_daily
-    WHERE site_key = $1
-      ${windowStart ? "AND day >= $2" : ""}
-    ORDER BY day DESC
-    LIMIT 90
-    `,
-    windowStart ? [site.site_key, windowStart] : [site.site_key]
-  );
+  const activitySeriesRows = isPersonal
+    ? await query<any>(
+        `
+        ${PERSONAL_DRIVES_CTE}
+        , mods AS (
+          SELECT date_trunc('day', i.modified_dt) AS day, COUNT(*)::int AS modified_items
+          FROM msgraph_drive_items i
+          JOIN personal_drives d ON d.id = i.drive_id
+          WHERE i.deleted_at IS NULL AND i.modified_dt IS NOT NULL
+          ${windowStart ? "AND i.modified_dt >= $2" : ""}
+          GROUP BY date_trunc('day', i.modified_dt)
+        ), shares AS (
+          SELECT date_trunc('day', p.synced_at) AS day, COUNT(*)::int AS shares
+          FROM msgraph_drive_item_permissions p
+          JOIN personal_drives d ON d.id = p.drive_id
+          WHERE p.deleted_at IS NULL AND p.link_scope IS NOT NULL AND p.synced_at IS NOT NULL
+          ${windowStart ? "AND p.synced_at >= $2" : ""}
+          GROUP BY date_trunc('day', p.synced_at)
+        )
+        SELECT
+          COALESCE(m.day, s.day) AS day,
+          COALESCE(m.modified_items, 0) AS modified_items,
+          COALESCE(s.shares, 0) AS shares
+        FROM mods m
+        FULL OUTER JOIN shares s ON s.day = m.day
+        ORDER BY day DESC
+        LIMIT 90
+        `,
+        windowStart ? [personalBaseUrl, windowStart] : [personalBaseUrl]
+      )
+    : await query<any>(
+        `
+        SELECT day, modified_items, shares
+        FROM mv_msgraph_site_activity_daily
+        WHERE site_key = $1
+          ${windowStart ? "AND day >= $2" : ""}
+        ORDER BY day DESC
+        LIMIT 90
+        `,
+        windowStart ? [site.site_key, windowStart] : [site.site_key]
+      );
 
   const accessCounts = await query<any>(
-    `
-    WITH perms AS (
-      SELECT p.drive_id, p.item_id, p.permission_id, p.link_scope
-      FROM msgraph_drive_item_permissions p
-      JOIN msgraph_drives d ON d.id = p.drive_id
-      WHERE p.deleted_at IS NULL AND d.deleted_at IS NULL AND ${isPersonal ? "d.id" : "d.site_id"} = $1
-    ), grants AS (
-      SELECT g.principal_type, g.principal_id
-      FROM msgraph_drive_item_permission_grants g
-      JOIN perms p ON p.drive_id = g.drive_id AND p.item_id = g.item_id AND p.permission_id = g.permission_id
-      WHERE g.deleted_at IS NULL
-    )
-    SELECT
-      (SELECT COUNT(DISTINCT principal_id) FROM grants WHERE principal_type = 'user')::int AS direct_users,
-      (SELECT COUNT(DISTINCT principal_id) FROM grants WHERE principal_type IN ('group', 'siteGroup'))::int AS group_grants,
-      (SELECT COUNT(*) FROM perms WHERE link_scope IS NOT NULL)::int AS sharing_links
-    `,
-    [site.site_id]
+    isPersonal
+      ? `
+        ${PERSONAL_DRIVES_CTE}
+        , perms AS (
+          SELECT p.drive_id, p.item_id, p.permission_id, p.link_scope
+          FROM msgraph_drive_item_permissions p
+          JOIN personal_drives d ON d.id = p.drive_id
+          WHERE p.deleted_at IS NULL
+        ), grants AS (
+          SELECT g.principal_type, g.principal_id
+          FROM msgraph_drive_item_permission_grants g
+          JOIN perms p ON p.drive_id = g.drive_id AND p.item_id = g.item_id AND p.permission_id = g.permission_id
+          WHERE g.deleted_at IS NULL
+        )
+        SELECT
+          (SELECT COUNT(DISTINCT principal_id) FROM grants WHERE principal_type = 'user')::int AS direct_users,
+          (SELECT COUNT(DISTINCT principal_id) FROM grants WHERE principal_type IN ('group', 'siteGroup'))::int AS group_grants,
+          (SELECT COUNT(*) FROM perms WHERE link_scope IS NOT NULL)::int AS sharing_links
+        `
+      : `
+        WITH perms AS (
+          SELECT p.drive_id, p.item_id, p.permission_id, p.link_scope
+          FROM msgraph_drive_item_permissions p
+          JOIN msgraph_drives d ON d.id = p.drive_id
+          WHERE p.deleted_at IS NULL AND d.deleted_at IS NULL AND d.site_id = $1
+        ), grants AS (
+          SELECT g.principal_type, g.principal_id
+          FROM msgraph_drive_item_permission_grants g
+          JOIN perms p ON p.drive_id = g.drive_id AND p.item_id = g.item_id AND p.permission_id = g.permission_id
+          WHERE g.deleted_at IS NULL
+        )
+        SELECT
+          (SELECT COUNT(DISTINCT principal_id) FROM grants WHERE principal_type = 'user')::int AS direct_users,
+          (SELECT COUNT(DISTINCT principal_id) FROM grants WHERE principal_type IN ('group', 'siteGroup'))::int AS group_grants,
+          (SELECT COUNT(*) FROM perms WHERE link_scope IS NOT NULL)::int AS sharing_links
+        `,
+    isPersonal ? [personalBaseUrl] : [site.site_id]
   );
 
   const patterns = getInternalDomainPatterns();
   const sharingRisk = await query<any>(
-    `
-    WITH distinct_emails AS (
-      SELECT DISTINCT COALESCE(g.principal_email, g.principal_user_principal_name) AS email
-      FROM msgraph_drive_item_permission_grants g
-      JOIN msgraph_drive_item_permissions p
-        ON p.drive_id = g.drive_id AND p.item_id = g.item_id AND p.permission_id = g.permission_id
-      JOIN msgraph_drives d ON d.id = p.drive_id
-      WHERE g.deleted_at IS NULL AND p.deleted_at IS NULL AND d.deleted_at IS NULL
-        AND ${isPersonal ? "d.id" : "d.site_id"} = $1
-        AND COALESCE(g.principal_email, g.principal_user_principal_name) IS NOT NULL
-    )
-    SELECT
-      (SELECT COUNT(*) FROM msgraph_drive_item_permissions p JOIN msgraph_drives d ON d.id = p.drive_id
-        WHERE p.deleted_at IS NULL AND d.deleted_at IS NULL AND ${isPersonal ? "d.id" : "d.site_id"} = $1 AND p.link_scope = 'anonymous')::int AS anonymous_links,
-      COUNT(*) FILTER (WHERE email ILIKE '%#EXT#%')::int AS guest_users,
-      COUNT(*) FILTER (
-        WHERE email NOT ILIKE '%#EXT#%'
-          AND COALESCE(array_length($2::text[], 1), 0) > 0
-          AND NOT (split_part(lower(email), '@', 2) LIKE ANY($2::text[]))
-      )::int AS external_users
-    FROM distinct_emails
-    `,
-    [site.site_id, patterns]
+    isPersonal
+      ? `
+        ${PERSONAL_DRIVES_CTE}
+        , distinct_emails AS (
+          SELECT DISTINCT COALESCE(g.principal_email, g.principal_user_principal_name) AS email
+          FROM msgraph_drive_item_permission_grants g
+          JOIN msgraph_drive_item_permissions p
+            ON p.drive_id = g.drive_id AND p.item_id = g.item_id AND p.permission_id = g.permission_id
+          JOIN personal_drives d ON d.id = p.drive_id
+          WHERE g.deleted_at IS NULL AND p.deleted_at IS NULL
+            AND COALESCE(g.principal_email, g.principal_user_principal_name) IS NOT NULL
+        )
+        SELECT
+          (SELECT COUNT(*) FROM msgraph_drive_item_permissions p JOIN personal_drives d ON d.id = p.drive_id
+            WHERE p.deleted_at IS NULL AND p.link_scope = 'anonymous')::int AS anonymous_links,
+          COUNT(*) FILTER (WHERE email ILIKE '%#EXT#%')::int AS guest_users,
+          COUNT(*) FILTER (
+            WHERE email NOT ILIKE '%#EXT#%'
+              AND COALESCE(array_length($2::text[], 1), 0) > 0
+              AND NOT (split_part(lower(email), '@', 2) LIKE ANY($2::text[]))
+          )::int AS external_users
+        FROM distinct_emails
+        `
+      : `
+        WITH distinct_emails AS (
+          SELECT DISTINCT COALESCE(g.principal_email, g.principal_user_principal_name) AS email
+          FROM msgraph_drive_item_permission_grants g
+          JOIN msgraph_drive_item_permissions p
+            ON p.drive_id = g.drive_id AND p.item_id = g.item_id AND p.permission_id = g.permission_id
+          JOIN msgraph_drives d ON d.id = p.drive_id
+          WHERE g.deleted_at IS NULL AND p.deleted_at IS NULL AND d.deleted_at IS NULL
+            AND d.site_id = $1
+            AND COALESCE(g.principal_email, g.principal_user_principal_name) IS NOT NULL
+        )
+        SELECT
+          (SELECT COUNT(*) FROM msgraph_drive_item_permissions p JOIN msgraph_drives d ON d.id = p.drive_id
+            WHERE p.deleted_at IS NULL AND d.deleted_at IS NULL AND d.site_id = $1 AND p.link_scope = 'anonymous')::int AS anonymous_links,
+          COUNT(*) FILTER (WHERE email ILIKE '%#EXT#%')::int AS guest_users,
+          COUNT(*) FILTER (
+            WHERE email NOT ILIKE '%#EXT#%'
+              AND COALESCE(array_length($2::text[], 1), 0) > 0
+              AND NOT (split_part(lower(email), '@', 2) LIKE ANY($2::text[]))
+          )::int AS external_users
+        FROM distinct_emails
+        `,
+    isPersonal ? [personalBaseUrl, patterns] : [site.site_id, patterns]
   );
 
   const topUsers = await query<any>(
-    `
-    SELECT
-      i.last_modified_by_user_id AS user_id,
-      COUNT(*)::int AS modified_items,
-      MAX(i.modified_dt) AS last_modified_dt,
-      u.display_name,
-      u.mail,
-      u.user_principal_name
-    FROM msgraph_drive_items i
-    JOIN msgraph_drives d ON d.id = i.drive_id
-    LEFT JOIN msgraph_users u ON u.id = i.last_modified_by_user_id
-    WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
-      AND i.last_modified_by_user_id IS NOT NULL
-      AND ${isPersonal ? "d.id" : "d.site_id"} = $1
-      ${windowStart ? "AND i.modified_dt >= $2" : ""}
-    GROUP BY i.last_modified_by_user_id, u.display_name, u.mail, u.user_principal_name
-    ORDER BY modified_items DESC
-    LIMIT 10
-    `,
-    windowStart ? [site.site_id, windowStart] : [site.site_id]
+    isPersonal
+      ? `
+        ${PERSONAL_DRIVES_CTE}
+        SELECT
+          i.last_modified_by_user_id AS user_id,
+          COUNT(*)::int AS modified_items,
+          MAX(i.modified_dt) AS last_modified_dt,
+          u.display_name,
+          u.mail,
+          u.user_principal_name
+        FROM msgraph_drive_items i
+        JOIN personal_drives d ON d.id = i.drive_id
+        LEFT JOIN msgraph_users u ON u.id = i.last_modified_by_user_id
+        WHERE i.deleted_at IS NULL
+          AND i.last_modified_by_user_id IS NOT NULL
+          ${windowStart ? "AND i.modified_dt >= $2" : ""}
+        GROUP BY i.last_modified_by_user_id, u.display_name, u.mail, u.user_principal_name
+        ORDER BY modified_items DESC
+        LIMIT 10
+        `
+      : `
+        SELECT
+          i.last_modified_by_user_id AS user_id,
+          COUNT(*)::int AS modified_items,
+          MAX(i.modified_dt) AS last_modified_dt,
+          u.display_name,
+          u.mail,
+          u.user_principal_name
+        FROM msgraph_drive_items i
+        JOIN msgraph_drives d ON d.id = i.drive_id
+        LEFT JOIN msgraph_users u ON u.id = i.last_modified_by_user_id
+        WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
+          AND i.last_modified_by_user_id IS NOT NULL
+          AND d.site_id = $1
+          ${windowStart ? "AND i.modified_dt >= $2" : ""}
+        GROUP BY i.last_modified_by_user_id, u.display_name, u.mail, u.user_principal_name
+        ORDER BY modified_items DESC
+        LIMIT 10
+        `,
+    isPersonal ? (windowStart ? [personalBaseUrl, windowStart] : [personalBaseUrl]) : windowStart ? [site.site_id, windowStart] : [site.site_id]
   );
 
   const activitySummary = activitySummaryRows[0] || { modified_items: 0, shares: 0 };

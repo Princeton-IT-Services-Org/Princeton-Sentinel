@@ -12,6 +12,7 @@ import {
   SiteMostSharedItemsTable,
   SiteSharingLinkBreakdownTable,
 } from "./site-sharing-tables";
+import { PERSONAL_DRIVES_CTE, resolveSite } from "../site-utils";
 
 export const dynamic = "force-dynamic";
 
@@ -19,84 +20,148 @@ export default async function SiteSharingPage({ params }: { params: { siteId: st
   await requireUser();
 
   const rawId = safeDecode(params.siteId);
-  const siteRows = await query<any>("SELECT * FROM mv_msgraph_site_inventory WHERE site_key = $1", [rawId]);
-  if (!siteRows.length) notFound();
-
-  const site = siteRows[0];
-  const isPersonal = site.is_personal === true;
+  const resolved = await resolveSite(rawId);
+  if (!resolved) notFound();
+  const site = resolved.site;
+  const isPersonal = resolved.mode === "personal";
+  const personalBaseUrl = resolved.personalBaseUrl || site.site_key;
 
   const linkBreakdown = await query<any>(
-    `
-    SELECT p.link_scope, p.link_type, COUNT(*)::int AS count
-    FROM msgraph_drive_item_permissions p
-    JOIN msgraph_drives d ON d.id = p.drive_id
-    WHERE p.deleted_at IS NULL AND d.deleted_at IS NULL
-      AND ${isPersonal ? "d.id" : "d.site_id"} = $1
-    GROUP BY p.link_scope, p.link_type
-    ORDER BY count DESC
-    `,
-    [site.site_id]
+    isPersonal
+      ? `
+        ${PERSONAL_DRIVES_CTE}
+        SELECT p.link_scope, p.link_type, COUNT(*)::int AS count
+        FROM msgraph_drive_item_permissions p
+        JOIN personal_drives d ON d.id = p.drive_id
+        WHERE p.deleted_at IS NULL
+        GROUP BY p.link_scope, p.link_type
+        ORDER BY count DESC
+        `
+      : `
+        SELECT p.link_scope, p.link_type, COUNT(*)::int AS count
+        FROM msgraph_drive_item_permissions p
+        JOIN msgraph_drives d ON d.id = p.drive_id
+        WHERE p.deleted_at IS NULL AND d.deleted_at IS NULL
+          AND d.site_id = $1
+        GROUP BY p.link_scope, p.link_type
+        ORDER BY count DESC
+        `,
+    isPersonal ? [personalBaseUrl] : [site.site_id]
   );
 
   const patterns = getInternalDomainPatterns();
   const externalPrincipals = await query<any>(
-    `
-    WITH grants AS (
-      SELECT
-        COALESCE(g.principal_email, g.principal_user_principal_name) AS email,
-        MAX(p.synced_at) AS last_grant,
-        COUNT(*)::int AS grants
-      FROM msgraph_drive_item_permission_grants g
-      JOIN msgraph_drive_item_permissions p
-        ON p.drive_id = g.drive_id AND p.item_id = g.item_id AND p.permission_id = g.permission_id
-      JOIN msgraph_drives d ON d.id = p.drive_id
-      WHERE g.deleted_at IS NULL AND p.deleted_at IS NULL AND d.deleted_at IS NULL
-        AND ${isPersonal ? "d.id" : "d.site_id"} = $1
-        AND COALESCE(g.principal_email, g.principal_user_principal_name) IS NOT NULL
-      GROUP BY COALESCE(g.principal_email, g.principal_user_principal_name)
-    ), classified AS (
-      SELECT
-        email,
-        grants,
-        last_grant,
-        CASE
-          WHEN email ILIKE '%#EXT#%' THEN 'guest'
-          WHEN COALESCE(array_length($2::text[], 1), 0) > 0
-            AND NOT (split_part(lower(email), '@', 2) LIKE ANY($2::text[])) THEN 'external'
-          ELSE 'internal'
-        END AS kind
-      FROM grants
-    )
-    SELECT email, kind, grants, last_grant
-    FROM classified
-    WHERE kind IN ('guest', 'external')
-    ORDER BY grants DESC
-    LIMIT 25
-    `,
-    [site.site_id, patterns]
+    isPersonal
+      ? `
+        ${PERSONAL_DRIVES_CTE}
+        , grants AS (
+          SELECT
+            COALESCE(g.principal_email, g.principal_user_principal_name) AS email,
+            MAX(p.synced_at) AS last_grant,
+            COUNT(*)::int AS grants
+          FROM msgraph_drive_item_permission_grants g
+          JOIN msgraph_drive_item_permissions p
+            ON p.drive_id = g.drive_id AND p.item_id = g.item_id AND p.permission_id = g.permission_id
+          JOIN personal_drives d ON d.id = p.drive_id
+          WHERE g.deleted_at IS NULL AND p.deleted_at IS NULL
+            AND COALESCE(g.principal_email, g.principal_user_principal_name) IS NOT NULL
+          GROUP BY COALESCE(g.principal_email, g.principal_user_principal_name)
+        ), classified AS (
+          SELECT
+            email,
+            grants,
+            last_grant,
+            CASE
+              WHEN email ILIKE '%#EXT#%' THEN 'guest'
+              WHEN COALESCE(array_length($2::text[], 1), 0) > 0
+                AND NOT (split_part(lower(email), '@', 2) LIKE ANY($2::text[])) THEN 'external'
+              ELSE 'internal'
+            END AS kind
+          FROM grants
+        )
+        SELECT email, kind, grants, last_grant
+        FROM classified
+        WHERE kind IN ('guest', 'external')
+        ORDER BY grants DESC
+        LIMIT 25
+        `
+      : `
+        WITH grants AS (
+          SELECT
+            COALESCE(g.principal_email, g.principal_user_principal_name) AS email,
+            MAX(p.synced_at) AS last_grant,
+            COUNT(*)::int AS grants
+          FROM msgraph_drive_item_permission_grants g
+          JOIN msgraph_drive_item_permissions p
+            ON p.drive_id = g.drive_id AND p.item_id = g.item_id AND p.permission_id = g.permission_id
+          JOIN msgraph_drives d ON d.id = p.drive_id
+          WHERE g.deleted_at IS NULL AND p.deleted_at IS NULL AND d.deleted_at IS NULL
+            AND d.site_id = $1
+            AND COALESCE(g.principal_email, g.principal_user_principal_name) IS NOT NULL
+          GROUP BY COALESCE(g.principal_email, g.principal_user_principal_name)
+        ), classified AS (
+          SELECT
+            email,
+            grants,
+            last_grant,
+            CASE
+              WHEN email ILIKE '%#EXT#%' THEN 'guest'
+              WHEN COALESCE(array_length($2::text[], 1), 0) > 0
+                AND NOT (split_part(lower(email), '@', 2) LIKE ANY($2::text[])) THEN 'external'
+              ELSE 'internal'
+            END AS kind
+          FROM grants
+        )
+        SELECT email, kind, grants, last_grant
+        FROM classified
+        WHERE kind IN ('guest', 'external')
+        ORDER BY grants DESC
+        LIMIT 25
+        `,
+    isPersonal ? [personalBaseUrl, patterns] : [site.site_id, patterns]
   );
 
   const mostShared = await query<any>(
-    `
-    SELECT
-      i.drive_id,
-      i.id,
-      i.name,
-      i.web_url,
-      COUNT(p.permission_id)::int AS permissions,
-      COUNT(*) FILTER (WHERE p.link_scope IS NOT NULL)::int AS sharing_links,
-      MAX(p.synced_at) AS last_shared
-    FROM msgraph_drive_items i
-    JOIN msgraph_drives d ON d.id = i.drive_id
-    LEFT JOIN msgraph_drive_item_permissions p
-      ON p.drive_id = i.drive_id AND p.item_id = i.id AND p.deleted_at IS NULL
-    WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
-      AND ${isPersonal ? "d.id" : "d.site_id"} = $1
-    GROUP BY i.drive_id, i.id, i.name, i.web_url
-    ORDER BY sharing_links DESC NULLS LAST, permissions DESC NULLS LAST
-    LIMIT 25
-    `,
-    [site.site_id]
+    isPersonal
+      ? `
+        ${PERSONAL_DRIVES_CTE}
+        SELECT
+          i.drive_id,
+          i.id,
+          i.name,
+          i.web_url,
+          COUNT(p.permission_id)::int AS permissions,
+          COUNT(*) FILTER (WHERE p.link_scope IS NOT NULL)::int AS sharing_links,
+          MAX(p.synced_at) AS last_shared
+        FROM msgraph_drive_items i
+        JOIN personal_drives d ON d.id = i.drive_id
+        LEFT JOIN msgraph_drive_item_permissions p
+          ON p.drive_id = i.drive_id AND p.item_id = i.id AND p.deleted_at IS NULL
+        WHERE i.deleted_at IS NULL
+        GROUP BY i.drive_id, i.id, i.name, i.web_url
+        ORDER BY sharing_links DESC NULLS LAST, permissions DESC NULLS LAST
+        LIMIT 25
+        `
+      : `
+        SELECT
+          i.drive_id,
+          i.id,
+          i.name,
+          i.web_url,
+          COUNT(p.permission_id)::int AS permissions,
+          COUNT(*) FILTER (WHERE p.link_scope IS NOT NULL)::int AS sharing_links,
+          MAX(p.synced_at) AS last_shared
+        FROM msgraph_drive_items i
+        JOIN msgraph_drives d ON d.id = i.drive_id
+        LEFT JOIN msgraph_drive_item_permissions p
+          ON p.drive_id = i.drive_id AND p.item_id = i.id AND p.deleted_at IS NULL
+        WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
+          AND d.site_id = $1
+        GROUP BY i.drive_id, i.id, i.name, i.web_url
+        ORDER BY sharing_links DESC NULLS LAST, permissions DESC NULLS LAST
+        LIMIT 25
+        `,
+    isPersonal ? [personalBaseUrl] : [site.site_id]
   );
 
   return (

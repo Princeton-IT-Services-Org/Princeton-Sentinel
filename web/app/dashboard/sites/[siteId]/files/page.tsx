@@ -7,6 +7,7 @@ import { query } from "@/app/lib/db";
 import { safeDecode } from "@/app/lib/format";
 
 import { SiteLargestFilesTable, SiteMostPermissionedItemsTable, SiteRecentlyModifiedTable } from "./site-files-tables";
+import { PERSONAL_DRIVES_CTE, resolveSite } from "../site-utils";
 
 export const dynamic = "force-dynamic";
 
@@ -54,75 +55,128 @@ export default async function SiteFilesPage({ params }: { params: { siteId: stri
   await requireUser();
 
   const rawId = safeDecode(params.siteId);
-  const siteRows = await query<any>("SELECT * FROM mv_msgraph_site_inventory WHERE site_key = $1", [rawId]);
-  if (!siteRows.length) notFound();
-
-  const site = siteRows[0];
-  const isPersonal = site.is_personal === true;
+  const resolved = await resolveSite(rawId);
+  if (!resolved) notFound();
+  const site = resolved.site;
+  const isPersonal = resolved.mode === "personal";
+  const personalBaseUrl = resolved.personalBaseUrl || site.site_key;
 
   const heatmapRows = await query<any>(
-    `
-    SELECT EXTRACT(DOW FROM i.modified_dt)::int AS dow,
-           EXTRACT(HOUR FROM i.modified_dt)::int AS hour,
-           COUNT(*)::int AS count
-    FROM msgraph_drive_items i
-    JOIN msgraph_drives d ON d.id = i.drive_id
-    WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
-      AND ${isPersonal ? "d.id" : "d.site_id"} = $1
-      AND i.modified_dt IS NOT NULL
-    GROUP BY EXTRACT(DOW FROM i.modified_dt), EXTRACT(HOUR FROM i.modified_dt)
-    ORDER BY dow, hour
-    `,
-    [site.site_id]
+    isPersonal
+      ? `
+        ${PERSONAL_DRIVES_CTE}
+        SELECT EXTRACT(DOW FROM i.modified_dt)::int AS dow,
+               EXTRACT(HOUR FROM i.modified_dt)::int AS hour,
+               COUNT(*)::int AS count
+        FROM msgraph_drive_items i
+        JOIN personal_drives d ON d.id = i.drive_id
+        WHERE i.deleted_at IS NULL
+          AND i.modified_dt IS NOT NULL
+        GROUP BY EXTRACT(DOW FROM i.modified_dt), EXTRACT(HOUR FROM i.modified_dt)
+        ORDER BY dow, hour
+        `
+      : `
+        SELECT EXTRACT(DOW FROM i.modified_dt)::int AS dow,
+               EXTRACT(HOUR FROM i.modified_dt)::int AS hour,
+               COUNT(*)::int AS count
+        FROM msgraph_drive_items i
+        JOIN msgraph_drives d ON d.id = i.drive_id
+        WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
+          AND d.site_id = $1
+          AND i.modified_dt IS NOT NULL
+        GROUP BY EXTRACT(DOW FROM i.modified_dt), EXTRACT(HOUR FROM i.modified_dt)
+        ORDER BY dow, hour
+        `,
+    isPersonal ? [personalBaseUrl] : [site.site_id]
   );
 
   const recentlyModified = await query<any>(
-    `
-    SELECT i.drive_id, i.id, i.name, i.web_url, i.normalized_path, i.path, i.modified_dt
-    FROM msgraph_drive_items i
-    JOIN msgraph_drives d ON d.id = i.drive_id
-    WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
-      AND ${isPersonal ? "d.id" : "d.site_id"} = $1
-    ORDER BY i.modified_dt DESC NULLS LAST
-    LIMIT 25
-    `,
-    [site.site_id]
+    isPersonal
+      ? `
+        ${PERSONAL_DRIVES_CTE}
+        SELECT i.drive_id, i.id, i.name, i.web_url, i.normalized_path, i.path, i.modified_dt
+        FROM msgraph_drive_items i
+        JOIN personal_drives d ON d.id = i.drive_id
+        WHERE i.deleted_at IS NULL
+        ORDER BY i.modified_dt DESC NULLS LAST
+        LIMIT 25
+        `
+      : `
+        SELECT i.drive_id, i.id, i.name, i.web_url, i.normalized_path, i.path, i.modified_dt
+        FROM msgraph_drive_items i
+        JOIN msgraph_drives d ON d.id = i.drive_id
+        WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
+          AND d.site_id = $1
+        ORDER BY i.modified_dt DESC NULLS LAST
+        LIMIT 25
+        `,
+    isPersonal ? [personalBaseUrl] : [site.site_id]
   );
 
   const largestFiles = await query<any>(
-    `
-    SELECT i.drive_id, i.id, i.name, i.web_url, i.normalized_path, i.path, i.size
-    FROM msgraph_drive_items i
-    JOIN msgraph_drives d ON d.id = i.drive_id
-    WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
-      AND ${isPersonal ? "d.id" : "d.site_id"} = $1
-      AND i.is_folder = false
-    ORDER BY i.size DESC NULLS LAST
-    LIMIT 25
-    `,
-    [site.site_id]
+    isPersonal
+      ? `
+        ${PERSONAL_DRIVES_CTE}
+        SELECT i.drive_id, i.id, i.name, i.web_url, i.normalized_path, i.path, i.size
+        FROM msgraph_drive_items i
+        JOIN personal_drives d ON d.id = i.drive_id
+        WHERE i.deleted_at IS NULL
+          AND i.is_folder = false
+        ORDER BY i.size DESC NULLS LAST
+        LIMIT 25
+        `
+      : `
+        SELECT i.drive_id, i.id, i.name, i.web_url, i.normalized_path, i.path, i.size
+        FROM msgraph_drive_items i
+        JOIN msgraph_drives d ON d.id = i.drive_id
+        WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
+          AND d.site_id = $1
+          AND i.is_folder = false
+        ORDER BY i.size DESC NULLS LAST
+        LIMIT 25
+        `,
+    isPersonal ? [personalBaseUrl] : [site.site_id]
   );
 
   const mostShared = await query<any>(
-    `
-    SELECT
-      i.drive_id,
-      i.id,
-      i.name,
-      i.web_url,
-      COUNT(p.permission_id)::int AS permissions,
-      COUNT(*) FILTER (WHERE p.link_scope IS NOT NULL)::int AS sharing_links
-    FROM msgraph_drive_items i
-    JOIN msgraph_drives d ON d.id = i.drive_id
-    LEFT JOIN msgraph_drive_item_permissions p
-      ON p.drive_id = i.drive_id AND p.item_id = i.id AND p.deleted_at IS NULL
-    WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
-      AND ${isPersonal ? "d.id" : "d.site_id"} = $1
-    GROUP BY i.drive_id, i.id, i.name, i.web_url
-    ORDER BY sharing_links DESC NULLS LAST, permissions DESC NULLS LAST
-    LIMIT 25
-    `,
-    [site.site_id]
+    isPersonal
+      ? `
+        ${PERSONAL_DRIVES_CTE}
+        SELECT
+          i.drive_id,
+          i.id,
+          i.name,
+          i.web_url,
+          COUNT(p.permission_id)::int AS permissions,
+          COUNT(*) FILTER (WHERE p.link_scope IS NOT NULL)::int AS sharing_links
+        FROM msgraph_drive_items i
+        JOIN personal_drives d ON d.id = i.drive_id
+        LEFT JOIN msgraph_drive_item_permissions p
+          ON p.drive_id = i.drive_id AND p.item_id = i.id AND p.deleted_at IS NULL
+        WHERE i.deleted_at IS NULL
+        GROUP BY i.drive_id, i.id, i.name, i.web_url
+        ORDER BY sharing_links DESC NULLS LAST, permissions DESC NULLS LAST
+        LIMIT 25
+        `
+      : `
+        SELECT
+          i.drive_id,
+          i.id,
+          i.name,
+          i.web_url,
+          COUNT(p.permission_id)::int AS permissions,
+          COUNT(*) FILTER (WHERE p.link_scope IS NOT NULL)::int AS sharing_links
+        FROM msgraph_drive_items i
+        JOIN msgraph_drives d ON d.id = i.drive_id
+        LEFT JOIN msgraph_drive_item_permissions p
+          ON p.drive_id = i.drive_id AND p.item_id = i.id AND p.deleted_at IS NULL
+        WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
+          AND d.site_id = $1
+        GROUP BY i.drive_id, i.id, i.name, i.web_url
+        ORDER BY sharing_links DESC NULLS LAST, permissions DESC NULLS LAST
+        LIMIT 25
+        `,
+    isPersonal ? [personalBaseUrl] : [site.site_id]
   );
 
   const heatmap = heatmapRows.map((row: any) => ({
