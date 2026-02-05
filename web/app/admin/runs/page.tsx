@@ -1,6 +1,7 @@
 import { requireAdmin } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
 import RunsTable from "@/app/runs/RunsTable";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default async function RunsPage() {
   await requireAdmin();
@@ -33,9 +34,13 @@ export default async function RunsPage() {
   );
 
   return (
-    <div className="card p-6">
-      <h2 className="font-display text-2xl">Job Runs</h2>
-      <RunsTable initialRuns={runs} />
-    </div>
+    <Card>
+      <CardHeader>
+        <CardTitle>Job Runs</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <RunsTable initialRuns={runs} />
+      </CardContent>
+    </Card>
   );
 }

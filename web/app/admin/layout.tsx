@@ -1,25 +1,26 @@
 import AdminTabs from "@/app/admin/AdminTabs";
-import { requireAdmin } from "@/app/lib/auth";
+import { isAdmin, requireAdmin } from "@/app/lib/auth";
+import AppShell from "@/components/app-shell";
 
 export const dynamic = "force-dynamic";
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
-  await requireAdmin();
+  const { session, groups } = await requireAdmin();
+  const userLabel = session.user?.name ?? session.user?.email ?? "Signed in";
+  const canAdmin = isAdmin(groups);
 
   return (
-    <div className="grid gap-6">
-      <section className="card p-4">
-        <div className="flex items-center justify-between">
+    <AppShell userLabel={userLabel} canAdmin={canAdmin}>
+      <main className="flex flex-col gap-4">
+        <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <div className="text-xs uppercase tracking-[0.3em] text-slate/60">Admin Console</div>
-            <h1 className="font-display text-2xl text-ink">Operations & Controls</h1>
+            <h1 className="text-2xl font-semibold">Admin</h1>
+            <p className="text-sm text-muted-foreground">Operations & controls for ingestion, schedules, and worker health.</p>
           </div>
         </div>
-        <div className="mt-4">
-          <AdminTabs />
-        </div>
-      </section>
-      {children}
-    </div>
+        <AdminTabs />
+        {children}
+      </main>
+    </AppShell>
   );
 }

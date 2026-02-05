@@ -1,4 +1,5 @@
 import { requireAdmin } from "@/app/lib/auth";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 async function fetchWorker(path: string) {
   const base = process.env.WORKER_API_URL;
@@ -28,32 +29,38 @@ export default async function AdminPage() {
   }
 
   return (
-    <div className="grid gap-6">
-      <section className="card p-6">
-        <h2 className="font-display text-2xl">Worker Status</h2>
-        {error ? (
-          <div className="mt-3 badge badge-error">{error}</div>
-        ) : (
-          <div className="mt-4 grid gap-3 md:grid-cols-3">
-            <div className="rounded-xl bg-white/70 p-4">
-              <div className="text-sm text-slate">Health</div>
-              <div className="text-lg font-semibold text-ink">{health?.ok ? "OK" : "Degraded"}</div>
+    <div className="grid gap-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>Worker Status</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {error ? (
+            <div className="badge badge-error">{error}</div>
+          ) : (
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="rounded-xl bg-white/70 p-4">
+                <div className="text-sm text-slate">Health</div>
+                <div className="text-lg font-semibold text-ink">{health?.ok ? "OK" : "Degraded"}</div>
+              </div>
+              <div className="rounded-xl bg-white/70 p-4">
+                <div className="text-sm text-slate">DB</div>
+                <div className="text-lg font-semibold text-ink">{health?.db ? "Connected" : "Down"}</div>
+              </div>
+              <div className="rounded-xl bg-white/70 p-4">
+                <div className="text-sm text-slate">Scheduler</div>
+                <div className="text-xs text-slate">{health?.scheduler?.last_tick || "--"}</div>
+              </div>
             </div>
-            <div className="rounded-xl bg-white/70 p-4">
-              <div className="text-sm text-slate">DB</div>
-              <div className="text-lg font-semibold text-ink">{health?.db ? "Connected" : "Down"}</div>
-            </div>
-            <div className="rounded-xl bg-white/70 p-4">
-              <div className="text-sm text-slate">Scheduler</div>
-              <div className="text-xs text-slate">{health?.scheduler?.last_tick || "--"}</div>
-            </div>
-          </div>
-        )}
-      </section>
+          )}
+        </CardContent>
+      </Card>
 
-      <section className="card p-6">
-        <h2 className="font-display text-2xl">Run Controls</h2>
-        <div className="mt-4 overflow-x-auto">
+      <Card>
+        <CardHeader>
+          <CardTitle>Run Controls</CardTitle>
+        </CardHeader>
+        <CardContent className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="text-left text-slate/70">
               <tr>
@@ -86,13 +93,13 @@ export default async function AdminPage() {
                       <form action="/api/worker/pause" method="post">
                         <input type="hidden" name="job_id" value={row.job_id} />
                         <button className="badge bg-white/70 text-slate" type="submit">
-                          Pause
+                          Disable
                         </button>
                       </form>
                       <form action="/api/worker/resume" method="post">
                         <input type="hidden" name="job_id" value={row.job_id} />
                         <button className="badge bg-emerald-100 text-emerald-900" type="submit">
-                          Resume
+                          Enable
                         </button>
                       </form>
                     </div>
@@ -101,8 +108,8 @@ export default async function AdminPage() {
               ))}
             </tbody>
           </table>
-        </div>
-      </section>
+        </CardContent>
+      </Card>
     </div>
   );
 }

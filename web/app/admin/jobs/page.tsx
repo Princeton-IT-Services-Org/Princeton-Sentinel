@@ -1,6 +1,7 @@
 import { requireAdmin } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
 import { formatDate } from "@/app/lib/format";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default async function JobsPage() {
   await requireAdmin();
@@ -18,10 +19,12 @@ export default async function JobsPage() {
   const uniqueJobs = Array.from(new Map(rows.map((row) => [row.job_id, row])).values());
 
   return (
-    <div className="grid gap-6">
-      <section className="card p-6">
-        <h2 className="font-display text-2xl">Jobs</h2>
-        <div className="mt-4 overflow-x-auto">
+    <div className="grid gap-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>Jobs</CardTitle>
+        </CardHeader>
+        <CardContent className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="text-left text-slate/70">
               <tr>
@@ -76,60 +79,68 @@ export default async function JobsPage() {
               ))}
             </tbody>
           </table>
-        </div>
-      </section>
+        </CardContent>
+      </Card>
 
-      <section className="grid gap-6 md:grid-cols-2">
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Create Job</h3>
-          <form action="/api/jobs" method="post" className="mt-4 grid gap-3">
-            <input type="hidden" name="action" value="create" />
-            <label className="text-sm text-slate">Job Type</label>
-            <select name="job_type" className="rounded-lg border border-slate/20 bg-white/80 p-2">
-              <option value="graph_ingest">graph_ingest</option>
-            </select>
-            <label className="text-sm text-slate">Config (JSON)</label>
-            <textarea
-              name="config"
-              rows={4}
-              className="rounded-lg border border-slate/20 bg-white/80 p-2 font-mono text-xs"
-              placeholder='{"permissions_batch_size": 50, "permissions_stale_after_hours": 24}'
-            />
-            <button className="badge badge-ok" type="submit">
-              Create Job
-            </button>
-          </form>
-        </div>
+      <section className="grid gap-4 md:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Create Job</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <form action="/api/jobs" method="post" className="grid gap-3">
+              <input type="hidden" name="action" value="create" />
+              <label className="text-sm text-slate">Job Type</label>
+              <select name="job_type" className="rounded-lg border border-slate/20 bg-white/80 p-2">
+                <option value="graph_ingest">graph_ingest</option>
+              </select>
+              <label className="text-sm text-slate">Config (JSON)</label>
+              <textarea
+                name="config"
+                rows={4}
+                className="rounded-lg border border-slate/20 bg-white/80 p-2 font-mono text-xs"
+                placeholder='{"permissions_batch_size": 50, "permissions_stale_after_hours": 24}'
+              />
+              <button className="badge badge-ok" type="submit">
+                Create Job
+              </button>
+            </form>
+          </CardContent>
+        </Card>
 
-        <div className="card p-6">
-          <h3 className="font-display text-xl">Create Schedule</h3>
-          <form action="/api/schedules" method="post" className="mt-4 grid gap-3">
-            <input type="hidden" name="action" value="create" />
-            <label className="text-sm text-slate">Job</label>
-            <select name="job_id" className="rounded-lg border border-slate/20 bg-white/80 p-2">
-              {uniqueJobs.map((row) => (
-                <option key={row.job_id} value={row.job_id}>
-                  {row.job_type}
-                </option>
-              ))}
-            </select>
-            <label className="text-sm text-slate">Cron (5-field)</label>
-            <input
-              name="cron_expr"
-              className="rounded-lg border border-slate/20 bg-white/80 p-2 font-mono text-sm"
-              placeholder="*/15 * * * *"
-            />
-            <label className="text-sm text-slate">Next run (optional ISO timestamp)</label>
-            <input
-              name="next_run_at"
-              className="rounded-lg border border-slate/20 bg-white/80 p-2 text-sm"
-              placeholder="2026-02-02T10:00:00Z"
-            />
-            <button className="badge bg-emerald-100 text-emerald-900" type="submit">
-              Create Schedule
-            </button>
-          </form>
-        </div>
+        <Card>
+          <CardHeader>
+            <CardTitle>Create Schedule</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <form action="/api/schedules" method="post" className="grid gap-3">
+              <input type="hidden" name="action" value="create" />
+              <label className="text-sm text-slate">Job</label>
+              <select name="job_id" className="rounded-lg border border-slate/20 bg-white/80 p-2">
+                {uniqueJobs.map((row) => (
+                  <option key={row.job_id} value={row.job_id}>
+                    {row.job_type}
+                  </option>
+                ))}
+              </select>
+              <label className="text-sm text-slate">Cron (5-field)</label>
+              <input
+                name="cron_expr"
+                className="rounded-lg border border-slate/20 bg-white/80 p-2 font-mono text-sm"
+                placeholder="*/15 * * * *"
+              />
+              <label className="text-sm text-slate">Next run (optional ISO timestamp)</label>
+              <input
+                name="next_run_at"
+                className="rounded-lg border border-slate/20 bg-white/80 p-2 text-sm"
+                placeholder="2026-02-02T10:00:00Z"
+              />
+              <button className="badge bg-emerald-100 text-emerald-900" type="submit">
+                Create Schedule
+              </button>
+            </form>
+          </CardContent>
+        </Card>
       </section>
     </div>
   );
