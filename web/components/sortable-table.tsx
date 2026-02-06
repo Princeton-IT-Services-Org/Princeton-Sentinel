@@ -146,14 +146,14 @@ export function SortableTable<T>({
                     setClientSort(next);
                   }}
                   className={cn(
-                    "group inline-flex w-full items-center gap-1 text-left",
+                    "group inline-flex w-full items-center gap-1.5 text-left",
                     "select-none hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
                   )}
                 >
                   <span>{col.header}</span>
                   <span
                     className={cn(
-                      "text-[10px] leading-none text-muted-foreground transition-opacity",
+                      "text-[10px] leading-none text-muted-foreground",
                       active ? "opacity-100" : "opacity-0 group-hover:opacity-60"
                     )}
                     aria-hidden="true"

@@ -8,6 +8,10 @@ import { formatNumber } from "@/app/lib/format";
 import { getPagination, getParam, getSortDirection, getWindowDays, SearchParams } from "@/app/lib/params";
 import { ActivityTable } from "./activity-table";
 import ActivitySummaryGraphsWrapper from "@/components/activity-summary-graphs-wrapper";
+import PageHeader from "@/components/page-header";
+import FilterBar from "@/components/filter-bar";
+import MetricGrid from "@/components/metric-grid";
+import { MetricCard } from "@/components/metric-card";
 
 function buildSearchFilter(search: string | null) {
   if (!search) return { clause: "", params: [] as any[] };
@@ -93,16 +97,15 @@ export default async function ActivityPage({ searchParams }: { searchParams?: Se
     .map((row) => ({ title: row.title || row.site_id, shares: row.shares, mods: row.modified_items }));
 
   return (
-    <main className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">Activity</h1>
-          <p className="text-sm text-muted-foreground">
-            Based on items’ current `lastModifiedDateTime` and link permissions. Window: {windowDays ?? "all"}d.
-          </p>
-        </div>
-        <form className="flex flex-wrap items-center gap-2" action="/dashboard/activity" method="get">
-          <Input name="q" placeholder="Search sites…" defaultValue={search || ""} className="w-64" />
+    <main className="ps-page">
+      <PageHeader
+        title="Activity"
+        subtitle={`Based on items' current lastModifiedDateTime and link permissions. Window: ${windowDays ?? "all"}d.`}
+      />
+
+      <form action="/dashboard/activity" method="get">
+        <FilterBar>
+          <Input name="q" placeholder="Search sites..." defaultValue={search || ""} className="w-64" />
           <select
             name="days"
             defaultValue={windowDays == null ? "all" : String(windowDays)}
@@ -127,17 +130,12 @@ export default async function ActivityPage({ searchParams }: { searchParams?: Se
           <Button type="submit" variant="outline">
             Apply
           </Button>
-        </form>
-      </div>
+        </FilterBar>
+      </form>
 
-      <div className="flex flex-row gap-4 items-center justify-center">
-        <Card className="w-full max-w-xs text-center shadow-lg border border-gray-200 bg-white">
-          <CardHeader>
-            <CardTitle className="text-3xl font-bold">{formatNumber(total)}</CardTitle>
-            <CardDescription>Total Sites</CardDescription>
-          </CardHeader>
-        </Card>
-      </div>
+      <MetricGrid className="md:grid-cols-1 lg:grid-cols-1">
+        <MetricCard label="Total Sites" value={formatNumber(total)} className="max-w-sm" />
+      </MetricGrid>
 
       <ActivitySummaryGraphsWrapper
         topSitesByActiveUsers={topSitesByActiveUsers}

@@ -3,6 +3,8 @@ import { getServerSession } from "next-auth/next";
 
 import { getAuthOptions } from "@/app/lib/auth";
 import { SignInButton } from "@/app/signin/sign-in-button";
+import AuthShell from "@/components/auth-shell";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 type Props = {
   searchParams?: { callbackUrl?: string | string[]; error?: string | string[] };
@@ -19,10 +21,20 @@ export default async function SignInPage({ searchParams }: Props) {
   const error = typeof searchParams?.error === "string" ? searchParams.error : undefined;
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center gap-4 p-8">
-      <h1 className="text-2xl font-semibold">Sign in</h1>
-      <p className="text-sm text-muted-foreground">Sign in with Microsoft Entra ID to access the dashboard.</p>
-      <SignInButton callbackUrl={callbackUrl} initialError={error} />
-    </main>
+    <AuthShell
+      support="Authentication"
+      title="Sign in to Princeton Sentinel"
+      subtitle="Use Microsoft Entra ID to access the Princeton Sentinel dashboard."
+    >
+      <Card>
+        <CardHeader>
+          <CardTitle>Continue with Entra ID</CardTitle>
+          <CardDescription>Use your approved organization account to access dashboard data.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <SignInButton callbackUrl={callbackUrl} initialError={error} />
+        </CardContent>
+      </Card>
+    </AuthShell>
   );
 }

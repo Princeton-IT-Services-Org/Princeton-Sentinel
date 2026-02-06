@@ -8,6 +8,10 @@ import { formatNumber } from "@/app/lib/format";
 import { getPagination, getParam, getSortDirection, getWindowDays, SearchParams } from "@/app/lib/params";
 import { UsersTable } from "./users-table";
 import { UsersSummaryBarChartClient } from "@/components/users-summary-graphs-wrapper";
+import PageHeader from "@/components/page-header";
+import FilterBar from "@/components/filter-bar";
+import MetricGrid from "@/components/metric-grid";
+import { MetricCard } from "@/components/metric-card";
 
 function buildSearchClause(search: string | null, startIndex: number) {
   if (!search) return { clause: "", params: [] as any[] };
@@ -105,17 +109,16 @@ export default async function UsersPage({ searchParams }: { searchParams?: Searc
     .sort((a, b) => b.sites_touched - a.sites_touched)
     .slice(0, 10)
     .map((u) => ({ label: u.display_name ?? u.user_id, value: u.sites_touched ?? 0 }));
+  const activeUsersPct = total > 0 ? (topByModified.reduce((acc, u) => acc + u.value, 0) / total).toFixed(1) : "0.0";
 
   return (
-    <main className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">Users</h1>
-          <p className="text-sm text-muted-foreground">
-            Based on which items each user is currently the last modifier for. Window: {windowDays ?? "all"}d.
-          </p>
-        </div>
-        <form className="flex flex-wrap items-center gap-2" action="/dashboard/users" method="get">
+    <main className="ps-page">
+      <PageHeader
+        title="Users"
+        subtitle={`Based on current last modifier ownership on items. Window: ${windowDays ?? "all"}d.`}
+      />
+      <form action="/dashboard/users" method="get">
+        <FilterBar>
           <Input name="q" placeholder="Search users…" defaultValue={search || ""} className="w-64" />
           <select
             name="days"
@@ -141,20 +144,16 @@ export default async function UsersPage({ searchParams }: { searchParams?: Searc
           <Button type="submit" variant="outline">
             Apply
           </Button>
-        </form>
-      </div>
+        </FilterBar>
+      </form>
 
-      <div className="flex flex-row gap-4 items-center justify-center">
-        <Card className="w-full max-w-xs text-center shadow-lg border border-gray-200 bg-white">
-          <CardHeader>
-            <CardTitle className="text-3xl font-bold">{formatNumber(total)}</CardTitle>
-            <CardDescription>Total Users</CardDescription>
-          </CardHeader>
-        </Card>
-      </div>
+      <MetricGrid className="lg:grid-cols-2">
+        <MetricCard label="Total Users" value={formatNumber(total)} />
+        <MetricCard label="Top-10 Activity Density" value={`${activeUsersPct}%`} detail="Top 10 users total modified items / user count" />
+      </MetricGrid>
 
-      <div className="w-full flex flex-col md:flex-row gap-6 items-center justify-center my-2">
-        <Card className="w-full md:w-1/2 max-w-xl flex flex-col items-center justify-center shadow-lg border border-gray-200 bg-white">
+      <div className="grid w-full grid-cols-1 gap-6 md:grid-cols-2">
+        <Card className="w-full">
           <CardHeader>
             <CardTitle>Top 10 Users by Items Last Modified</CardTitle>
           </CardHeader>
@@ -164,7 +163,7 @@ export default async function UsersPage({ searchParams }: { searchParams?: Searc
             </div>
           </CardContent>
         </Card>
-        <Card className="w-full md:w-1/2 max-w-xl flex flex-col items-center justify-center shadow-lg border border-gray-200 bg-white">
+        <Card className="w-full">
           <CardHeader>
             <CardTitle>Top 10 Users by Sites</CardTitle>
           </CardHeader>

@@ -87,7 +87,7 @@ export default async function GroupDetailPage({
   const memberCount = memberCounts[0]?.members ?? 0;
 
   return (
-    <main className="flex flex-col gap-4">
+    <main className="ps-page">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h1 className="truncate text-2xl font-semibold">{group.display_name ?? group.mail ?? groupId}</h1>

@@ -8,12 +8,9 @@ import { formatNumber } from "@/app/lib/format";
 import { getPagination, getParam, getSortDirection, getWindowDays, SearchParams } from "@/app/lib/params";
 import { getInternalDomainPatterns } from "@/app/lib/internalDomains";
 import { RiskTable } from "./risk-table";
-import { RiskItemsTable } from "./risk-item-tables";
 import { RiskSummaryBarChartClient, RiskSummaryPieChartClient } from "@/components/risk-summary-graphs-client";
-
-function itemKey(driveId: string, itemId: string) {
-  return encodeURIComponent(`${driveId}::${itemId}`);
-}
+import PageHeader from "@/components/page-header";
+import FilterBar from "@/components/filter-bar";
 
 function buildSearchFilter(search: string | null) {
   if (!search) return { clause: "", params: [] as any[] };
@@ -200,15 +197,13 @@ export default async function RiskPage({ searchParams }: { searchParams?: Search
   }
 
   return (
-    <main className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">Risk</h1>
-          <p className="text-sm text-muted-foreground">
-            Site-level signals plus file-level exposure lists. File window: {windowDays ?? "all"}d.
-          </p>
-        </div>
-        <form className="flex flex-wrap items-center gap-2" action="/dashboard/risk" method="get">
+    <main className="ps-page">
+      <PageHeader
+        title="Risk"
+        subtitle={`Site-level risk signals with file-level exposure detail. File window: ${windowDays ?? "all"}d.`}
+      />
+      <form action="/dashboard/risk" method="get">
+        <FilterBar>
           <Input name="q" placeholder="Search sites…" defaultValue={search || ""} className="w-64" />
           <select
             name="days"
@@ -237,8 +232,8 @@ export default async function RiskPage({ searchParams }: { searchParams?: Search
           <Button type="submit" variant="outline">
             Apply
           </Button>
-        </form>
-      </div>
+        </FilterBar>
+      </form>
 
       <div className="grid gap-3 md:grid-cols-4">
         <Card className="text-center">
@@ -292,46 +287,6 @@ export default async function RiskPage({ searchParams }: { searchParams?: Search
         extraParams={{ q: search || undefined, pageSize, sort, dir, scanLimit, dormantDays, days: windowDays == null ? "all" : windowDays }}
       />
 
-      <div className="grid gap-6 md:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Files with Anonymous Links</CardTitle>
-          </CardHeader>
-          <CardContent className="overflow-x-auto">
-            <RiskItemsTable
-              items={anonymousItems.map((row: any) => ({
-                item_id: itemKey(row.drive_id, row.id),
-                name: row.name || row.id,
-                web_url: row.web_url,
-                normalized_path: row.normalized_path,
-                size: row.size,
-                modified_dt: row.modified_dt,
-                link_scope: "anonymous",
-                link_shares: row.link_shares,
-              }))}
-            />
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>Files with Org-wide Links</CardTitle>
-          </CardHeader>
-          <CardContent className="overflow-x-auto">
-            <RiskItemsTable
-              items={orgItems.map((row: any) => ({
-                item_id: itemKey(row.drive_id, row.id),
-                name: row.name || row.id,
-                web_url: row.web_url,
-                normalized_path: row.normalized_path,
-                size: row.size,
-                modified_dt: row.modified_dt,
-                link_scope: "organization",
-                link_shares: row.link_shares,
-              }))}
-            />
-          </CardContent>
-        </Card>
-      </div>
     </main>
   );
 }

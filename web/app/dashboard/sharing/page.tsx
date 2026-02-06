@@ -9,6 +9,10 @@ import { getPagination, getParam, getSortDirection, SearchParams } from "@/app/l
 import { getInternalDomainPatterns } from "@/app/lib/internalDomains";
 import { SharingSummaryBarChartClient, SharingSummaryPieChartClient } from "@/components/sharing-summary-graphs-client";
 import { SharingLinkBreakdownTable, SharingSitesTable } from "./sharing-tables";
+import PageHeader from "@/components/page-header";
+import FilterBar from "@/components/filter-bar";
+import MetricGrid from "@/components/metric-grid";
+import { MetricCard } from "@/components/metric-card";
 
 function buildSearchFilter(search: string | null) {
   if (!search) return { clause: "", params: [] as any[] };
@@ -153,13 +157,10 @@ export default async function SharingPage({ searchParams }: { searchParams?: Sea
   });
 
   return (
-    <main className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">Sharing</h1>
-          <p className="text-sm text-muted-foreground">Sharing links and external access signals.</p>
-        </div>
-        <form className="flex flex-wrap items-center gap-2" action="/dashboard/sharing" method="get">
+    <main className="ps-page">
+      <PageHeader title="Sharing" subtitle="Sharing links and external access signals." />
+      <form action="/dashboard/sharing" method="get">
+        <FilterBar>
           <Input name="q" placeholder="Search sites…" defaultValue={search || ""} className="w-64" />
           <Input
             name="externalThreshold"
@@ -182,20 +183,16 @@ export default async function SharingPage({ searchParams }: { searchParams?: Sea
           <Button type="submit" variant="outline">
             Apply
           </Button>
-        </form>
-      </div>
+        </FilterBar>
+      </form>
 
-      <div className="flex flex-row gap-4 items-center justify-center">
-        <Card className="w-full max-w-xs text-center shadow-lg border border-gray-200 bg-white">
-          <CardHeader>
-            <CardTitle className="text-3xl font-bold">{formatNumber(totalLinks)}</CardTitle>
-            <CardDescription>Total Links</CardDescription>
-          </CardHeader>
-        </Card>
-      </div>
+      <MetricGrid className="md:grid-cols-2 lg:grid-cols-2">
+        <MetricCard label="Total Links" value={formatNumber(totalLinks)} />
+        <MetricCard label="Sites Evaluated" value={formatNumber(total)} />
+      </MetricGrid>
 
-      <div className="w-full flex flex-col md:flex-row gap-6 items-center justify-center my-2">
-        <Card className="w-full md:w-1/2 max-w-xl flex flex-col items-center justify-center shadow-lg border border-gray-200 bg-white">
+      <div className="grid w-full grid-cols-1 gap-6 md:grid-cols-2">
+        <Card className="w-full">
           <CardHeader>
             <CardTitle>Top 10 Sites by Links</CardTitle>
           </CardHeader>
@@ -205,7 +202,7 @@ export default async function SharingPage({ searchParams }: { searchParams?: Sea
             </div>
           </CardContent>
         </Card>
-        <Card className="w-full md:w-1/2 max-w-xl flex flex-col items-center justify-center shadow-lg border border-gray-200 bg-white">
+        <Card className="w-full">
           <CardHeader>
             <CardTitle>Link Scope+Type Breakdown</CardTitle>
           </CardHeader>

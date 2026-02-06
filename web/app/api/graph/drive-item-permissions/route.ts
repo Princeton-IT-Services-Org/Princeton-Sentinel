@@ -21,6 +21,15 @@ async function parseBody(req: Request) {
   return {};
 }
 
+function getErrorMessage(err: unknown, fallback: string): string {
+  if (typeof err === "string" && err.trim()) return err;
+  if (err && typeof err === "object" && "message" in err) {
+    const message = (err as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) return message;
+  }
+  return fallback;
+}
+
 export async function GET(req: Request) {
   await requireUser();
   const { searchParams } = new URL(req.url);
@@ -33,8 +42,8 @@ export async function GET(req: Request) {
   try {
     const data = await graphGet(`/drives/${driveId}/items/${itemId}/permissions`);
     return NextResponse.json({ mode: "live", data });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 502 });
+  } catch (err: unknown) {
+    return NextResponse.json({ error: getErrorMessage(err, "graph_get_permissions_failed") }, { status: 502 });
   }
 }
 
@@ -55,12 +64,17 @@ export async function DELETE(req: Request) {
   if (!driveId || !itemId || !permissionId) {
     return NextResponse.json({ error: "driveId_itemId_permissionId_required" }, { status: 400 });
   }
+  const encodedPermissionId = encodeURIComponent(String(permissionId));
 
   let permission: any = null;
   try {
-    permission = await graphGet(`/drives/${driveId}/items/${itemId}/permissions/${permissionId}`);
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 502 });
+    permission = await graphGet(`/drives/${driveId}/items/${itemId}/permissions/${encodedPermissionId}`);
+  } catch (err: unknown) {
+    return NextResponse.json({ error: getErrorMessage(err, "graph_get_permission_failed") }, { status: 502 });
+  }
+
+  if (permission?.inheritedFrom) {
+    return NextResponse.json({ error: "inherited_permission_delete_blocked" }, { status: 403 });
   }
 
   const roles: string[] = Array.isArray(permission?.roles) ? permission.roles : [];
@@ -70,55 +84,70 @@ export async function DELETE(req: Request) {
   }
 
   try {
-    await graphDelete(`/drives/${driveId}/items/${itemId}/permissions/${permissionId}`);
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 502 });
+    await graphDelete(`/drives/${driveId}/items/${itemId}/permissions/${encodedPermissionId}`);
+  } catch (err: unknown) {
+    return NextResponse.json({ error: getErrorMessage(err, "graph_delete_permission_failed") }, { status: 502 });
   }
 
-  await withTransaction(async (client) => {
-    await client.query(
-      `
+  let warning: string | null = null;
+
+  try {
+    await withTransaction(async (client) => {
+      await client.query(
+        `
       DELETE FROM msgraph_drive_item_permission_grants
       WHERE drive_id = $1 AND item_id = $2 AND permission_id = $3
       `,
-      [driveId, itemId, permissionId]
-    );
-    await client.query(
-      `
+        [driveId, itemId, permissionId]
+      );
+      await client.query(
+        `
       DELETE FROM msgraph_drive_item_permissions
       WHERE drive_id = $1 AND item_id = $2 AND permission_id = $3
       `,
-      [driveId, itemId, permissionId]
-    );
-    await client.query(
-      `
+        [driveId, itemId, permissionId]
+      );
+      await client.query(
+        `
       UPDATE msgraph_drive_items
       SET permissions_last_synced_at = now(),
           permissions_last_error_at = NULL,
           permissions_last_error = NULL
       WHERE drive_id = $1 AND id = $2
       `,
-      [driveId, itemId]
-    );
-  });
+        [driveId, itemId]
+      );
+    });
+  } catch (err: unknown) {
+    warning = `graph_delete_succeeded_local_sync_failed: ${getErrorMessage(err, "unknown_sync_error")}`;
+  }
 
-  await writeAuditEvent({
-    action: "permission_deleted",
-    entityType: "drive_item_permission",
-    entityId: `${driveId}:${itemId}:${permissionId}`,
-    actor: {
-      oid: (session?.user as any)?.oid,
-      upn: (session?.user as any)?.upn,
-      name: session?.user?.name,
-    },
-    details: {
-      driveId,
-      itemId,
-      permissionId,
-      roles,
-      link: permission?.link || null,
-    },
-  });
+  try {
+    await writeAuditEvent({
+      action: "permission_deleted",
+      entityType: "drive_item_permission",
+      entityId: `${driveId}:${itemId}:${permissionId}`,
+      actor: {
+        oid: (session?.user as any)?.oid,
+        upn: (session?.user as any)?.upn,
+        name: session?.user?.name,
+      },
+      details: {
+        driveId,
+        itemId,
+        permissionId,
+        roles,
+        link: permission?.link || null,
+      },
+    });
+  } catch (err: unknown) {
+    const auditWarning = `audit_write_failed: ${getErrorMessage(err, "unknown_audit_error")}`;
+    warning = warning ? `${warning}; ${auditWarning}` : auditWarning;
+  }
+
+  if (warning) {
+    return NextResponse.json({ ok: true, warning });
+  }
 
   return NextResponse.json({ ok: true });
 }

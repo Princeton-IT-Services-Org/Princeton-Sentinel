@@ -40,15 +40,15 @@ export default async function AdminPage() {
             <div className="badge badge-error">{error}</div>
           ) : (
             <div className="grid gap-3 md:grid-cols-3">
-              <div className="rounded-xl bg-white/70 p-4">
+              <div className="rounded-lg border bg-muted/20 p-4">
                 <div className="text-sm text-slate">Health</div>
                 <div className="text-lg font-semibold text-ink">{health?.ok ? "OK" : "Degraded"}</div>
               </div>
-              <div className="rounded-xl bg-white/70 p-4">
+              <div className="rounded-lg border bg-muted/20 p-4">
                 <div className="text-sm text-slate">DB</div>
                 <div className="text-lg font-semibold text-ink">{health?.db ? "Connected" : "Down"}</div>
               </div>
-              <div className="rounded-xl bg-white/70 p-4">
+              <div className="rounded-lg border bg-muted/20 p-4">
                 <div className="text-sm text-slate">Scheduler</div>
                 <div className="text-xs text-slate">
                   <LocalDateTime value={health?.scheduler?.last_tick} />
@@ -91,13 +91,13 @@ export default async function AdminPage() {
                     <div className="flex flex-wrap gap-2">
                       <form action="/api/worker/run-now" method="post">
                         <input type="hidden" name="job_id" value={row.job_id} />
-                        <button className="badge bg-amber-100 text-amber-900" type="submit">
+                        <button className="badge border-primary/35 bg-primary/15 text-foreground" type="submit">
                           Run Now
                         </button>
                       </form>
                       <form action="/api/worker/pause" method="post">
                         <input type="hidden" name="job_id" value={row.job_id} />
-                        <button className="badge bg-white/70 text-slate" type="submit">
+                        <button className="badge border border-input bg-background text-foreground" type="submit">
                           Disable
                         </button>
                       </form>

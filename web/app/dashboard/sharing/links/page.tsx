@@ -109,7 +109,7 @@ export default async function SharingLinksPage({ searchParams }: { searchParams?
   const title = `${scope ?? "—"} / ${type ?? "—"}`;
 
   return (
-    <main className="flex flex-col gap-4">
+    <main className="ps-page">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h1 className="truncate text-2xl font-semibold">Sharing links: {title}</h1>

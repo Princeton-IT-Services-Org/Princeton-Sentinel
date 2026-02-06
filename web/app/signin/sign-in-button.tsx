@@ -23,6 +23,7 @@ export function SignInButton({
         </p>
       ) : null}
       <Button
+        className="w-full"
         type="button"
         onClick={() => {
           void signIn("azure-ad", { callbackUrl });

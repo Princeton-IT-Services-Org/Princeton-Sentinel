@@ -3,35 +3,35 @@
 import React from "react";
 import { Bar, Pie } from "react-chartjs-2";
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend, ArcElement } from "chart.js";
+import { barColors, commonBarOptions, commonPieOptions, labelLimit, numberLabel, pieColors } from "@/components/chart-config";
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend, ArcElement);
 
 export function GroupsSummaryBarChart({ data }: { data: { label: string; value: number }[] }) {
   const barData = {
-    labels: data.map((d) => (d.label.length > 18 ? d.label.slice(0, 15) + "…" : d.label)),
+    labels: data.map((d) => labelLimit(d.label)),
     datasets: [
       {
         label: "Top 10 Groups by Members",
         data: data.map((d) => d.value),
-        backgroundColor: "rgba(59, 130, 246, 0.7)",
-        borderColor: "rgba(59, 130, 246, 1)",
+        ...barColors("primary"),
         borderWidth: 1,
-        borderRadius: 8,
+        borderRadius: 6,
       },
     ],
   };
+  const baseOptions: any = commonBarOptions("y");
   const barOptions = {
-    responsive: true,
+    ...baseOptions,
     plugins: {
-      legend: { display: false },
-      title: { display: false },
-      tooltip: { callbacks: { label: (ctx: any) => `${ctx.dataset.label}: ${ctx.parsed.x ?? 0}` } },
+      ...baseOptions.plugins,
+      tooltip: { ...baseOptions.plugins?.tooltip, callbacks: { label: (ctx: any) => `${ctx.dataset.label}: ${numberLabel(ctx.parsed.x ?? 0)}` } },
     },
-    indexAxis: "y" as const,
     scales: {
-      x: { beginAtZero: true, title: { display: true, text: "Members" } },
+      ...baseOptions.scales,
+      x: { ...baseOptions.scales?.x, beginAtZero: true, title: { display: true, text: "Members" } },
       y: {
-        title: { display: false },
+        ...baseOptions.scales?.y,
         ticks: {
           autoSkip: false,
           callback: function (_value: any, index: number) {
@@ -45,18 +45,7 @@ export function GroupsSummaryBarChart({ data }: { data: { label: string; value: 
 }
 
 export function GroupsSummaryPieChart({ data }: { data: { label: string; value: number }[] }) {
-  const pieColors = [
-    "rgba(59, 130, 246, 0.7)",
-    "rgba(16, 185, 129, 0.7)",
-    "rgba(234, 179, 8, 0.7)",
-    "rgba(239, 68, 68, 0.7)",
-    "rgba(168, 85, 247, 0.7)",
-    "rgba(251, 191, 36, 0.7)",
-    "rgba(34, 211, 238, 0.7)",
-    "rgba(244, 63, 94, 0.7)",
-    "rgba(163, 230, 53, 0.7)",
-    "rgba(139, 92, 246, 0.7)",
-  ];
+  const colors = pieColors();
   return (
     <Pie
       data={{
@@ -65,17 +54,11 @@ export function GroupsSummaryPieChart({ data }: { data: { label: string; value: 
           {
             label: "Groups",
             data: data.map((d) => d.value),
-            backgroundColor: pieColors,
+            backgroundColor: colors,
           },
         ],
       }}
-      options={{
-        responsive: true,
-        plugins: {
-          legend: { position: "bottom" },
-          title: { display: false },
-        },
-      }}
+      options={commonPieOptions()}
     />
   );
 }

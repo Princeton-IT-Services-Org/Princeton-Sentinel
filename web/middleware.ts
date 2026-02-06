@@ -26,7 +26,7 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  if (pathname.startsWith("/signin") || pathname.startsWith("/forbidden")) {
+  if (pathname.startsWith("/signin") || pathname.startsWith("/signout") || pathname.startsWith("/forbidden")) {
     return NextResponse.next();
   }
 

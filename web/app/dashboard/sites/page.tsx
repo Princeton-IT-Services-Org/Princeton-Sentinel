@@ -8,6 +8,8 @@ import { formatNumber } from "@/app/lib/format";
 import { getPagination, getParam, getSortDirection, SearchParams } from "@/app/lib/params";
 import { SitesTable } from "./sites-table";
 import { SitesSummaryGraph } from "@/components/sites-summary-graph";
+import PageHeader from "@/components/page-header";
+import FilterBar from "@/components/filter-bar";
 
 function buildSearchFilter(search: string | null) {
   if (!search) return { clause: "", params: [] as any[] };
@@ -188,13 +190,11 @@ export default async function SitesPage({ searchParams }: { searchParams?: Searc
   ].filter((p) => p.value > 0);
 
   return (
-    <main className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">Sites</h1>
-          <p className="text-sm text-muted-foreground">Discovery & inventory across SharePoint sites.</p>
-        </div>
-        <form className="flex items-center gap-2" action="/dashboard/sites" method="get">
+    <main className="ps-page">
+      <PageHeader title="Sites" subtitle="Discovery and inventory across SharePoint and personal sites." />
+
+      <form action="/dashboard/sites" method="get">
+        <FilterBar>
           <Input name="q" placeholder="Search title, URL, id…" defaultValue={search || ""} className="w-72" />
           <Input
             name="pageSize"
@@ -208,23 +208,23 @@ export default async function SitesPage({ searchParams }: { searchParams?: Searc
           <Button type="submit" variant="outline">
             Apply
           </Button>
-        </form>
-      </div>
+        </FilterBar>
+      </form>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-        <Card className="text-center shadow-lg border border-gray-200 bg-white">
+        <Card className="text-center">
           <CardHeader>
             <CardTitle className="text-3xl font-bold">{formatNumber(total)}</CardTitle>
             <CardDescription>Total Sites</CardDescription>
           </CardHeader>
         </Card>
-        <Card className="text-center shadow-lg border border-gray-200 bg-white">
+        <Card className="text-center">
           <CardHeader>
             <CardTitle className="text-3xl font-bold">{formatNumber(summary.new_30 || 0)}</CardTitle>
             <CardDescription>New (30 days)</CardDescription>
           </CardHeader>
         </Card>
-        <Card className="text-center shadow-lg border border-gray-200 bg-white">
+        <Card className="text-center">
           <CardHeader>
             <CardTitle className="text-3xl font-bold">{formatNumber(summary.new_90 || 0)}</CardTitle>
             <CardDescription>New (90 days)</CardDescription>
@@ -232,13 +232,13 @@ export default async function SitesPage({ searchParams }: { searchParams?: Searc
         </Card>
       </div>
 
-  <SitesSummaryGraph
-    typeBreakdown={typeBreakdown}
-    createdByMonth={createdSeries.map((p: any) => ({
-      label: p.month ? new Date(p.month).toLocaleDateString(undefined, { month: "short", year: "2-digit" }) : "--",
-      value: p.count,
-    }))}
-  />
+      <SitesSummaryGraph
+        typeBreakdown={typeBreakdown}
+        createdByMonth={createdSeries.map((p: any) => ({
+          label: p.month ? new Date(p.month).toLocaleDateString(undefined, { month: "short", year: "2-digit" }) : "--",
+          value: p.count,
+        }))}
+      />
 
       <Card>
         <CardHeader>

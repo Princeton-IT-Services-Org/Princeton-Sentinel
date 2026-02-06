@@ -2,6 +2,7 @@
 import React from "react";
 import { Bar } from "react-chartjs-2";
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend } from "chart.js";
+import { barColors, commonBarOptions, labelLimit, numberLabel } from "@/components/chart-config";
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
 
@@ -15,30 +16,29 @@ export function UsersSummaryBarChart({
   xTitle: string;
 }) {
   const barData = {
-    labels: data.map((d) => (d.label.length > 18 ? d.label.slice(0, 15) + "…" : d.label)),
+    labels: data.map((d) => labelLimit(d.label)),
     datasets: [
       {
         label,
         data: data.map((d) => d.value),
-        backgroundColor: "rgba(59, 130, 246, 0.7)",
-        borderColor: "rgba(59, 130, 246, 1)",
+        ...barColors("primary"),
         borderWidth: 1,
-        borderRadius: 8,
+        borderRadius: 6,
       },
     ],
   };
+  const baseOptions: any = commonBarOptions("y");
   const barOptions = {
-    responsive: true,
+    ...baseOptions,
     plugins: {
-      legend: { display: false },
-      title: { display: false },
-      tooltip: { callbacks: { label: (ctx: any) => `${ctx.dataset.label}: ${ctx.parsed.x ?? 0}` } },
+      ...baseOptions.plugins,
+      tooltip: { ...baseOptions.plugins?.tooltip, callbacks: { label: (ctx: any) => `${ctx.dataset.label}: ${numberLabel(ctx.parsed.x ?? 0)}` } },
     },
-    indexAxis: "y" as const,
     scales: {
-      x: { beginAtZero: true, title: { display: true, text: xTitle } },
+      ...baseOptions.scales,
+      x: { ...baseOptions.scales?.x, beginAtZero: true, title: { display: true, text: xTitle } },
       y: {
-        title: { display: false },
+        ...baseOptions.scales?.y,
         ticks: {
           autoSkip: false,
           callback: function (_value: any, index: number) {

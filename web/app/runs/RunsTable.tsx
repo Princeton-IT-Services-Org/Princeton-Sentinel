@@ -61,9 +61,9 @@ export default function RunsTable({ initialRuns }: { initialRuns: RunRow[] }) {
 
   return (
     <>
-      <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-xs text-slate">
+      <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
         <div>
-          <span className="font-semibold text-ink">Live</span>: refreshes every 5s
+          <span className="font-semibold text-foreground">Live</span>: refreshes every 5s
           {runningCount ? ` • ${runningCount} running` : ""}
         </div>
         <div className="text-right">
@@ -79,7 +79,7 @@ export default function RunsTable({ initialRuns }: { initialRuns: RunRow[] }) {
 
       <div className="mt-4 overflow-x-auto">
         <table className="w-full text-sm">
-          <thead className="text-left text-slate/70">
+          <thead className="text-left text-muted-foreground">
             <tr>
               <th className="py-2">Job</th>
               <th className="py-2">Status</th>
@@ -93,26 +93,26 @@ export default function RunsTable({ initialRuns }: { initialRuns: RunRow[] }) {
             {runs.map((run) => (
               <tr
                 key={run.run_id}
-                className={run.status === "running" ? "border-t border-white/60 bg-amber-50/60" : "border-t border-white/60"}
+                className={run.status === "running" ? "border-t bg-amber-100/40 dark:bg-amber-900/20" : "border-t"}
               >
-                <td className="py-3 text-ink font-semibold">{run.job_type || run.job_id}</td>
+                <td className="py-3 text-foreground font-semibold">{run.job_type || run.job_id}</td>
                 <td className="py-3">
                   <span className={statusBadge(run.status)}>{run.status}</span>
                 </td>
-                <td className="py-3 text-slate">{formatDate(run.started_at)}</td>
-                <td className="py-3 text-slate">{formatDate(run.finished_at)}</td>
-                <td className="py-3 text-slate max-w-xs truncate" title={run.last_log_message || ""}>
+                <td className="py-3 text-muted-foreground">{formatDate(run.started_at)}</td>
+                <td className="py-3 text-muted-foreground">{formatDate(run.finished_at)}</td>
+                <td className="py-3 text-muted-foreground max-w-xs truncate" title={run.last_log_message || ""}>
                   {run.last_log_message ? (
                     <>
-                      <span className="font-semibold text-ink">{run.last_log_level}</span>{" "}
-                      <span className="text-slate">{run.last_log_message}</span>{" "}
-                      <span className="text-slate/70">({formatDate(run.last_log_at)})</span>
+                      <span className="font-semibold text-foreground">{run.last_log_level}</span>{" "}
+                      <span className="text-muted-foreground">{run.last_log_message}</span>{" "}
+                      <span className="text-muted-foreground/70">({formatDate(run.last_log_at)})</span>
                     </>
                   ) : (
                     "--"
                   )}
                 </td>
-                <td className="py-3 text-slate max-w-xs truncate" title={run.error || ""}>
+                <td className="py-3 text-muted-foreground max-w-xs truncate" title={run.error || ""}>
                   {run.error || "--"}
                 </td>
               </tr>
@@ -123,4 +123,3 @@ export default function RunsTable({ initialRuns }: { initialRuns: RunRow[] }) {
     </>
   );
 }
-
