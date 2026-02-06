@@ -52,6 +52,10 @@ export function getAuthOptions(): NextAuthOptions {
       }),
     ],
     session: { strategy: "jwt" },
+    pages: {
+      signIn: "/signin",
+      signOut: "/signout",
+    },
     callbacks: {
       async jwt({ token, account, profile }) {
         if (profile) {

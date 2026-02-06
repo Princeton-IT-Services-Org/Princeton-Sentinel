@@ -3,8 +3,8 @@
 import React from "react";
 import { Bar, Pie } from "react-chartjs-2";
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, ArcElement, Title, Tooltip, Legend } from "chart.js";
-
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import ChartCard from "@/components/chart-card";
+import { barColors, commonBarOptions, commonPieOptions, numberLabel, pieColors } from "@/components/chart-config";
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, Title, Tooltip, Legend);
 
@@ -23,36 +23,24 @@ export function SitesSummaryGraph({ typeBreakdown, createdByMonth }: SitesSummar
       {
         label: "Site types",
         data: typeBreakdown.map((d) => d.value),
-        backgroundColor: [
-          "rgba(59, 130, 246, 0.7)",
-          "rgba(16, 185, 129, 0.7)",
-          "rgba(234, 179, 8, 0.7)",
-          "rgba(239, 68, 68, 0.7)",
-          "rgba(168, 85, 247, 0.7)",
-        ],
-        borderColor: [
-          "rgba(59, 130, 246, 1)",
-          "rgba(16, 185, 129, 1)",
-          "rgba(234, 179, 8, 1)",
-          "rgba(239, 68, 68, 1)",
-          "rgba(168, 85, 247, 1)",
-        ],
+        backgroundColor: pieColors(),
+        borderColor: pieColors(),
         borderWidth: 1,
       },
     ],
   };
 
   const pieOptions = {
-    responsive: true,
+    ...commonPieOptions(),
     plugins: {
-      legend: { position: "bottom" as const },
-      title: { display: false },
+      ...commonPieOptions().plugins,
       tooltip: {
+        ...commonPieOptions().plugins?.tooltip,
         callbacks: {
           label: function (context: any) {
             const label = context.label || "";
             const value = context.parsed || 0;
-            return `${label}: ${value}`;
+            return `${label}: ${numberLabel(value)}`;
           },
         },
       },
@@ -65,23 +53,24 @@ export function SitesSummaryGraph({ typeBreakdown, createdByMonth }: SitesSummar
       {
         label: "Sites created",
         data: createdByMonth.map((p) => p.value),
-        backgroundColor: "rgba(99, 102, 241, 0.6)",
-        borderColor: "rgba(99, 102, 241, 1)",
+        ...barColors("primary"),
         borderWidth: 1,
         borderRadius: 6,
       },
     ],
   };
 
+  const baseBarOptions: any = commonBarOptions("x");
   const createdBarOptions = {
-    responsive: true,
+    ...baseBarOptions,
     plugins: {
-      legend: { display: false },
-      title: { display: false },
-      tooltip: { callbacks: { label: (ctx: any) => `${ctx.dataset.label}: ${ctx.parsed.y ?? 0}` } },
+      ...baseBarOptions.plugins,
+      tooltip: { ...baseBarOptions.plugins?.tooltip, callbacks: { label: (ctx: any) => `${ctx.dataset.label}: ${numberLabel(ctx.parsed.y ?? 0)}` } },
     },
     scales: {
+      ...baseBarOptions.scales,
       x: {
+        ...baseBarOptions.scales?.x,
         ticks: {
           maxRotation: 45,
           minRotation: 0,
@@ -89,33 +78,18 @@ export function SitesSummaryGraph({ typeBreakdown, createdByMonth }: SitesSummar
           maxTicksLimit: 12,
         },
       },
-      y: { beginAtZero: true, title: { display: true, text: "Sites" } },
+      y: { ...baseBarOptions.scales?.y, beginAtZero: true, title: { display: true, text: "Sites" } },
     },
   };
 
   return (
     <div className="grid w-full grid-cols-1 gap-6 md:grid-cols-2">
-      <Card className="w-full border border-gray-200 bg-white shadow-lg">
-        <CardHeader>
-          <CardTitle>Site Type Breakdown</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="h-72">
-            <Pie data={pieData} options={pieOptions} />
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card className="w-full border border-gray-200 bg-white shadow-lg">
-        <CardHeader>
-          <CardTitle>Sites Created Over Time</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="h-72">
-            <Bar data={createdBarData} options={createdBarOptions} />
-          </div>
-        </CardContent>
-      </Card>
+      <ChartCard title="Site Type Breakdown">
+        <Pie data={pieData} options={pieOptions} />
+      </ChartCard>
+      <ChartCard title="Sites Created Over Time">
+        <Bar data={createdBarData} options={createdBarOptions} />
+      </ChartCard>
     </div>
   );
 }

@@ -8,6 +8,10 @@ import { formatNumber } from "@/app/lib/format";
 import { getPagination, getParam, getSortDirection, SearchParams } from "@/app/lib/params";
 import { GroupsTable } from "./groups-table";
 import { GroupsSummaryBarChartClient, GroupsSummaryPieChartClient } from "@/components/groups-summary-graphs-wrapper";
+import PageHeader from "@/components/page-header";
+import FilterBar from "@/components/filter-bar";
+import MetricGrid from "@/components/metric-grid";
+import { MetricCard } from "@/components/metric-card";
 
 function buildSearchFilter(search: string | null) {
   if (!search) return { clause: "", params: [] as any[] };
@@ -82,13 +86,11 @@ export default async function GroupsPage({ searchParams }: { searchParams?: Sear
   const visibilityData = visibilityBreakdown.map((row: any) => ({ label: row.visibility, value: row.count }));
 
   return (
-    <main className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">Groups</h1>
-          <p className="text-sm text-muted-foreground">Microsoft 365 groups and membership counts (as ingested).</p>
-        </div>
-        <form className="flex flex-wrap items-center gap-2" action="/dashboard/groups" method="get">
+    <main className="ps-page">
+      <PageHeader title="Groups" subtitle="Microsoft 365 groups and membership counts from the ingest." />
+
+      <form action="/dashboard/groups" method="get">
+        <FilterBar>
           <Input name="q" placeholder="Search groups…" defaultValue={search || ""} className="w-64" />
           <Input
             name="pageSize"
@@ -102,20 +104,15 @@ export default async function GroupsPage({ searchParams }: { searchParams?: Sear
           <Button type="submit" variant="outline">
             Apply
           </Button>
-        </form>
-      </div>
+        </FilterBar>
+      </form>
 
-      <div className="flex flex-row gap-4 items-center justify-center">
-        <Card className="w-full max-w-xs text-center shadow-lg border border-gray-200 bg-white">
-          <CardHeader>
-            <CardTitle className="text-3xl font-bold">{formatNumber(total)}</CardTitle>
-            <CardDescription>Total Groups</CardDescription>
-          </CardHeader>
-        </Card>
-      </div>
+      <MetricGrid className="md:grid-cols-1 lg:grid-cols-1">
+        <MetricCard label="Total Groups" value={formatNumber(total)} className="max-w-sm" />
+      </MetricGrid>
 
-      <div className="w-full flex flex-col md:flex-row gap-6 items-center justify-center my-2">
-        <Card className="w-full md:w-1/2 max-w-xl flex flex-col items-center justify-center shadow-lg border border-gray-200 bg-white">
+      <div className="grid w-full grid-cols-1 gap-6 md:grid-cols-2">
+        <Card className="w-full">
           <CardHeader>
             <CardTitle>Top 10 Groups by Members</CardTitle>
           </CardHeader>
@@ -125,7 +122,7 @@ export default async function GroupsPage({ searchParams }: { searchParams?: Sear
             </div>
           </CardContent>
         </Card>
-        <Card className="w-full md:w-1/2 max-w-xl flex flex-col items-center justify-center shadow-lg border border-gray-200 bg-white">
+        <Card className="w-full">
           <CardHeader>
             <CardTitle>Visibility Breakdown</CardTitle>
           </CardHeader>

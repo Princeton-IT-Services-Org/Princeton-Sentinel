@@ -2,6 +2,7 @@
 import React from "react";
 import { Bar, Pie } from "react-chartjs-2";
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, ArcElement, Title, Tooltip, Legend } from "chart.js";
+import { barColors, commonBarOptions, commonPieOptions, labelLimit, numberLabel, pieColors } from "@/components/chart-config";
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, Title, Tooltip, Legend);
 
@@ -15,30 +16,29 @@ export function SharingSummaryBarChart({
   xTitle: string;
 }) {
   const barData = {
-    labels: data.map((d) => (d.label.length > 18 ? d.label.slice(0, 15) + "…" : d.label)),
+    labels: data.map((d) => labelLimit(d.label)),
     datasets: [
       {
         label,
         data: data.map((d) => d.value),
-        backgroundColor: "rgba(59, 130, 246, 0.7)",
-        borderColor: "rgba(59, 130, 246, 1)",
+        ...barColors("primary"),
         borderWidth: 1,
-        borderRadius: 8,
+        borderRadius: 6,
       },
     ],
   };
+  const baseOptions: any = commonBarOptions("y");
   const barOptions = {
-    responsive: true,
+    ...baseOptions,
     plugins: {
-      legend: { display: false },
-      title: { display: false },
-      tooltip: { callbacks: { label: (ctx: any) => `${ctx.dataset.label}: ${ctx.parsed.x ?? 0}` } },
+      ...baseOptions.plugins,
+      tooltip: { ...baseOptions.plugins?.tooltip, callbacks: { label: (ctx: any) => `${ctx.dataset.label}: ${numberLabel(ctx.parsed.x ?? 0)}` } },
     },
-    indexAxis: "y" as const,
     scales: {
-      x: { beginAtZero: true, title: { display: true, text: xTitle } },
+      ...baseOptions.scales,
+      x: { ...baseOptions.scales?.x, beginAtZero: true, title: { display: true, text: xTitle } },
       y: {
-        title: { display: false },
+        ...baseOptions.scales?.y,
         ticks: {
           autoSkip: false,
           callback: function (_value: any, index: number) {
@@ -52,18 +52,7 @@ export function SharingSummaryBarChart({
 }
 
 export function SharingSummaryPieChart({ data }: { data: { label: string; value: number }[] }) {
-  const pieColors = [
-    "rgba(59, 130, 246, 0.7)",
-    "rgba(16, 185, 129, 0.7)",
-    "rgba(234, 179, 8, 0.7)",
-    "rgba(239, 68, 68, 0.7)",
-    "rgba(168, 85, 247, 0.7)",
-    "rgba(251, 191, 36, 0.7)",
-    "rgba(34, 211, 238, 0.7)",
-    "rgba(244, 63, 94, 0.7)",
-    "rgba(163, 230, 53, 0.7)",
-    "rgba(139, 92, 246, 0.7)",
-  ];
+  const colors = pieColors();
   return (
     <div style={{ width: "100%", minWidth: 0 }}>
       <div style={{ width: "100%", minWidth: 0 }}>
@@ -74,27 +63,11 @@ export function SharingSummaryPieChart({ data }: { data: { label: string; value:
               {
                 label: "Links",
                 data: data.map((d) => d.value),
-                backgroundColor: pieColors,
+                backgroundColor: colors,
               },
             ],
           }}
-          options={{
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-              legend: {
-                position: "bottom",
-                labels: {
-                  font: { size: 10 },
-                  boxWidth: 12,
-                  boxHeight: 12,
-                  padding: 8,
-                },
-                maxHeight: 60,
-              },
-              title: { display: false },
-            },
-          }}
+          options={commonPieOptions()}
           height={260}
         />
       </div>

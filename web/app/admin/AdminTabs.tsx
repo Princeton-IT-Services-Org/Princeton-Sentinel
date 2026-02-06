@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 const tabs = [
   { label: "Analytics", href: "/admin/analytics" },
@@ -16,13 +16,20 @@ export default function AdminTabs() {
   const pathname = usePathname();
 
   return (
-    <div className="flex flex-wrap gap-2">
+    <div className="flex flex-wrap gap-2 rounded-lg border bg-card p-2">
       {tabs.map((tab) => {
         const isActive = pathname === tab.href || (tab.href !== "/admin" && pathname.startsWith(tab.href));
         return (
-          <Button key={tab.href} asChild size="sm" variant={isActive ? "default" : "outline"}>
-            <Link href={tab.href}>{tab.label}</Link>
-          </Button>
+          <Link
+            key={tab.href}
+            href={tab.href}
+            className={cn(
+              "rounded-md border px-3 py-1.5 text-xs font-semibold uppercase tracking-wide",
+              isActive ? "border-primary/45 bg-primary/15 text-foreground" : "border-transparent text-muted-foreground hover:bg-accent"
+            )}
+          >
+            {tab.label}
+          </Link>
         );
       })}
     </div>

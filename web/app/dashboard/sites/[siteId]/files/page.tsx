@@ -186,7 +186,7 @@ export default async function SiteFilesPage({ params }: { params: { siteId: stri
   }));
 
   return (
-    <main className="flex flex-col gap-4">
+    <main className="ps-page">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h1 className="truncate text-2xl font-semibold">{site.title || site.site_id}: Files</h1>

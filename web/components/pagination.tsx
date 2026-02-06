@@ -38,7 +38,7 @@ export function Pagination({
   const pages = Array.from({ length: totalPages }, (_, i) => i + 1);
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card p-3">
       <div className="text-sm text-muted-foreground">
         Page {clampedPage.toLocaleString()} of {totalPages.toLocaleString()} • {totalItems.toLocaleString()} items
       </div>

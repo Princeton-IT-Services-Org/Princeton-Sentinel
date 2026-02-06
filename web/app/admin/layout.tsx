@@ -1,6 +1,7 @@
 import AdminTabs from "@/app/admin/AdminTabs";
 import { isAdmin, requireAdmin } from "@/app/lib/auth";
 import AppShell from "@/components/app-shell";
+import PageHeader from "@/components/page-header";
 
 export const dynamic = "force-dynamic";
 
@@ -11,13 +12,11 @@ export default async function AdminLayout({ children }: { children: React.ReactN
 
   return (
     <AppShell userLabel={userLabel} canAdmin={canAdmin}>
-      <main className="flex flex-col gap-4">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-semibold">Admin</h1>
-            <p className="text-sm text-muted-foreground">Operations & controls for ingestion, schedules, and worker health.</p>
-          </div>
-        </div>
+      <main className="ps-page">
+        <PageHeader
+          title="Admin"
+          subtitle="Operations and controls for ingestion, schedules, and worker health."
+        />
         <AdminTabs />
         {children}
       </main>

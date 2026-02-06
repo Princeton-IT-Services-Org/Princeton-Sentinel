@@ -37,7 +37,7 @@ export default async function JobsPage() {
             </thead>
             <tbody>
               {rows.map((row) => (
-                <tr key={`${row.job_id}-${row.schedule_id || "none"}`} className="border-t border-white/60">
+                <tr key={`${row.job_id}-${row.schedule_id || "none"}`} className="border-t">
                   <td className="py-3 font-semibold text-ink">{row.job_type}</td>
                   <td className="py-3">
                     <span className={row.enabled ? "badge badge-ok" : "badge badge-error"}>
@@ -61,7 +61,7 @@ export default async function JobsPage() {
                         <input type="hidden" name="action" value="toggle" />
                         <input type="hidden" name="job_id" value={row.job_id} />
                         <input type="hidden" name="enabled" value={row.enabled ? "false" : "true"} />
-                        <button className="badge bg-white/70 text-slate hover:bg-white" type="submit">
+                        <button className="badge border border-input bg-background text-foreground" type="submit">
                           {row.enabled ? "Disable" : "Enable"}
                         </button>
                       </form>
@@ -70,7 +70,7 @@ export default async function JobsPage() {
                           <input type="hidden" name="action" value="toggle" />
                           <input type="hidden" name="schedule_id" value={row.schedule_id} />
                           <input type="hidden" name="enabled" value={row.schedule_enabled ? "false" : "true"} />
-                          <button className="badge bg-amber-100 text-amber-900" type="submit">
+                          <button className="badge border-primary/35 bg-primary/15 text-foreground" type="submit">
                             {row.schedule_enabled ? "Pause Schedule" : "Resume Schedule"}
                           </button>
                         </form>
@@ -93,14 +93,14 @@ export default async function JobsPage() {
             <form action="/api/jobs" method="post" className="grid gap-3">
               <input type="hidden" name="action" value="create" />
               <label className="text-sm text-slate">Job Type</label>
-              <select name="job_type" className="rounded-lg border border-slate/20 bg-white/80 p-2">
+              <select name="job_type" className="rounded-lg border border-input bg-background p-2">
                 <option value="graph_ingest">graph_ingest</option>
               </select>
               <label className="text-sm text-slate">Config (JSON)</label>
               <textarea
                 name="config"
                 rows={4}
-                className="rounded-lg border border-slate/20 bg-white/80 p-2 font-mono text-xs"
+                className="rounded-lg border border-input bg-background p-2 font-mono text-xs"
                 placeholder='{"permissions_batch_size": 50, "permissions_stale_after_hours": 24}'
               />
               <button className="badge badge-ok" type="submit">
@@ -118,7 +118,7 @@ export default async function JobsPage() {
             <form action="/api/schedules" method="post" className="grid gap-3">
               <input type="hidden" name="action" value="create" />
               <label className="text-sm text-slate">Job</label>
-              <select name="job_id" className="rounded-lg border border-slate/20 bg-white/80 p-2">
+              <select name="job_id" className="rounded-lg border border-input bg-background p-2">
                 {uniqueJobs.map((row) => (
                   <option key={row.job_id} value={row.job_id}>
                     {row.job_type}
@@ -128,13 +128,13 @@ export default async function JobsPage() {
               <label className="text-sm text-slate">Cron (5-field)</label>
               <input
                 name="cron_expr"
-                className="rounded-lg border border-slate/20 bg-white/80 p-2 font-mono text-sm"
+                className="rounded-lg border border-input bg-background p-2 font-mono text-sm"
                 placeholder="*/15 * * * *"
               />
               <label className="text-sm text-slate">Next run (optional ISO timestamp)</label>
               <input
                 name="next_run_at"
-                className="rounded-lg border border-slate/20 bg-white/80 p-2 text-sm"
+                className="rounded-lg border border-input bg-background p-2 text-sm"
                 placeholder="2026-02-02T10:00:00Z"
               />
               <button className="badge bg-emerald-100 text-emerald-900" type="submit">

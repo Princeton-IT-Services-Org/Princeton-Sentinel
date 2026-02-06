@@ -260,7 +260,7 @@ export default async function SiteDetailPage({
   const maxShares = Math.max(...series.map((p: any) => p.shares), 0);
 
   return (
-    <main className="flex flex-col gap-4">
+    <main className="ps-page">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">

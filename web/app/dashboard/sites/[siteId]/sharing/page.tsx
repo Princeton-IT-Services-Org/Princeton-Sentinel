@@ -165,7 +165,7 @@ export default async function SiteSharingPage({ params }: { params: { siteId: st
   );
 
   return (
-    <main className="flex flex-col gap-4">
+    <main className="ps-page">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h1 className="truncate text-2xl font-semibold">{site.title || site.site_id}: Sharing</h1>

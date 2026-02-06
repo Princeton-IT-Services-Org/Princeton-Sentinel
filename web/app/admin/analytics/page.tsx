@@ -29,27 +29,27 @@ export default async function AnalyticsPage() {
         </CardHeader>
         <CardContent>
           <div className="grid gap-4 md:grid-cols-3">
-            <div className="rounded-xl bg-white/60 p-4">
+            <div className="rounded-lg border bg-muted/20 p-4">
               <div className="text-sm text-slate">Users</div>
               <div className="text-2xl font-semibold text-ink">{inventory.users_total || 0}</div>
               <div className="text-xs text-slate">Soft-deleted: {inventory.users_deleted || 0}</div>
             </div>
-            <div className="rounded-xl bg-white/60 p-4">
+            <div className="rounded-lg border bg-muted/20 p-4">
               <div className="text-sm text-slate">Groups</div>
               <div className="text-2xl font-semibold text-ink">{inventory.groups_total || 0}</div>
               <div className="text-xs text-slate">Soft-deleted: {inventory.groups_deleted || 0}</div>
             </div>
-            <div className="rounded-xl bg-white/60 p-4">
+            <div className="rounded-lg border bg-muted/20 p-4">
               <div className="text-sm text-slate">Sites</div>
               <div className="text-2xl font-semibold text-ink">{inventory.sites_total || 0}</div>
               <div className="text-xs text-slate">Soft-deleted: {inventory.sites_deleted || 0}</div>
             </div>
-            <div className="rounded-xl bg-white/60 p-4">
+            <div className="rounded-lg border bg-muted/20 p-4">
               <div className="text-sm text-slate">Drives</div>
               <div className="text-2xl font-semibold text-ink">{inventory.drives_total || 0}</div>
               <div className="text-xs text-slate">Soft-deleted: {inventory.drives_deleted || 0}</div>
             </div>
-            <div className="rounded-xl bg-white/60 p-4">
+            <div className="rounded-lg border bg-muted/20 p-4">
               <div className="text-sm text-slate">Drive Items</div>
               <div className="text-2xl font-semibold text-ink">{inventory.drive_items_total || 0}</div>
               <div className="text-xs text-slate">Soft-deleted: {inventory.drive_items_deleted || 0}</div>
@@ -68,17 +68,17 @@ export default async function AnalyticsPage() {
         </CardHeader>
         <CardContent>
           <div className="grid gap-4 md:grid-cols-3">
-            <div className="rounded-xl bg-white/60 p-4">
+            <div className="rounded-lg border bg-muted/20 p-4">
               <div className="text-sm text-slate">Permissions</div>
               <div className="text-2xl font-semibold text-ink">{sharing.permissions_total || 0}</div>
               <div className="text-xs text-slate">Items with permissions: {sharing.items_with_permissions || 0}</div>
             </div>
-            <div className="rounded-xl bg-white/60 p-4">
+            <div className="rounded-lg border bg-muted/20 p-4">
               <div className="text-sm text-slate">Anonymous Links</div>
               <div className="text-2xl font-semibold text-ink">{sharing.anonymous_links || 0}</div>
               <div className="text-xs text-slate">Org links: {sharing.organization_links || 0}</div>
             </div>
-            <div className="rounded-xl bg-white/60 p-4">
+            <div className="rounded-lg border bg-muted/20 p-4">
               <div className="text-sm text-slate">Direct Shares</div>
               <div className="text-2xl font-semibold text-ink">{sharing.direct_shares || 0}</div>
               <div className="text-xs text-slate">Guest grants: {sharing.guest_grants || 0}</div>

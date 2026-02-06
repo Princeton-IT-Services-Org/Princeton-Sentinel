@@ -1,7 +1,10 @@
+"use client";
+
 import React from "react";
 import { Bar } from "react-chartjs-2";
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend } from "chart.js";
 import { useRouter } from "next/navigation";
+import { barColors, commonBarOptions, numberLabel } from "@/components/chart-config";
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
 
@@ -19,29 +22,14 @@ export function DashboardTotalsBarChart({
       {
         label: "Totals",
         data: [totals.sites, totals.users, totals.groups, totals.drives],
-        backgroundColor: "rgba(59, 130, 246, 0.7)",
-        borderColor: "rgba(59, 130, 246, 1)",
+        ...barColors("primary"),
         borderWidth: 1,
-        borderRadius: 8,
+        borderRadius: 6,
       },
     ],
   };
   const options = {
-    responsive: true,
-    plugins: {
-      legend: { display: false },
-      tooltip: {
-        callbacks: {
-          label: (ctx: any) => {
-            if (ctx.parsed.x != null) {
-              return `${labels[ctx.dataIndex]}: ${ctx.parsed.x.toLocaleString()}`;
-            }
-            return "";
-          },
-        },
-      },
-    },
-    indexAxis: "y" as const,
+    ...commonBarOptions("y"),
     onClick: (_event: any, elements: any[]) => {
       if (elements && elements.length > 0) {
         const barIndex = elements[0].index;
@@ -50,21 +38,19 @@ export function DashboardTotalsBarChart({
         }
       }
     },
-    scales: {
-      x: { beginAtZero: true, title: { display: true, text: "Count" } },
-      y: {
-        title: { display: false },
-        ticks: {
-          autoSkip: false,
-          callback: function (_value: any, index: number) {
-            return labels[index];
-          },
+    plugins: {
+      ...commonBarOptions("y").plugins,
+      tooltip: {
+        ...commonBarOptions("y").plugins?.tooltip,
+        callbacks: {
+          label: (ctx: any) => `${labels[ctx.dataIndex]}: ${numberLabel(ctx.parsed.x ?? 0)}`,
         },
       },
     },
+    scales: { ...commonBarOptions("y").scales, x: { ...commonBarOptions("y").scales?.x, beginAtZero: true, title: { display: true, text: "Count" } } },
   };
   return (
-    <div className="w-full h-56 flex items-center justify-center cursor-pointer">
+    <div className="flex h-56 w-full cursor-pointer items-center justify-center">
       <Bar data={data} options={options} />
     </div>
   );

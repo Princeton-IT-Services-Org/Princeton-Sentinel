@@ -24,6 +24,8 @@ type Principal = {
   directPermissionIds: string[];
 };
 
+type RevokeBlockedReason = "inherited" | "owner" | "missing_id" | null;
+
 function splitItemKey(raw: string) {
   const decoded = safeDecode(raw);
   const parts = decoded.split("::");
@@ -127,12 +129,16 @@ export default async function ItemDetailPage({ params }: { params: { itemId: str
   const principalMap = new Map<string, PrincipalAccum>();
 
   for (const [index, perm] of livePerms.entries()) {
-    const permId = perm.id ?? `perm-${index}`;
+    const graphPermissionId = typeof perm.id === "string" && perm.id.trim() ? perm.id : null;
+    const permId = graphPermissionId ?? `perm-${index}`;
+    const isSyntheticId = !graphPermissionId;
     const link = perm.link || null;
     const roles = Array.isArray(perm.roles) ? perm.roles : [];
     const inheritedKey = perm.inheritedFrom?.driveId && perm.inheritedFrom?.id ? `${perm.inheritedFrom.driveId}::${perm.inheritedFrom.id}` : null;
     const source: "direct" | "inherited" = perm.inheritedFrom ? "inherited" : "direct";
     const isOwnerRole = roles.some((role) => typeof role === "string" && role.toLowerCase().includes("owner"));
+    const revokeBlockedReason: RevokeBlockedReason =
+      source === "inherited" ? "inherited" : isOwnerRole ? "owner" : isSyntheticId ? "missing_id" : null;
     if (link) {
       const scope = link.scope ?? null;
       const type = link.type ?? null;
@@ -164,6 +170,8 @@ export default async function ItemDetailPage({ params }: { params: { itemId: str
       roles,
       principalCount: principals.length,
       isOwnerRole,
+      isSyntheticId,
+      revokeBlockedReason,
     });
     const viaLink = !!link;
     for (const principal of principals) {
@@ -228,16 +236,16 @@ export default async function ItemDetailPage({ params }: { params: { itemId: str
   const createdBy = item.created_by_email || item.created_by_display_name || item.created_by_user_id || "—";
 
   return (
-    <main className="flex flex-col gap-4">
+    <main className="ps-page">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="truncate text-2xl font-semibold">{item.name || item.id}</h1>
             <Badge variant="outline">{item.is_folder ? "Folder" : "File"}</Badge>
-            {isShared ? <Badge className="border-blue-200 bg-blue-50 text-blue-700">Shared</Badge> : null}
+            {isShared ? <Badge className="border-primary/35 bg-primary/15 text-foreground">Shared</Badge> : null}
             {hasAnonymousLink ? <Badge className="border-red-200 bg-red-50 text-red-700">Anonymous link</Badge> : null}
-            {hasOrgLink ? <Badge className="border-amber-200 bg-amber-50 text-amber-800">Org-wide link</Badge> : null}
-            {hasUsersLink ? <Badge className="border-slate-200 bg-slate-50 text-slate-700">Specific users link</Badge> : null}
+            {hasOrgLink ? <Badge className="border-primary/35 bg-primary/15 text-foreground">Org-wide link</Badge> : null}
+            {hasUsersLink ? <Badge className="border-border bg-muted text-muted-foreground">Specific users link</Badge> : null}
           </div>
           <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{path}</p>
           <p className="mt-1 truncate text-xs text-muted-foreground">{item.id}</p>

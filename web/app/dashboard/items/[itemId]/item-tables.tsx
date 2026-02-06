@@ -48,7 +48,24 @@ type PermissionRow = {
   roles: string[];
   principalCount: number;
   isOwnerRole: boolean;
+  isSyntheticId: boolean;
+  revokeBlockedReason: "inherited" | "owner" | "missing_id" | null;
 };
+
+type DeletePermissionResult = {
+  ok: boolean;
+  error?: string;
+  warning?: string;
+};
+
+type ActionStatus = {
+  kind: "success" | "failed" | "partial" | "sync-delay";
+  message: string;
+};
+
+function sanitizeResponseText(text: string): string {
+  return text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 240);
+}
 
 async function errorMessageFromResponse(res: Response): Promise<string> {
   try {
@@ -57,10 +74,12 @@ async function errorMessageFromResponse(res: Response): Promise<string> {
       try {
         const data = JSON.parse(text);
         if (data?.error) return String(data.error);
+        if (data?.warning) return String(data.warning);
       } catch {
         // ignore parse errors
       }
-      return text;
+      const cleaned = sanitizeResponseText(text);
+      if (cleaned) return cleaned;
     }
   } catch {
     // ignore read errors
@@ -68,17 +87,71 @@ async function errorMessageFromResponse(res: Response): Promise<string> {
   return `Request failed with status ${res.status}`;
 }
 
-async function deletePermission(driveId: string, itemId: string, permissionId: string): Promise<{ ok: boolean; error?: string }> {
+async function deletePermission(driveId: string, itemId: string, permissionId: string): Promise<DeletePermissionResult> {
   try {
     const res = await fetch("/api/graph/drive-item-permissions", {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ driveId, itemId, permissionId }),
     });
-    if (res.ok) return { ok: true };
+    if (res.ok) {
+      let warning: string | undefined;
+      try {
+        const body = await res.clone().json();
+        if (body?.warning) warning = String(body.warning);
+      } catch {
+        // best-effort read
+      }
+      return { ok: true, warning };
+    }
     return { ok: false, error: await errorMessageFromResponse(res) };
   } catch (err: any) {
     return { ok: false, error: err?.message || "Request failed" };
+  }
+}
+
+async function fetchLivePermissionIds(driveId: string, itemId: string): Promise<Set<string> | null> {
+  try {
+    const params = new URLSearchParams({ driveId, itemId });
+    const res = await fetch(`/api/graph/drive-item-permissions?${params.toString()}`, {
+      method: "GET",
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const payload = await res.json();
+    const values = Array.isArray(payload?.data?.value) ? payload.data.value : [];
+    const ids = values
+      .map((entry: any) => (entry?.id ? String(entry.id) : ""))
+      .filter((id: string) => id.length > 0);
+    return new Set(ids);
+  } catch {
+    return null;
+  }
+}
+
+function statusClassName(kind: ActionStatus["kind"]): string {
+  switch (kind) {
+    case "success":
+      return "text-emerald-700 dark:text-emerald-300";
+    case "partial":
+      return "text-amber-700 dark:text-amber-300";
+    case "sync-delay":
+      return "text-blue-700 dark:text-blue-300";
+    default:
+      return "text-red-700 dark:text-red-300";
+  }
+}
+
+function revokeBlockedReasonMessage(reason: PermissionRow["revokeBlockedReason"]): string {
+  switch (reason) {
+    case "inherited":
+      return "Inherited permission; revoke at source item.";
+    case "owner":
+      return "Owner permission cannot be revoked from this view.";
+    case "missing_id":
+      return "Permission ID unavailable for revoke.";
+    default:
+      return "";
   }
 }
 
@@ -175,9 +248,9 @@ function badgeForClassification(c: PrincipalRow["classification"]) {
     case "guest":
       return <Badge className="border-red-200 bg-red-50 text-red-700">Guest</Badge>;
     case "external":
-      return <Badge className="border-amber-200 bg-amber-50 text-amber-800">External</Badge>;
+      return <Badge className="border-primary/35 bg-primary/15 text-foreground">External</Badge>;
     case "internal":
-      return <Badge className="border-slate-200 bg-slate-50 text-slate-700">Internal</Badge>;
+      return <Badge className="border-border bg-muted text-muted-foreground">Internal</Badge>;
     default:
       return <Badge variant="outline">Unknown</Badge>;
   }
@@ -195,8 +268,9 @@ export function ItemPrincipalsTable({
   itemId: string;
 }) {
   const router = useRouter();
-  const [actionErrors, setActionErrors] = React.useState<Record<string, string>>({});
+  const [actionStatus, setActionStatus] = React.useState<Record<string, ActionStatus>>({});
   const [actionBusy, setActionBusy] = React.useState<Record<string, boolean>>({});
+  const hardReloadedRef = React.useRef(false);
 
   const rowKey = React.useCallback(
     (p: PrincipalRow) => `${p.type}:${p.id ?? p.email ?? p.displayName ?? "unknown"}`,
@@ -250,7 +324,7 @@ export function ItemPrincipalsTable({
       sortValue: () => 0,
       cell: (p: PrincipalRow) => {
         const key = rowKey(p);
-        const error = actionErrors[key];
+        const status = actionStatus[key];
         const busy = actionBusy[key];
         const canRevoke = p.directPermissionIds.length > 0;
         return (
@@ -264,43 +338,85 @@ export function ItemPrincipalsTable({
                 const confirmed = window.confirm("Revoke explicit access for this principal?");
                 if (!confirmed) return;
                 setActionBusy((prev) => ({ ...prev, [key]: true }));
-                setActionErrors((prev) => {
+                setActionStatus((prev) => {
                   const next = { ...prev };
                   delete next[key];
                   return next;
                 });
 
+                const targetPermissionIds = [...p.directPermissionIds];
                 const results = await Promise.all(
-                  p.directPermissionIds.map((permissionId) => deletePermission(driveId, itemId, permissionId))
+                  targetPermissionIds.map((permissionId) => deletePermission(driveId, itemId, permissionId))
                 );
+                const successCount = results.filter((r) => r.ok).length;
                 const failures = results.filter((r) => !r.ok);
-                if (failures.length) {
-                  const firstError = failures[0].error || "Permission revoke failed";
-                  setActionErrors((prev) => ({
+                const warnings = results.filter((r) => r.ok && r.warning).map((r) => String(r.warning));
+
+                if (successCount > 0) {
+                  router.refresh();
+                  const livePermissionIds = await fetchLivePermissionIds(driveId, itemId);
+                  if (livePermissionIds) {
+                    const stillPresent = targetPermissionIds.filter((permissionId) => livePermissionIds.has(permissionId));
+                    if (stillPresent.length > 0) {
+                      setActionStatus((prev) => ({
+                        ...prev,
+                        [key]: {
+                          kind: "sync-delay",
+                          message: "Success on delete, but live data is delayed. Reloading…",
+                        },
+                      }));
+                      if (!hardReloadedRef.current) {
+                        hardReloadedRef.current = true;
+                        window.setTimeout(() => window.location.reload(), 900);
+                      }
+                      setActionBusy((prev) => ({ ...prev, [key]: false }));
+                      return;
+                    }
+                  }
+                }
+
+                if (failures.length === 0 && warnings.length === 0) {
+                  setActionStatus((prev) => ({
                     ...prev,
-                    [key]: `${failures.length} permissions failed to revoke: ${firstError}`,
+                    [key]: { kind: "success", message: "Success: access revoked." },
+                  }));
+                } else if (failures.length === 0 && warnings.length > 0) {
+                  setActionStatus((prev) => ({
+                    ...prev,
+                    [key]: {
+                      kind: "partial",
+                      message: `Partial: revoked with warning: ${warnings[0]}`,
+                    },
+                  }));
+                } else if (successCount > 0) {
+                  const firstError = failures[0].error || "Permission revoke failed";
+                  setActionStatus((prev) => ({
+                    ...prev,
+                    [key]: {
+                      kind: "partial",
+                      message: `Partial: ${successCount} revoked, ${failures.length} failed: ${firstError}`,
+                    },
                   }));
                 } else {
-                  setActionErrors((prev) => {
-                    const next = { ...prev };
-                    delete next[key];
-                    return next;
-                  });
-                  router.refresh();
+                  const firstError = failures[0]?.error || "Permission revoke failed";
+                  setActionStatus((prev) => ({
+                    ...prev,
+                    [key]: { kind: "failed", message: `Failed: ${firstError}` },
+                  }));
                 }
                 setActionBusy((prev) => ({ ...prev, [key]: false }));
               }}
             >
               {busy ? "Revoking..." : "Revoke"}
             </Button>
-            {error ? <div className="text-xs text-red-600">{error}</div> : null}
+            {status ? <div className={`text-xs ${statusClassName(status.kind)}`}>{status.message}</div> : null}
           </div>
         );
       },
     });
 
     return base;
-  }, [actionBusy, actionErrors, driveId, itemId, isAdmin, rowKey, router]);
+  }, [actionBusy, actionStatus, driveId, itemId, isAdmin, rowKey, router]);
 
   return <SortableTable items={principals} columns={columns} getRowKey={rowKey} emptyMessage="No principals found." />;
 }
@@ -317,8 +433,9 @@ export function ItemPermissionsTable({
   itemId: string;
 }) {
   const router = useRouter();
-  const [actionErrors, setActionErrors] = React.useState<Record<string, string>>({});
+  const [actionStatus, setActionStatus] = React.useState<Record<string, ActionStatus>>({});
   const [actionBusy, setActionBusy] = React.useState<Record<string, boolean>>({});
+  const hardReloadedRef = React.useRef(false);
 
   const columns = React.useMemo(() => {
     const base = [
@@ -337,6 +454,10 @@ export function ItemPermissionsTable({
                 </Link>
               </div>
             ) : null}
+            {p.source === "inherited" && !p.inheritedFromItemId ? (
+              <div className="text-xs text-muted-foreground">Inherited permission from parent item.</div>
+            ) : null}
+            {p.isSyntheticId ? <div className="text-xs text-muted-foreground">ID unavailable from Graph payload.</div> : null}
           </div>
         ),
       },
@@ -377,9 +498,11 @@ export function ItemPermissionsTable({
       header: "Actions",
       sortValue: () => 0,
       cell: (p: PermissionRow) => {
-        const error = actionErrors[p.permissionId];
+        const status = actionStatus[p.permissionId];
         const busy = actionBusy[p.permissionId];
-        const canRevoke = !p.isOwnerRole;
+        const blockedReason = p.revokeBlockedReason;
+        const canRevoke = blockedReason == null;
+        const blockedMessage = revokeBlockedReasonMessage(blockedReason);
         return (
           <div className="flex flex-col gap-1">
             <Button
@@ -391,7 +514,7 @@ export function ItemPermissionsTable({
                 const confirmed = window.confirm("Revoke this permission?");
                 if (!confirmed) return;
                 setActionBusy((prev) => ({ ...prev, [p.permissionId]: true }));
-                setActionErrors((prev) => {
+                setActionStatus((prev) => {
                   const next = { ...prev };
                   delete next[p.permissionId];
                   return next;
@@ -399,31 +522,61 @@ export function ItemPermissionsTable({
 
                 const result = await deletePermission(driveId, itemId, p.permissionId);
                 if (!result.ok) {
-                  setActionErrors((prev) => ({
+                  setActionStatus((prev) => ({
                     ...prev,
-                    [p.permissionId]: result.error || "Permission revoke failed",
+                    [p.permissionId]: {
+                      kind: "failed",
+                      message: `Failed: ${result.error || "Permission revoke failed"}`,
+                    },
                   }));
                 } else {
-                  setActionErrors((prev) => {
-                    const next = { ...prev };
-                    delete next[p.permissionId];
-                    return next;
-                  });
                   router.refresh();
+                  const livePermissionIds = await fetchLivePermissionIds(driveId, itemId);
+                  if (livePermissionIds && livePermissionIds.has(p.permissionId)) {
+                    setActionStatus((prev) => ({
+                      ...prev,
+                      [p.permissionId]: {
+                        kind: "sync-delay",
+                        message: "Success on delete, but live data is delayed. Reloading…",
+                      },
+                    }));
+                    if (!hardReloadedRef.current) {
+                      hardReloadedRef.current = true;
+                      window.setTimeout(() => window.location.reload(), 900);
+                    }
+                    setActionBusy((prev) => ({ ...prev, [p.permissionId]: false }));
+                    return;
+                  }
+
+                  if (result.warning) {
+                    setActionStatus((prev) => ({
+                      ...prev,
+                      [p.permissionId]: {
+                        kind: "partial",
+                        message: `Partial: revoked with warning: ${result.warning}`,
+                      },
+                    }));
+                  } else {
+                    setActionStatus((prev) => ({
+                      ...prev,
+                      [p.permissionId]: { kind: "success", message: "Success: permission revoked." },
+                    }));
+                  }
                 }
                 setActionBusy((prev) => ({ ...prev, [p.permissionId]: false }));
               }}
             >
               {busy ? "Revoking..." : "Revoke"}
             </Button>
-            {error ? <div className="text-xs text-red-600">{error}</div> : null}
+            {status ? <div className={`text-xs ${statusClassName(status.kind)}`}>{status.message}</div> : null}
+            {!status && !canRevoke && blockedMessage ? <div className="text-xs text-muted-foreground">{blockedMessage}</div> : null}
           </div>
         );
       },
     });
 
     return base;
-  }, [actionBusy, actionErrors, driveId, itemId, isAdmin, router]);
+  }, [actionBusy, actionStatus, driveId, itemId, isAdmin, router]);
 
   return <SortableTable items={permissions} columns={columns} getRowKey={(p) => p.permissionId} emptyMessage="No permissions found." />;
 }

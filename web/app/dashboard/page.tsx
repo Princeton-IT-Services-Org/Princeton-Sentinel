@@ -4,6 +4,9 @@ import { SharingSummaryBarChartClient, SharingSummaryPieChartClient } from "@/co
 import { formatBytes } from "@/app/lib/format";
 import { query } from "@/app/lib/db";
 import { requireUser } from "@/app/lib/auth";
+import PageHeader from "@/components/page-header";
+import MetricGrid from "@/components/metric-grid";
+import { MetricCard } from "@/components/metric-card";
 
 export const dynamic = "force-dynamic";
 
@@ -47,16 +50,29 @@ export default async function DashboardPage() {
       label: d.name ?? d.drive_id,
       value: (d.quota_used ?? 0) / 1024 / 1024 / 1024,
     }));
+  const entityMix = [
+    { label: "Sites", value: chartTotals.sites },
+    { label: "Users", value: chartTotals.users },
+    { label: "Groups", value: chartTotals.groups },
+    { label: "Drives", value: chartTotals.drives },
+  ];
 
   return (
-    <main className="flex flex-col gap-4">
-      <div>
-        <h1 className="text-2xl font-semibold">Dashboard</h1>
-        <p className="text-sm text-muted-foreground">High-level posture signals from directory, storage, and sharing metadata.</p>
-      </div>
+    <main className="ps-page">
+      <PageHeader
+        title="Dashboard"
+        subtitle="High-level posture signals from directory, storage, and sharing metadata."
+      />
+
+      <MetricGrid>
+        <MetricCard label="Sites" value={chartTotals.sites.toLocaleString()} />
+        <MetricCard label="Users" value={chartTotals.users.toLocaleString()} />
+        <MetricCard label="Groups" value={chartTotals.groups.toLocaleString()} />
+        <MetricCard label="Drives" value={chartTotals.drives.toLocaleString()} />
+      </MetricGrid>
 
       <div className="grid gap-3 md:grid-cols-2">
-        <Card className="rounded-2xl border border-slate-200 bg-white shadow-md">
+        <Card>
           <CardHeader>
             <CardTitle>Directory totals</CardTitle>
             <CardDescription>Sites, users, groups, drives</CardDescription>
@@ -66,7 +82,7 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
 
-        <Card className="rounded-2xl border border-slate-200 bg-white shadow-md">
+        <Card>
           <CardHeader>
             <CardTitle>Sharing link scopes</CardTitle>
             <CardDescription>Current link inventory (direct permissions)</CardDescription>
@@ -76,7 +92,7 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
 
-        <Card className="rounded-2xl border border-slate-200 bg-white shadow-md">
+        <Card>
           <CardHeader>
             <CardTitle>Drive types</CardTitle>
             <CardDescription>Where content lives</CardDescription>
@@ -86,7 +102,7 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
 
-        <Card className="rounded-2xl border border-slate-200 bg-white shadow-md">
+        <Card>
           <CardHeader>
             <CardTitle>Top drives by used storage</CardTitle>
             <CardDescription>
@@ -95,6 +111,16 @@ export default async function DashboardPage() {
           </CardHeader>
           <CardContent className="h-72 flex items-center">
             <SharingSummaryBarChartClient data={topDrives} label="Used (GB)" xTitle="GB" />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Entity distribution</CardTitle>
+            <CardDescription>Relative composition across key identity and content entities</CardDescription>
+          </CardHeader>
+          <CardContent className="h-72">
+            <SharingSummaryPieChartClient data={entityMix} />
           </CardContent>
         </Card>
       </div>
