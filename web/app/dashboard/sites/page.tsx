@@ -69,6 +69,7 @@ export default async function SitesPage({ searchParams }: { searchParams?: Searc
         base_url AS web_url,
         COALESCE(MAX(u.display_name), MAX(pd.owner_display_name), MAX(pd.owner_email), MAX(base_url)) AS title,
         MIN(pd.created_dt) AS created_dt,
+        MIN(pd.id) AS representative_drive_id,
         COUNT(*)::int AS drive_count,
         SUM(pd.quota_used) AS storage_used_bytes,
         SUM(pd.quota_total) AS storage_total_bytes
@@ -115,7 +116,7 @@ export default async function SitesPage({ searchParams }: { searchParams?: Searc
     personal_rows AS (
       SELECT
         pg.site_key,
-        pg.site_key AS site_id,
+        COALESCE('drive:' || pg.representative_drive_id, pg.site_key) AS site_id,
         pg.title,
         pg.web_url,
         pg.created_dt,

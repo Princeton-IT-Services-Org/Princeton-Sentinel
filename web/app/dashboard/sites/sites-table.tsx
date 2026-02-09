@@ -40,7 +40,7 @@ export function SitesTable({ items }: { items: SiteRow[] }) {
         sortValue: (s: SiteRow) => s.title,
         cell: (s: SiteRow) => (
           <div className="flex flex-col gap-1">
-            <Link className="font-medium hover:underline" href={`/dashboard/sites/${encodeURIComponent(s.site_key)}`}>
+            <Link className="font-medium hover:underline" href={`/dashboard/sites/${encodeURIComponent(s.site_id || s.site_key)}`}>
               {s.title || s.site_id}
             </Link>
             {s.web_url ? (

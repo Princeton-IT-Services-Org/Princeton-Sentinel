@@ -27,6 +27,7 @@ export default async function SiteDetailPage({
   const resolved = await resolveSite(rawId);
   if (!resolved) notFound();
   const site = resolved.site;
+  const routeSiteId = site.site_id || rawId;
   const isPersonal = resolved.mode === "personal";
   const personalBaseUrl = resolved.personalBaseUrl || site.site_key;
   const windowDays = getWindowDays(searchParams, 90);
@@ -282,13 +283,13 @@ export default async function SiteDetailPage({
           <Link className="text-muted-foreground hover:underline" href="/dashboard/sites">
             Back
           </Link>
-          <Link className="text-muted-foreground hover:underline" href={`/dashboard/sites/${encodeURIComponent(site.site_key)}/sharing`}>
+          <Link className="text-muted-foreground hover:underline" href={`/dashboard/sites/${encodeURIComponent(routeSiteId)}/sharing`}>
             Sharing
           </Link>
-          <Link className="text-muted-foreground hover:underline" href={`/dashboard/sites/${encodeURIComponent(site.site_key)}/files`}>
+          <Link className="text-muted-foreground hover:underline" href={`/dashboard/sites/${encodeURIComponent(routeSiteId)}/files`}>
             Files
           </Link>
-          <form className="flex items-center gap-2" action={`/dashboard/sites/${encodeURIComponent(site.site_key)}`} method="get">
+          <form className="flex items-center gap-2" action={`/dashboard/sites/${encodeURIComponent(routeSiteId)}`} method="get">
             <select
               name="days"
               defaultValue={daysParam}

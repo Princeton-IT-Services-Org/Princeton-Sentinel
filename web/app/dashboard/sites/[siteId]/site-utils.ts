@@ -31,6 +31,7 @@ async function fetchPersonalSite(baseUrl: string): Promise<any | null> {
     ),
     personal_storage AS (
       SELECT
+        MIN(d.id) AS representative_drive_id,
         COUNT(*)::int AS drive_count,
         SUM(d.quota_used) AS storage_used_bytes,
         SUM(d.quota_total) AS storage_total_bytes,
@@ -51,7 +52,7 @@ async function fetchPersonalSite(baseUrl: string): Promise<any | null> {
     )
     SELECT
       $1::text AS site_key,
-      $1::text AS site_id,
+      COALESCE('drive:' || (SELECT representative_drive_id FROM personal_storage), $1::text) AS site_id,
       COALESCE((SELECT title FROM personal_names), $1::text) AS title,
       $1::text AS web_url,
       (SELECT created_dt FROM personal_storage) AS created_dt,

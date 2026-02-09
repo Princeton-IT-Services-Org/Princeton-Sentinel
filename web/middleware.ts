@@ -19,6 +19,13 @@ function isApiRequest(pathname: string) {
   return pathname.startsWith("/api/");
 }
 
+function forbiddenRedirect(req: NextRequest) {
+  const url = req.nextUrl.clone();
+  url.pathname = "/forbidden";
+  url.search = "";
+  return NextResponse.redirect(url);
+}
+
 export async function middleware(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
 
@@ -29,7 +36,7 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  if (pathname.startsWith("/signin") || pathname.startsWith("/signout") || pathname.startsWith("/forbidden")) {
+  if (pathname.startsWith("/signin") || pathname.startsWith("/signout") || pathname.startsWith("/forbidden") || pathname.startsWith("/403")) {
     return NextResponse.next();
   }
 
@@ -54,7 +61,7 @@ export async function middleware(req: NextRequest) {
       if (isApiRequest(pathname)) {
         return NextResponse.json({ error: "forbidden" }, { status: 403 });
       }
-      return NextResponse.redirect(new URL("/forbidden", req.nextUrl.origin));
+      return forbiddenRedirect(req);
     }
   }
 
@@ -63,7 +70,7 @@ export async function middleware(req: NextRequest) {
       if (isApiRequest(pathname)) {
         return NextResponse.json({ error: "forbidden" }, { status: 403 });
       }
-      return NextResponse.redirect(new URL("/forbidden", req.nextUrl.origin));
+      return forbiddenRedirect(req);
     }
   }
 

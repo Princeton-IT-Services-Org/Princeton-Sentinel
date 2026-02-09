@@ -23,6 +23,7 @@ export default async function SiteSharingPage({ params }: { params: { siteId: st
   const resolved = await resolveSite(rawId);
   if (!resolved) notFound();
   const site = resolved.site;
+  const routeSiteId = site.site_id || rawId;
   const isPersonal = resolved.mode === "personal";
   const personalBaseUrl = resolved.personalBaseUrl || site.site_key;
 
@@ -173,10 +174,10 @@ export default async function SiteSharingPage({ params }: { params: { siteId: st
           <p className="mt-2 text-xs uppercase tracking-[0.3em] text-muted-foreground">Cached (DB)</p>
         </div>
         <div className="flex items-center gap-3 text-sm">
-          <Link className="text-muted-foreground hover:underline" href={`/dashboard/sites/${encodeURIComponent(site.site_key)}`}>
+          <Link className="text-muted-foreground hover:underline" href={`/dashboard/sites/${encodeURIComponent(routeSiteId)}`}>
             Overview
           </Link>
-          <Link className="text-muted-foreground hover:underline" href={`/dashboard/sites/${encodeURIComponent(site.site_key)}/files`}>
+          <Link className="text-muted-foreground hover:underline" href={`/dashboard/sites/${encodeURIComponent(routeSiteId)}/files`}>
             Files
           </Link>
         </div>
