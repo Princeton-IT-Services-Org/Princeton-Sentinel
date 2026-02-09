@@ -115,6 +115,7 @@ jobs:
           STG_NEXTAUTH_SECRET: ${{ secrets.STG_NEXTAUTH_SECRET }}
           STG_NEXTAUTH_URL: ${{ vars.STG_NEXTAUTH_URL }}
           STG_WORKER_API_URL: ${{ vars.STG_WORKER_API_URL }}
+          STG_WORKER_HEARTBEAT_URL: ${{ vars.STG_WORKER_HEARTBEAT_URL || vars.WORKER_HEARTBEAT_URL }}
           STG_ENTRA_TENANT_ID: ${{ vars.STG_ENTRA_TENANT_ID }}
           STG_ENTRA_CLIENT_ID: ${{ vars.STG_ENTRA_CLIENT_ID }}
           STG_ADMIN_GROUP_ID: ${{ vars.STG_ADMIN_GROUP_ID }}
@@ -144,6 +145,7 @@ jobs:
 
           NEXTAUTH_URL="${STG_NEXTAUTH_URL:-https://${WEB_FQDN}}"
           WORKER_API_URL="${STG_WORKER_API_URL:-http://${AZ_WORKER_APP_NAME}}"
+          WORKER_HEARTBEAT_URL="${STG_WORKER_HEARTBEAT_URL:-https://${WEB_FQDN}/api/internal/worker-heartbeat}"
 
           az containerapp secret set \
             --name "${AZ_WEB_APP_NAME}" \
@@ -196,7 +198,8 @@ jobs:
               GRAPH_PAGE_SIZE="${STG_GRAPH_PAGE_SIZE}" \
               GRAPH_PERMISSIONS_BATCH_SIZE="${STG_GRAPH_PERMISSIONS_BATCH_SIZE}" \
               GRAPH_PERMISSIONS_STALE_AFTER_HOURS="${STG_GRAPH_PERMISSIONS_STALE_AFTER_HOURS}" \
-              FLUSH_EVERY="${STG_FLUSH_EVERY}"
+              FLUSH_EVERY="${STG_FLUSH_EVERY}" \
+              WORKER_HEARTBEAT_URL="${WORKER_HEARTBEAT_URL}"
 
       - name: Build and push images to ACR
         shell: bash
