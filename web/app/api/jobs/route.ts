@@ -66,7 +66,7 @@ export async function POST(req: Request) {
       details: { job_type: jobType },
     });
 
-    return NextResponse.redirect(toAppUrl(req, "/admin/jobs"));
+    return NextResponse.redirect(toAppUrl(req, "/admin/jobs"), { status: 303 });
   }
 
   if (action === "toggle") {
@@ -86,7 +86,7 @@ export async function POST(req: Request) {
       details: {},
     });
 
-    return NextResponse.redirect(toAppUrl(req, "/admin/jobs"));
+    return NextResponse.redirect(toAppUrl(req, "/admin/jobs"), { status: 303 });
   }
 
   return NextResponse.json({ error: "unsupported_action" }, { status: 400 });

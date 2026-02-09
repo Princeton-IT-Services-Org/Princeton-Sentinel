@@ -2,6 +2,7 @@ from threading import Thread
 from flask import Flask, jsonify, request
 
 from app import db
+from app.heartbeat import get_heartbeat_status, is_heartbeat_healthy
 from app.scheduler import get_scheduler_status, run_job_once
 from app.utils import log_audit_event
 
@@ -25,7 +26,15 @@ def create_app():
             db_ok = True
         except Exception:
             db_ok = False
-        return jsonify({"ok": True, "db": db_ok, "scheduler": get_scheduler_status()})
+        heartbeat = get_heartbeat_status()
+        return jsonify(
+            {
+                "ok": db_ok and is_heartbeat_healthy(),
+                "db": db_ok,
+                "scheduler": get_scheduler_status(),
+                "heartbeat": heartbeat,
+            }
+        )
 
     @app.get("/jobs/status")
     def jobs_status():

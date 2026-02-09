@@ -41,5 +41,5 @@ export async function POST(req: Request) {
     }),
   });
 
-  return NextResponse.redirect(toAppUrl(req, "/admin"));
+  return NextResponse.redirect(toAppUrl(req, "/admin"), { status: 303 });
 }

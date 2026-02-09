@@ -49,9 +49,9 @@ export default async function AdminPage() {
                 <div className="text-lg font-semibold text-ink">{health?.db ? "Connected" : "Down"}</div>
               </div>
               <div className="rounded-lg border bg-muted/20 p-4">
-                <div className="text-sm text-slate">Scheduler</div>
+                <div className="text-sm text-slate">Last ping</div>
                 <div className="text-xs text-slate">
-                  <LocalDateTime value={health?.scheduler?.last_tick} />
+                  <LocalDateTime value={health?.heartbeat?.last_success_at} fallback="Never" />
                 </div>
               </div>
             </div>

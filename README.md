@@ -48,6 +48,7 @@ The worker + web Graph calls expect the following permissions (as provided):
 
 - No default schedule is created. Create schedules from the **Jobs** page after first boot.
 - Scheduler uses **Postgres advisory locks** and polls `job_schedules.next_run_at` every `SCHEDULER_POLL_SECONDS`.
+- Worker sends a heartbeat to web every `WORKER_HEARTBEAT_INTERVAL_SECONDS` (default 30s); heartbeat state is in-memory and resets on worker restart.
 
 ## Key URLs
 
@@ -66,6 +67,7 @@ See `.env.example` for the full list. Key values:
 - `GRAPH_MAX_CONCURRENCY`, `GRAPH_MAX_RETRIES`, `GRAPH_CONNECT_TIMEOUT`, `GRAPH_READ_TIMEOUT`
 - `GRAPH_PAGE_SIZE`, `GRAPH_PERMISSIONS_BATCH_SIZE`, `GRAPH_PERMISSIONS_STALE_AFTER_HOURS`
 - `FLUSH_EVERY`
+- `WORKER_HEARTBEAT_URL`, `WORKER_HEARTBEAT_INTERVAL_SECONDS`, `WORKER_HEARTBEAT_TIMEOUT_SECONDS`, `WORKER_HEARTBEAT_FAIL_THRESHOLD`
 
 ## Notes
 
