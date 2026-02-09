@@ -51,6 +51,153 @@ jobs:
             fi
           done
 
+      - name: Validate staging runtime config
+        shell: bash
+        env:
+          STG_DATABASE_URL: ${{ secrets.STG_DATABASE_URL }}
+          STG_ENTRA_CLIENT_SECRET: ${{ secrets.STG_ENTRA_CLIENT_SECRET }}
+          STG_NEXTAUTH_SECRET: ${{ secrets.STG_NEXTAUTH_SECRET }}
+          STG_ENTRA_TENANT_ID: ${{ vars.STG_ENTRA_TENANT_ID }}
+          STG_ENTRA_CLIENT_ID: ${{ vars.STG_ENTRA_CLIENT_ID }}
+          STG_ADMIN_GROUP_ID: ${{ vars.STG_ADMIN_GROUP_ID }}
+          STG_USER_GROUP_ID: ${{ vars.STG_USER_GROUP_ID }}
+          STG_INTERNAL_EMAIL_DOMAINS: ${{ vars.STG_INTERNAL_EMAIL_DOMAINS }}
+          STG_DASHBOARD_DORMANT_LOOKBACK_DAYS: ${{ vars.STG_DASHBOARD_DORMANT_LOOKBACK_DAYS }}
+          STG_DASHBOARD_RISK_SCAN_LIMIT: ${{ vars.STG_DASHBOARD_RISK_SCAN_LIMIT }}
+          STG_DB_CONNECT_TIMEOUT_SECONDS: ${{ vars.STG_DB_CONNECT_TIMEOUT_SECONDS }}
+          STG_SCHEDULER_POLL_SECONDS: ${{ vars.STG_SCHEDULER_POLL_SECONDS }}
+          STG_GRAPH_BASE: ${{ vars.STG_GRAPH_BASE }}
+          STG_GRAPH_MAX_CONCURRENCY: ${{ vars.STG_GRAPH_MAX_CONCURRENCY }}
+          STG_GRAPH_MAX_RETRIES: ${{ vars.STG_GRAPH_MAX_RETRIES }}
+          STG_GRAPH_CONNECT_TIMEOUT: ${{ vars.STG_GRAPH_CONNECT_TIMEOUT }}
+          STG_GRAPH_READ_TIMEOUT: ${{ vars.STG_GRAPH_READ_TIMEOUT }}
+          STG_GRAPH_PAGE_SIZE: ${{ vars.STG_GRAPH_PAGE_SIZE }}
+          STG_GRAPH_PERMISSIONS_BATCH_SIZE: ${{ vars.STG_GRAPH_PERMISSIONS_BATCH_SIZE }}
+          STG_GRAPH_PERMISSIONS_STALE_AFTER_HOURS: ${{ vars.STG_GRAPH_PERMISSIONS_STALE_AFTER_HOURS }}
+          STG_FLUSH_EVERY: ${{ vars.STG_FLUSH_EVERY }}
+        run: |
+          set -euo pipefail
+          required=(
+            STG_DATABASE_URL
+            STG_ENTRA_CLIENT_SECRET
+            STG_NEXTAUTH_SECRET
+            STG_ENTRA_TENANT_ID
+            STG_ENTRA_CLIENT_ID
+            STG_ADMIN_GROUP_ID
+            STG_USER_GROUP_ID
+            STG_INTERNAL_EMAIL_DOMAINS
+            STG_DASHBOARD_DORMANT_LOOKBACK_DAYS
+            STG_DASHBOARD_RISK_SCAN_LIMIT
+            STG_DB_CONNECT_TIMEOUT_SECONDS
+            STG_SCHEDULER_POLL_SECONDS
+            STG_GRAPH_BASE
+            STG_GRAPH_MAX_CONCURRENCY
+            STG_GRAPH_MAX_RETRIES
+            STG_GRAPH_CONNECT_TIMEOUT
+            STG_GRAPH_READ_TIMEOUT
+            STG_GRAPH_PAGE_SIZE
+            STG_GRAPH_PERMISSIONS_BATCH_SIZE
+            STG_GRAPH_PERMISSIONS_STALE_AFTER_HOURS
+            STG_FLUSH_EVERY
+          )
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing GitHub staging config: ${name}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Sync staging runtime config to Container Apps
+        shell: bash
+        env:
+          STG_DATABASE_URL: ${{ secrets.STG_DATABASE_URL }}
+          STG_ENTRA_CLIENT_SECRET: ${{ secrets.STG_ENTRA_CLIENT_SECRET }}
+          STG_NEXTAUTH_SECRET: ${{ secrets.STG_NEXTAUTH_SECRET }}
+          STG_NEXTAUTH_URL: ${{ vars.STG_NEXTAUTH_URL }}
+          STG_WORKER_API_URL: ${{ vars.STG_WORKER_API_URL }}
+          STG_ENTRA_TENANT_ID: ${{ vars.STG_ENTRA_TENANT_ID }}
+          STG_ENTRA_CLIENT_ID: ${{ vars.STG_ENTRA_CLIENT_ID }}
+          STG_ADMIN_GROUP_ID: ${{ vars.STG_ADMIN_GROUP_ID }}
+          STG_USER_GROUP_ID: ${{ vars.STG_USER_GROUP_ID }}
+          STG_INTERNAL_EMAIL_DOMAINS: ${{ vars.STG_INTERNAL_EMAIL_DOMAINS }}
+          STG_DASHBOARD_DORMANT_LOOKBACK_DAYS: ${{ vars.STG_DASHBOARD_DORMANT_LOOKBACK_DAYS }}
+          STG_DASHBOARD_RISK_SCAN_LIMIT: ${{ vars.STG_DASHBOARD_RISK_SCAN_LIMIT }}
+          STG_DB_CONNECT_TIMEOUT_SECONDS: ${{ vars.STG_DB_CONNECT_TIMEOUT_SECONDS }}
+          STG_SCHEDULER_POLL_SECONDS: ${{ vars.STG_SCHEDULER_POLL_SECONDS }}
+          STG_GRAPH_BASE: ${{ vars.STG_GRAPH_BASE }}
+          STG_GRAPH_MAX_CONCURRENCY: ${{ vars.STG_GRAPH_MAX_CONCURRENCY }}
+          STG_GRAPH_MAX_RETRIES: ${{ vars.STG_GRAPH_MAX_RETRIES }}
+          STG_GRAPH_CONNECT_TIMEOUT: ${{ vars.STG_GRAPH_CONNECT_TIMEOUT }}
+          STG_GRAPH_READ_TIMEOUT: ${{ vars.STG_GRAPH_READ_TIMEOUT }}
+          STG_GRAPH_PAGE_SIZE: ${{ vars.STG_GRAPH_PAGE_SIZE }}
+          STG_GRAPH_PERMISSIONS_BATCH_SIZE: ${{ vars.STG_GRAPH_PERMISSIONS_BATCH_SIZE }}
+          STG_GRAPH_PERMISSIONS_STALE_AFTER_HOURS: ${{ vars.STG_GRAPH_PERMISSIONS_STALE_AFTER_HOURS }}
+          STG_FLUSH_EVERY: ${{ vars.STG_FLUSH_EVERY }}
+        run: |
+          set -euo pipefail
+
+          WEB_FQDN="$(az containerapp show \
+            --name "${AZ_WEB_APP_NAME}" \
+            --resource-group "${AZ_RESOURCE_GROUP}" \
+            --query "properties.configuration.ingress.fqdn" \
+            --output tsv)"
+
+          NEXTAUTH_URL="${STG_NEXTAUTH_URL:-https://${WEB_FQDN}}"
+          WORKER_API_URL="${STG_WORKER_API_URL:-http://${AZ_WORKER_APP_NAME}}"
+
+          az containerapp secret set \
+            --name "${AZ_WEB_APP_NAME}" \
+            --resource-group "${AZ_RESOURCE_GROUP}" \
+            --secrets \
+              dburl="${STG_DATABASE_URL}" \
+              entrasecret="${STG_ENTRA_CLIENT_SECRET}" \
+              nextauthsecret="${STG_NEXTAUTH_SECRET}"
+
+          az containerapp secret set \
+            --name "${AZ_WORKER_APP_NAME}" \
+            --resource-group "${AZ_RESOURCE_GROUP}" \
+            --secrets \
+              dburl="${STG_DATABASE_URL}" \
+              entrasecret="${STG_ENTRA_CLIENT_SECRET}"
+
+          az containerapp update \
+            --name "${AZ_WEB_APP_NAME}" \
+            --resource-group "${AZ_RESOURCE_GROUP}" \
+            --set-env-vars \
+              DATABASE_URL=secretref:dburl \
+              WORKER_API_URL="${WORKER_API_URL}" \
+              NEXTAUTH_URL="${NEXTAUTH_URL}" \
+              NEXTAUTH_SECRET=secretref:nextauthsecret \
+              ENTRA_TENANT_ID="${STG_ENTRA_TENANT_ID}" \
+              ENTRA_CLIENT_ID="${STG_ENTRA_CLIENT_ID}" \
+              ENTRA_CLIENT_SECRET=secretref:entrasecret \
+              ADMIN_GROUP_ID="${STG_ADMIN_GROUP_ID}" \
+              USER_GROUP_ID="${STG_USER_GROUP_ID}" \
+              INTERNAL_EMAIL_DOMAINS="${STG_INTERNAL_EMAIL_DOMAINS}" \
+              DASHBOARD_DORMANT_LOOKBACK_DAYS="${STG_DASHBOARD_DORMANT_LOOKBACK_DAYS}" \
+              DASHBOARD_RISK_SCAN_LIMIT="${STG_DASHBOARD_RISK_SCAN_LIMIT}"
+
+          az containerapp update \
+            --name "${AZ_WORKER_APP_NAME}" \
+            --resource-group "${AZ_RESOURCE_GROUP}" \
+            --set-env-vars \
+              DATABASE_URL=secretref:dburl \
+              DB_CONNECT_TIMEOUT_SECONDS="${STG_DB_CONNECT_TIMEOUT_SECONDS}" \
+              SCHEDULER_POLL_SECONDS="${STG_SCHEDULER_POLL_SECONDS}" \
+              ENTRA_TENANT_ID="${STG_ENTRA_TENANT_ID}" \
+              ENTRA_CLIENT_ID="${STG_ENTRA_CLIENT_ID}" \
+              ENTRA_CLIENT_SECRET=secretref:entrasecret \
+              INTERNAL_EMAIL_DOMAINS="${STG_INTERNAL_EMAIL_DOMAINS}" \
+              GRAPH_BASE="${STG_GRAPH_BASE}" \
+              GRAPH_MAX_CONCURRENCY="${STG_GRAPH_MAX_CONCURRENCY}" \
+              GRAPH_MAX_RETRIES="${STG_GRAPH_MAX_RETRIES}" \
+              GRAPH_CONNECT_TIMEOUT="${STG_GRAPH_CONNECT_TIMEOUT}" \
+              GRAPH_READ_TIMEOUT="${STG_GRAPH_READ_TIMEOUT}" \
+              GRAPH_PAGE_SIZE="${STG_GRAPH_PAGE_SIZE}" \
+              GRAPH_PERMISSIONS_BATCH_SIZE="${STG_GRAPH_PERMISSIONS_BATCH_SIZE}" \
+              GRAPH_PERMISSIONS_STALE_AFTER_HOURS="${STG_GRAPH_PERMISSIONS_STALE_AFTER_HOURS}" \
+              FLUSH_EVERY="${STG_FLUSH_EVERY}"
+
       - name: Build and push images to ACR
         shell: bash
         run: |
