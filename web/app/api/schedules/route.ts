@@ -3,7 +3,6 @@ import { NextResponse } from "next/server";
 import { query } from "@/app/lib/db";
 import { requireAdmin } from "@/app/lib/auth";
 import { writeAuditEvent } from "@/app/lib/audit";
-import { toAppUrl } from "@/app/lib/request-url";
 export const dynamic = "force-dynamic";
 
 async function parseBody(req: Request) {
@@ -64,7 +63,7 @@ export async function POST(req: Request) {
       details: { job_id: jobId, cron_expr: cronExpr },
     });
 
-    return NextResponse.redirect(toAppUrl(req, "/admin/jobs"), { status: 303 });
+    return new NextResponse(null, { status: 303, headers: { Location: "/admin/jobs" } });
   }
 
   if (action === "toggle") {
@@ -84,7 +83,7 @@ export async function POST(req: Request) {
       details: {},
     });
 
-    return NextResponse.redirect(toAppUrl(req, "/admin/jobs"), { status: 303 });
+    return new NextResponse(null, { status: 303, headers: { Location: "/admin/jobs" } });
   }
 
   return NextResponse.json({ error: "unsupported_action" }, { status: 400 });
