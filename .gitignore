@@ -38,3 +38,4 @@ Thumbs.db
 # Misc
 *.swp
 .codex/environments/environment.toml
+web/tsconfig.tsbuildinfo

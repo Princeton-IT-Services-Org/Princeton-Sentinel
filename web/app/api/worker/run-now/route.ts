@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/app/lib/auth";
+import { toAppUrl } from "@/app/lib/request-url";
 export const dynamic = "force-dynamic";
 
 async function parseBody(req: Request) {
@@ -40,5 +41,5 @@ export async function POST(req: Request) {
     }),
   });
 
-  return NextResponse.redirect(new URL("/admin", req.url));
+  return NextResponse.redirect(toAppUrl(req, "/admin"));
 }
