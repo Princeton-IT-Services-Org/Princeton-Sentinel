@@ -9,7 +9,7 @@ import { formatBytes, formatIsoDateTime } from "@/app/lib/format";
 
 type RiskRow = {
   site_key: string;
-  site_id: string | null;
+  route_drive_id: string;
   title: string;
   web_url: string | null;
   storage_used_bytes: number | null;
@@ -42,7 +42,7 @@ export function RiskTable({ items }: { items: RiskRow[] }) {
         sortValue: (s: RiskRow) => s.title,
         cell: (s: RiskRow) => (
           <div>
-            <Link className="font-medium hover:underline" href={`/dashboard/sites/${encodeURIComponent(s.site_id || s.site_key)}`}>
+            <Link className="font-medium hover:underline" href={`/sites/${encodeURIComponent(s.route_drive_id)}`}>
               {s.title}
             </Link>
             {s.web_url ? (

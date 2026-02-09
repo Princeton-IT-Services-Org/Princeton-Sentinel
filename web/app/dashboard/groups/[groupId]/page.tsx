@@ -141,8 +141,8 @@ export default async function GroupDetailPage({
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
-                  {d.site_id ? (
-                    <Link className="text-muted-foreground hover:underline" href={`/dashboard/sites/${encodeURIComponent(d.site_id)}`}>
+                  {d.id ? (
+                    <Link className="text-muted-foreground hover:underline" href={`/sites/${encodeURIComponent(d.id)}`}>
                       Open site
                     </Link>
                   ) : null}

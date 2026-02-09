@@ -13,7 +13,7 @@ const ADMIN_PREFIXES = [
   "/api/runs",
   "/api/analytics",
 ];
-const USER_PREFIXES = ["/dashboard", "/api/graph"];
+const USER_PREFIXES = ["/dashboard", "/sites", "/api/graph"];
 
 function isApiRequest(pathname: string) {
   return pathname.startsWith("/api/");

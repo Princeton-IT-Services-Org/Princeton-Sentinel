@@ -7,7 +7,7 @@ import { SortableTable } from "@/components/sortable-table";
 import { formatIsoDateTime } from "@/app/lib/format";
 
 type TopSiteRow = {
-  siteId: string;
+  driveId: string;
   title: string | null;
   webUrl: string | null;
   modifiedItems: number;
@@ -20,7 +20,7 @@ type RecentItemRow = {
   webUrl: string | null;
   normalizedPath: string | null;
   lastModifiedDateTime: string | null;
-  siteId: string | null;
+  siteDriveId: string | null;
   siteTitle: string | null;
 };
 
@@ -36,18 +36,18 @@ export function UserTopSitesTable({ sites }: { sites: TopSiteRow[] }) {
       {
         id: "site",
         header: "Site",
-        sortValue: (s: TopSiteRow) => s.title ?? s.siteId,
+        sortValue: (s: TopSiteRow) => s.title ?? s.driveId,
         cell: (s: TopSiteRow) => (
           <div className="flex flex-col gap-1 max-w-[520px]">
-            <Link className="font-medium hover:underline" href={`/dashboard/sites/${encodeURIComponent(s.siteId)}`}>
-              {s.title ?? s.siteId}
+            <Link className="font-medium hover:underline" href={`/sites/${encodeURIComponent(s.driveId)}`}>
+              {s.title ?? s.driveId}
             </Link>
             {s.webUrl ? (
               <a className="truncate text-xs text-muted-foreground hover:underline" href={s.webUrl} target="_blank" rel="noreferrer">
                 {s.webUrl}
               </a>
             ) : (
-              <span className="truncate text-xs text-muted-foreground">{s.siteId}</span>
+              <span className="truncate text-xs text-muted-foreground">{s.driveId}</span>
             )}
           </div>
         ),
@@ -68,7 +68,7 @@ export function UserTopSitesTable({ sites }: { sites: TopSiteRow[] }) {
     []
   );
 
-  return <SortableTable items={sites} columns={columns} getRowKey={(s) => s.siteId} emptyMessage="No site activity found for this user." />;
+  return <SortableTable items={sites} columns={columns} getRowKey={(s) => s.driveId} emptyMessage="No site activity found for this user." />;
 }
 
 export function UserRecentItemsTable({ items }: { items: RecentItemRow[] }) {
@@ -106,11 +106,11 @@ export function UserRecentItemsTable({ items }: { items: RecentItemRow[] }) {
       {
         id: "site",
         header: "Site",
-        sortValue: (it: RecentItemRow) => it.siteTitle ?? it.siteId ?? "",
+        sortValue: (it: RecentItemRow) => it.siteTitle ?? it.siteDriveId ?? "",
         cell: (it: RecentItemRow) =>
-          it.siteId ? (
-            <Link className="text-muted-foreground hover:underline" href={`/dashboard/sites/${encodeURIComponent(it.siteId)}`}>
-              {it.siteTitle ?? it.siteId}
+          it.siteDriveId ? (
+            <Link className="text-muted-foreground hover:underline" href={`/sites/${encodeURIComponent(it.siteDriveId)}`}>
+              {it.siteTitle ?? it.siteDriveId}
             </Link>
           ) : (
             <span className="text-muted-foreground">—</span>

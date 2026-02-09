@@ -10,6 +10,7 @@ import { formatBytes, formatIsoDate, formatIsoDateTime } from "@/app/lib/format"
 type SiteRow = {
   site_key: string;
   site_id: string;
+  route_drive_id: string;
   title: string;
   web_url: string | null;
   created_dt: string | null;
@@ -40,15 +41,15 @@ export function SitesTable({ items }: { items: SiteRow[] }) {
         sortValue: (s: SiteRow) => s.title,
         cell: (s: SiteRow) => (
           <div className="flex flex-col gap-1">
-            <Link className="font-medium hover:underline" href={`/dashboard/sites/${encodeURIComponent(s.site_id || s.site_key)}`}>
-              {s.title || s.site_id}
+            <Link className="font-medium hover:underline" href={`/sites/${encodeURIComponent(s.route_drive_id)}`}>
+              {s.title || s.route_drive_id}
             </Link>
             {s.web_url ? (
               <a className="truncate text-xs text-muted-foreground hover:underline" href={s.web_url} target="_blank" rel="noreferrer">
                 {s.web_url}
               </a>
             ) : (
-              <span className="truncate text-xs text-muted-foreground">{s.site_id}</span>
+              <span className="truncate text-xs text-muted-foreground">{s.route_drive_id}</span>
             )}
           </div>
         ),

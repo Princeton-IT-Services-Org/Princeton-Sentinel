@@ -20,7 +20,7 @@ export default function AppShell({ userLabel, canAdmin, children }: AppShellProp
   const pathname = usePathname() ?? "/";
   const navItems = [
     { href: "/dashboard", label: "Overview", active: pathname === "/dashboard" },
-    { href: "/dashboard/sites", label: "Sites", active: pathname.startsWith("/dashboard/sites") },
+    { href: "/dashboard/sites", label: "Sites", active: pathname.startsWith("/dashboard/sites") || pathname.startsWith("/sites") },
     { href: "/dashboard/activity", label: "Activity", active: pathname.startsWith("/dashboard/activity") },
     { href: "/dashboard/sharing", label: "Sharing", active: pathname.startsWith("/dashboard/sharing") },
     { href: "/dashboard/risk", label: "Risk", active: pathname.startsWith("/dashboard/risk") },

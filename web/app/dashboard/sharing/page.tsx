@@ -7,6 +7,7 @@ import { query } from "@/app/lib/db";
 import { formatNumber } from "@/app/lib/format";
 import { getPagination, getParam, getSortDirection, SearchParams } from "@/app/lib/params";
 import { getInternalDomainPatterns } from "@/app/lib/internalDomains";
+import { DRIVE_SITE_KEY_EXPR, ROUTABLE_SITE_DRIVES_CTE } from "@/app/lib/site-drive-routing";
 import { SharingSummaryBarChartClient, SharingSummaryPieChartClient } from "@/components/sharing-summary-graphs-client";
 import { SharingLinkBreakdownTable, SharingSitesTable } from "./sharing-tables";
 import PageHeader from "@/components/page-header";
@@ -17,7 +18,8 @@ import { MetricCard } from "@/components/metric-card";
 function buildSearchFilter(search: string | null) {
   if (!search) return { clause: "", params: [] as any[] };
   return {
-    clause: "WHERE (LOWER(i.title) LIKE $1 OR LOWER(i.web_url) LIKE $1 OR LOWER(i.site_id) LIKE $1)",
+    clause:
+      "WHERE (LOWER(title) LIKE $1 OR LOWER(web_url) LIKE $1 OR LOWER(site_id) LIKE $1 OR LOWER(route_drive_id) LIKE $1 OR LOWER(site_key) LIKE $1)",
     params: [`%${search.toLowerCase()}%`],
   };
 }
@@ -75,14 +77,15 @@ export default async function SharingPage({ searchParams }: { searchParams?: Sea
     `
   );
 
-  const countRows = await query<any>(`SELECT COUNT(*)::int AS total FROM mv_msgraph_site_inventory i ${clause}`, params);
+  const countRows = await query<any>(`${ROUTABLE_SITE_DRIVES_CTE} SELECT COUNT(*)::int AS total FROM routable_site_drives ${clause}`, params);
   const total = countRows[0]?.total || 0;
 
   const siteRows = await query<any>(
     `
+    ${ROUTABLE_SITE_DRIVES_CTE}
     SELECT
       i.site_key,
-      i.site_id,
+      i.route_drive_id,
       i.title,
       i.web_url,
       i.is_personal,
@@ -90,7 +93,7 @@ export default async function SharingPage({ searchParams }: { searchParams?: Sea
       s.anonymous_links,
       s.organization_links,
       s.last_shared_at
-    FROM mv_msgraph_site_inventory i
+    FROM routable_site_drives i
     LEFT JOIN mv_msgraph_site_sharing_summary s ON s.site_key = i.site_key
     ${clause}
     ORDER BY ${sortColumn} ${dir.toUpperCase()} NULLS LAST
@@ -109,13 +112,13 @@ export default async function SharingPage({ searchParams }: { searchParams?: Sea
         SELECT unnest($1::text[]) AS site_key
       ), grants AS (
         SELECT
-          CASE WHEN d.site_id IS NULL THEN 'drive:' || d.id ELSE d.site_id END AS site_key,
+          ${DRIVE_SITE_KEY_EXPR} AS site_key,
           COALESCE(g.principal_email, g.principal_user_principal_name) AS email
         FROM msgraph_drive_item_permission_grants g
         JOIN msgraph_drive_item_permissions p
           ON p.drive_id = g.drive_id AND p.item_id = g.item_id AND p.permission_id = g.permission_id
         JOIN msgraph_drives d ON d.id = p.drive_id
-        JOIN selected s ON s.site_key = CASE WHEN d.site_id IS NULL THEN 'drive:' || d.id ELSE d.site_id END
+        JOIN selected s ON s.site_key = ${DRIVE_SITE_KEY_EXPR}
         WHERE g.deleted_at IS NULL AND p.deleted_at IS NULL AND d.deleted_at IS NULL
           AND COALESCE(g.principal_email, g.principal_user_principal_name) IS NOT NULL
       )

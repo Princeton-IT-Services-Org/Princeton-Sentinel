@@ -7,7 +7,6 @@ import { query } from "@/app/lib/db";
 import { safeDecode } from "@/app/lib/format";
 
 import { SiteLargestFilesTable, SiteMostPermissionedItemsTable, SiteRecentlyModifiedTable } from "./site-files-tables";
-import { PERSONAL_DRIVES_CTE, resolveSite } from "../site-utils";
 
 export const dynamic = "force-dynamic";
 
@@ -51,133 +50,88 @@ function Heatmap({ cells }: { cells: Array<{ dayOfWeek: number; hour: number; co
   );
 }
 
-export default async function SiteFilesPage({ params }: { params: { siteId: string } }) {
+export default async function DriveFilesPage({ params }: { params: { driveId: string } }) {
   await requireUser();
 
-  const rawId = safeDecode(params.siteId);
-  const resolved = await resolveSite(rawId);
-  if (!resolved) notFound();
-  const site = resolved.site;
-  const routeSiteId = site.site_id || rawId;
-  const isPersonal = resolved.mode === "personal";
-  const personalBaseUrl = resolved.personalBaseUrl || site.site_key;
+  const driveId = safeDecode(params.driveId);
+
+  const driveRows = await query<any>(
+    `
+    SELECT d.id, d.site_id, d.name, d.owner_display_name, d.owner_email, u.display_name AS owner_user_name, s.name AS site_name
+    FROM msgraph_drives d
+    LEFT JOIN msgraph_users u ON u.id = d.owner_id AND u.deleted_at IS NULL
+    LEFT JOIN msgraph_sites s ON s.id = d.site_id AND s.deleted_at IS NULL
+    WHERE d.id = $1 AND d.deleted_at IS NULL
+    LIMIT 1
+    `,
+    [driveId]
+  );
+  const drive = driveRows[0];
+  if (!drive) notFound();
+
+  const title = drive.site_id
+    ? drive.site_name || drive.name || drive.id
+    : drive.owner_user_name || drive.owner_display_name || drive.owner_email || drive.name || drive.id;
 
   const heatmapRows = await query<any>(
-    isPersonal
-      ? `
-        ${PERSONAL_DRIVES_CTE}
-        SELECT EXTRACT(DOW FROM i.modified_dt)::int AS dow,
-               EXTRACT(HOUR FROM i.modified_dt)::int AS hour,
-               COUNT(*)::int AS count
-        FROM msgraph_drive_items i
-        JOIN personal_drives d ON d.id = i.drive_id
-        WHERE i.deleted_at IS NULL
-          AND i.modified_dt IS NOT NULL
-        GROUP BY EXTRACT(DOW FROM i.modified_dt), EXTRACT(HOUR FROM i.modified_dt)
-        ORDER BY dow, hour
-        `
-      : `
-        SELECT EXTRACT(DOW FROM i.modified_dt)::int AS dow,
-               EXTRACT(HOUR FROM i.modified_dt)::int AS hour,
-               COUNT(*)::int AS count
-        FROM msgraph_drive_items i
-        JOIN msgraph_drives d ON d.id = i.drive_id
-        WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
-          AND d.site_id = $1
-          AND i.modified_dt IS NOT NULL
-        GROUP BY EXTRACT(DOW FROM i.modified_dt), EXTRACT(HOUR FROM i.modified_dt)
-        ORDER BY dow, hour
-        `,
-    isPersonal ? [personalBaseUrl] : [site.site_id]
+    `
+    SELECT EXTRACT(DOW FROM i.modified_dt)::int AS dow,
+           EXTRACT(HOUR FROM i.modified_dt)::int AS hour,
+           COUNT(*)::int AS count
+    FROM msgraph_drive_items i
+    WHERE i.deleted_at IS NULL
+      AND i.drive_id = $1
+      AND i.modified_dt IS NOT NULL
+    GROUP BY EXTRACT(DOW FROM i.modified_dt), EXTRACT(HOUR FROM i.modified_dt)
+    ORDER BY dow, hour
+    `,
+    [driveId]
   );
 
   const recentlyModified = await query<any>(
-    isPersonal
-      ? `
-        ${PERSONAL_DRIVES_CTE}
-        SELECT i.drive_id, i.id, i.name, i.web_url, i.normalized_path, i.path, i.modified_dt
-        FROM msgraph_drive_items i
-        JOIN personal_drives d ON d.id = i.drive_id
-        WHERE i.deleted_at IS NULL
-        ORDER BY i.modified_dt DESC NULLS LAST
-        LIMIT 25
-        `
-      : `
-        SELECT i.drive_id, i.id, i.name, i.web_url, i.normalized_path, i.path, i.modified_dt
-        FROM msgraph_drive_items i
-        JOIN msgraph_drives d ON d.id = i.drive_id
-        WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
-          AND d.site_id = $1
-        ORDER BY i.modified_dt DESC NULLS LAST
-        LIMIT 25
-        `,
-    isPersonal ? [personalBaseUrl] : [site.site_id]
+    `
+    SELECT i.drive_id, i.id, i.name, i.web_url, i.normalized_path, i.path, i.modified_dt
+    FROM msgraph_drive_items i
+    WHERE i.deleted_at IS NULL
+      AND i.drive_id = $1
+    ORDER BY i.modified_dt DESC NULLS LAST
+    LIMIT 25
+    `,
+    [driveId]
   );
 
   const largestFiles = await query<any>(
-    isPersonal
-      ? `
-        ${PERSONAL_DRIVES_CTE}
-        SELECT i.drive_id, i.id, i.name, i.web_url, i.normalized_path, i.path, i.size
-        FROM msgraph_drive_items i
-        JOIN personal_drives d ON d.id = i.drive_id
-        WHERE i.deleted_at IS NULL
-          AND i.is_folder = false
-        ORDER BY i.size DESC NULLS LAST
-        LIMIT 25
-        `
-      : `
-        SELECT i.drive_id, i.id, i.name, i.web_url, i.normalized_path, i.path, i.size
-        FROM msgraph_drive_items i
-        JOIN msgraph_drives d ON d.id = i.drive_id
-        WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
-          AND d.site_id = $1
-          AND i.is_folder = false
-        ORDER BY i.size DESC NULLS LAST
-        LIMIT 25
-        `,
-    isPersonal ? [personalBaseUrl] : [site.site_id]
+    `
+    SELECT i.drive_id, i.id, i.name, i.web_url, i.normalized_path, i.path, i.size
+    FROM msgraph_drive_items i
+    WHERE i.deleted_at IS NULL
+      AND i.drive_id = $1
+      AND i.is_folder = false
+    ORDER BY i.size DESC NULLS LAST
+    LIMIT 25
+    `,
+    [driveId]
   );
 
   const mostShared = await query<any>(
-    isPersonal
-      ? `
-        ${PERSONAL_DRIVES_CTE}
-        SELECT
-          i.drive_id,
-          i.id,
-          i.name,
-          i.web_url,
-          COUNT(p.permission_id)::int AS permissions,
-          COUNT(*) FILTER (WHERE p.link_scope IS NOT NULL)::int AS sharing_links
-        FROM msgraph_drive_items i
-        JOIN personal_drives d ON d.id = i.drive_id
-        LEFT JOIN msgraph_drive_item_permissions p
-          ON p.drive_id = i.drive_id AND p.item_id = i.id AND p.deleted_at IS NULL
-        WHERE i.deleted_at IS NULL
-        GROUP BY i.drive_id, i.id, i.name, i.web_url
-        ORDER BY sharing_links DESC NULLS LAST, permissions DESC NULLS LAST
-        LIMIT 25
-        `
-      : `
-        SELECT
-          i.drive_id,
-          i.id,
-          i.name,
-          i.web_url,
-          COUNT(p.permission_id)::int AS permissions,
-          COUNT(*) FILTER (WHERE p.link_scope IS NOT NULL)::int AS sharing_links
-        FROM msgraph_drive_items i
-        JOIN msgraph_drives d ON d.id = i.drive_id
-        LEFT JOIN msgraph_drive_item_permissions p
-          ON p.drive_id = i.drive_id AND p.item_id = i.id AND p.deleted_at IS NULL
-        WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
-          AND d.site_id = $1
-        GROUP BY i.drive_id, i.id, i.name, i.web_url
-        ORDER BY sharing_links DESC NULLS LAST, permissions DESC NULLS LAST
-        LIMIT 25
-        `,
-    isPersonal ? [personalBaseUrl] : [site.site_id]
+    `
+    SELECT
+      i.drive_id,
+      i.id,
+      i.name,
+      i.web_url,
+      COUNT(p.permission_id)::int AS permissions,
+      COUNT(*) FILTER (WHERE p.link_scope IS NOT NULL)::int AS sharing_links
+    FROM msgraph_drive_items i
+    LEFT JOIN msgraph_drive_item_permissions p
+      ON p.drive_id = i.drive_id AND p.item_id = i.id AND p.deleted_at IS NULL
+    WHERE i.deleted_at IS NULL
+      AND i.drive_id = $1
+    GROUP BY i.drive_id, i.id, i.name, i.web_url
+    ORDER BY sharing_links DESC NULLS LAST, permissions DESC NULLS LAST
+    LIMIT 25
+    `,
+    [driveId]
   );
 
   const heatmap = heatmapRows.map((row: any) => ({
@@ -190,15 +144,15 @@ export default async function SiteFilesPage({ params }: { params: { siteId: stri
     <main className="ps-page">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h1 className="truncate text-2xl font-semibold">{site.title || site.site_id}: Files</h1>
+          <h1 className="truncate text-2xl font-semibold">{title}: Files</h1>
           <p className="text-sm text-muted-foreground">File-level signals based on drive item metadata.</p>
           <p className="mt-2 text-xs uppercase tracking-[0.3em] text-muted-foreground">Cached (DB)</p>
         </div>
         <div className="flex items-center gap-3 text-sm">
-          <Link className="text-muted-foreground hover:underline" href={`/dashboard/sites/${encodeURIComponent(routeSiteId)}`}>
+          <Link className="text-muted-foreground hover:underline" href={`/sites/${encodeURIComponent(driveId)}`}>
             Overview
           </Link>
-          <Link className="text-muted-foreground hover:underline" href={`/dashboard/sites/${encodeURIComponent(routeSiteId)}/sharing`}>
+          <Link className="text-muted-foreground hover:underline" href={`/sites/${encodeURIComponent(driveId)}/sharing`}>
             Sharing
           </Link>
         </div>

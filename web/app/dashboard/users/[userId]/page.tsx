@@ -9,6 +9,7 @@ import { requireUser } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
 import { formatIsoDateTime, safeDecode } from "@/app/lib/format";
 import { getPagination, getParam, getWindowDays, SearchParams } from "@/app/lib/params";
+import { DRIVE_SITE_KEY_EXPR, ROUTABLE_SITE_DRIVES_CTE } from "@/app/lib/site-drive-routing";
 
 import { UserRecentItemsTable, UserTopSitesTable } from "./user-detail-tables";
 
@@ -53,10 +54,10 @@ export default async function UserDetailPage({
 
   const topSites = await query<any>(
     `
-    SELECT s.site_key, s.title, s.web_url, t.modified_items, t.last_modified_dt
-    FROM (
+    ${ROUTABLE_SITE_DRIVES_CTE}
+    , top_site_activity AS (
       SELECT
-        CASE WHEN d.site_id IS NULL THEN 'drive:' || d.id ELSE d.site_id END AS site_key,
+        ${DRIVE_SITE_KEY_EXPR} AS site_key,
         COUNT(*)::int AS modified_items,
         MAX(i.modified_dt) AS last_modified_dt
       FROM msgraph_drive_items i
@@ -64,12 +65,19 @@ export default async function UserDetailPage({
       WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
         AND i.last_modified_by_user_id = $1
         ${windowStart ? "AND i.modified_dt >= $2" : ""}
-      GROUP BY CASE WHEN d.site_id IS NULL THEN 'drive:' || d.id ELSE d.site_id END
+      GROUP BY ${DRIVE_SITE_KEY_EXPR}
       ORDER BY modified_items DESC
       LIMIT 10
-    ) t
-    LEFT JOIN mv_msgraph_site_inventory s ON s.site_key = t.site_key
-    ORDER BY t.modified_items DESC
+    )
+    SELECT
+      rsd.route_drive_id AS site_drive_id,
+      rsd.title,
+      rsd.web_url,
+      tsa.modified_items,
+      tsa.last_modified_dt
+    FROM top_site_activity tsa
+    JOIN routable_site_drives rsd ON rsd.site_key = tsa.site_key
+    ORDER BY tsa.modified_items DESC
     `,
     windowStart ? [userId, windowStart] : [userId]
   );
@@ -93,6 +101,7 @@ export default async function UserDetailPage({
 
   const recentItems = await query<any>(
     `
+    ${ROUTABLE_SITE_DRIVES_CTE}
     SELECT
       i.drive_id,
       i.id,
@@ -101,12 +110,11 @@ export default async function UserDetailPage({
       i.normalized_path,
       i.path,
       i.modified_dt,
-      CASE WHEN d.site_id IS NULL THEN 'drive:' || d.id ELSE d.site_id END AS site_key,
-      s.title AS site_title
+      rsd.route_drive_id AS site_drive_id,
+      rsd.title AS site_title
     FROM msgraph_drive_items i
     JOIN msgraph_drives d ON d.id = i.drive_id
-    LEFT JOIN mv_msgraph_site_inventory s
-      ON s.site_key = CASE WHEN d.site_id IS NULL THEN 'drive:' || d.id ELSE d.site_id END
+    LEFT JOIN routable_site_drives rsd ON rsd.site_key = ${DRIVE_SITE_KEY_EXPR}
     WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
       AND i.last_modified_by_user_id = $1
       ${windowStart ? "AND i.modified_dt >= $2" : ""}
@@ -198,7 +206,7 @@ export default async function UserDetailPage({
         <CardContent className="overflow-x-auto">
           <UserTopSitesTable
             sites={topSites.map((row: any) => ({
-              siteId: row.site_key,
+              driveId: row.site_drive_id,
               title: row.title,
               webUrl: row.web_url,
               modifiedItems: row.modified_items || 0,
@@ -223,7 +231,7 @@ export default async function UserDetailPage({
               webUrl: row.web_url,
               normalizedPath: row.normalized_path || row.path,
               lastModifiedDateTime: row.modified_dt,
-              siteId: row.site_key,
+              siteDriveId: row.site_drive_id,
               siteTitle: row.site_title,
             }))}
           />

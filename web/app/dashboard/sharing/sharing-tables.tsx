@@ -19,7 +19,7 @@ function toBreakdownParam(v: string | null): string {
 
 type SiteRow = {
   site_key: string;
-  site_id: string | null;
+  route_drive_id: string;
   title: string;
   last_shared_at: string | null;
   sharing_links: number;
@@ -105,7 +105,7 @@ export function SharingSitesTable({
           const oversharing = externalThreshold > 0 && s.distinctExternalUsers >= externalThreshold;
           return (
             <div className="flex flex-col gap-1">
-              <Link className="font-medium hover:underline" href={`/dashboard/sites/${encodeURIComponent(s.site_id || s.site_key)}/sharing`}>
+              <Link className="font-medium hover:underline" href={`/sites/${encodeURIComponent(s.route_drive_id)}/sharing`}>
                 {s.title}
               </Link>
               <div className="flex flex-wrap items-center gap-1">

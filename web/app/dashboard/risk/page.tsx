@@ -7,6 +7,7 @@ import { query } from "@/app/lib/db";
 import { formatNumber } from "@/app/lib/format";
 import { getPagination, getParam, getSortDirection, getWindowDays, SearchParams } from "@/app/lib/params";
 import { getInternalDomainPatterns } from "@/app/lib/internalDomains";
+import { DRIVE_SITE_KEY_EXPR, ROUTABLE_SITE_DRIVES_CTE } from "@/app/lib/site-drive-routing";
 import { RiskTable } from "./risk-table";
 import { RiskSummaryBarChartClient, RiskSummaryPieChartClient } from "@/components/risk-summary-graphs-client";
 import PageHeader from "@/components/page-header";
@@ -15,7 +16,8 @@ import FilterBar from "@/components/filter-bar";
 function buildSearchFilter(search: string | null) {
   if (!search) return { clause: "", params: [] as any[] };
   return {
-    clause: "WHERE (LOWER(i.title) LIKE $1 OR LOWER(i.web_url) LIKE $1 OR LOWER(i.site_id) LIKE $1)",
+    clause:
+      "WHERE (LOWER(i.title) LIKE $1 OR LOWER(i.web_url) LIKE $1 OR LOWER(i.site_id) LIKE $1 OR LOWER(i.route_drive_id) LIKE $1 OR LOWER(i.site_key) LIKE $1)",
     params: [`%${search.toLowerCase()}%`],
   };
 }
@@ -46,9 +48,10 @@ export default async function RiskPage({ searchParams }: { searchParams?: Search
 
   const sites = await query<any>(
     `
+    ${ROUTABLE_SITE_DRIVES_CTE}
     SELECT
       i.site_key,
-      i.site_id,
+      i.route_drive_id,
       i.title,
       i.web_url,
       i.is_personal,
@@ -58,7 +61,7 @@ export default async function RiskPage({ searchParams }: { searchParams?: Search
       s.sharing_links,
       s.anonymous_links,
       s.organization_links
-    FROM mv_msgraph_site_inventory i
+    FROM routable_site_drives i
     LEFT JOIN mv_msgraph_site_sharing_summary s ON s.site_key = i.site_key
     ${clause}
     ORDER BY i.last_activity_dt DESC NULLS LAST
@@ -77,13 +80,13 @@ export default async function RiskPage({ searchParams }: { searchParams?: Search
         SELECT unnest($1::text[]) AS site_key
       ), grants AS (
         SELECT
-          CASE WHEN d.site_id IS NULL THEN 'drive:' || d.id ELSE d.site_id END AS site_key,
+          ${DRIVE_SITE_KEY_EXPR} AS site_key,
           COALESCE(g.principal_email, g.principal_user_principal_name) AS email
         FROM msgraph_drive_item_permission_grants g
         JOIN msgraph_drive_item_permissions p
           ON p.drive_id = g.drive_id AND p.item_id = g.item_id AND p.permission_id = g.permission_id
         JOIN msgraph_drives d ON d.id = p.drive_id
-        JOIN selected s ON s.site_key = CASE WHEN d.site_id IS NULL THEN 'drive:' || d.id ELSE d.site_id END
+        JOIN selected s ON s.site_key = ${DRIVE_SITE_KEY_EXPR}
         WHERE g.deleted_at IS NULL AND p.deleted_at IS NULL AND d.deleted_at IS NULL
           AND COALESCE(g.principal_email, g.principal_user_principal_name) IS NOT NULL
       )
@@ -172,7 +175,7 @@ export default async function RiskPage({ searchParams }: { searchParams?: Search
     .sort((a, b) => (b.storage_used_bytes || 0) - (a.storage_used_bytes || 0))
     .slice(0, 10)
     .map((s) => ({
-      title: s.title ?? s.site_id,
+      title: s.title ?? s.route_drive_id,
       storageGB: s.storage_used_bytes ? s.storage_used_bytes / 1024 / 1024 / 1024 : 0,
     }));
 

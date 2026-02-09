@@ -9,7 +9,7 @@ import { formatBytes, formatIsoDateTime } from "@/app/lib/format";
 
 type ActivityRow = {
   site_key: string;
-  site_id: string | null;
+  route_drive_id: string;
   title: string;
   template: string | null;
   is_personal: boolean | null;
@@ -40,7 +40,7 @@ export function ActivityTable({ items, windowDays }: { items: ActivityRow[]; win
         sortValue: (s: ActivityRow) => s.title,
         cell: (s: ActivityRow) => (
           <div className="flex flex-col gap-1">
-            <Link className="font-medium hover:underline" href={`/dashboard/sites/${encodeURIComponent(s.site_id || s.site_key)}`}>
+            <Link className="font-medium hover:underline" href={`/sites/${encodeURIComponent(s.route_drive_id)}`}>
               {s.title}
             </Link>
             <div className="flex flex-wrap items-center gap-1">
