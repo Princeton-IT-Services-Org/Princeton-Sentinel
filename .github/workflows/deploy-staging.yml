@@ -1,0 +1,106 @@
+name: Deploy Staging
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: true
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AZ_RESOURCE_GROUP: ${{ vars.AZ_RESOURCE_GROUP }}
+  AZ_ACR_NAME: ${{ vars.AZ_ACR_NAME }}
+  AZ_WEB_APP_NAME: ${{ vars.AZ_WEB_APP_NAME }}
+  AZ_WORKER_APP_NAME: ${{ vars.AZ_WORKER_APP_NAME }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Ensure Azure CLI extensions
+        run: |
+          az config set extension.use_dynamic_install=yes_without_prompt
+          az extension add --name containerapp --upgrade
+
+      - name: Validate required variables
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in AZ_RESOURCE_GROUP AZ_ACR_NAME AZ_WEB_APP_NAME AZ_WORKER_APP_NAME; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing GitHub variable: ${name}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Build and push images to ACR
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE_TAG="${GITHUB_SHA::12}"
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> "${GITHUB_ENV}"
+
+          az acr build \
+            --registry "${AZ_ACR_NAME}" \
+            --resource-group "${AZ_RESOURCE_GROUP}" \
+            --image "sentinel-web:${IMAGE_TAG}" \
+            ./web
+
+          az acr build \
+            --registry "${AZ_ACR_NAME}" \
+            --resource-group "${AZ_RESOURCE_GROUP}" \
+            --image "sentinel-worker:${IMAGE_TAG}" \
+            ./worker
+
+      - name: Update Container Apps to new images
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACR_LOGIN_SERVER="$(az acr show \
+            --name "${AZ_ACR_NAME}" \
+            --resource-group "${AZ_RESOURCE_GROUP}" \
+            --query "loginServer" \
+            --output tsv)"
+
+          az containerapp update \
+            --name "${AZ_WEB_APP_NAME}" \
+            --resource-group "${AZ_RESOURCE_GROUP}" \
+            --image "${ACR_LOGIN_SERVER}/sentinel-web:${IMAGE_TAG}"
+
+          az containerapp update \
+            --name "${AZ_WORKER_APP_NAME}" \
+            --resource-group "${AZ_RESOURCE_GROUP}" \
+            --image "${ACR_LOGIN_SERVER}/sentinel-worker:${IMAGE_TAG}"
+
+      - name: Show deployed revisions
+        shell: bash
+        run: |
+          az containerapp show \
+            --name "${AZ_WEB_APP_NAME}" \
+            --resource-group "${AZ_RESOURCE_GROUP}" \
+            --query "{app:name,latestRevision:properties.latestRevisionName}" \
+            --output table
+
+          az containerapp show \
+            --name "${AZ_WORKER_APP_NAME}" \
+            --resource-group "${AZ_RESOURCE_GROUP}" \
+            --query "{app:name,latestRevision:properties.latestRevisionName}" \
+            --output table
