@@ -21,9 +21,15 @@ env:
   AZ_WORKER_APP_NAME: ${{ vars.AZ_WORKER_APP_NAME }}
 
 jobs:
-  deploy:
+  detect_changes:
     runs-on: ubuntu-latest
-    environment: staging
+    outputs:
+      deploy_web: ${{ steps.changes.outputs.deploy_web }}
+      deploy_worker: ${{ steps.changes.outputs.deploy_worker }}
+      any: ${{ steps.changes.outputs.any }}
+      db_sql_changed: ${{ steps.changes.outputs.db_sql_changed }}
+      reason: ${{ steps.changes.outputs.reason }}
+      changed_paths: ${{ steps.changes.outputs.changed_paths }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,29 +44,42 @@ jobs:
 
           deploy_web=false
           deploy_worker=false
+          db_sql_changed=false
           reason=""
+          changed_paths=""
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             deploy_web=true
             deploy_worker=true
+            db_sql_changed=false
             reason="workflow_dispatch"
+            changed_paths="workflow_dispatch"
           else
             before="${{ github.event.before }}"
             if [[ -z "${before}" || "${before}" == "0000000000000000000000000000000000000000" ]]; then
               deploy_web=true
               deploy_worker=true
               reason="no before SHA available; deploying both"
+              changed_paths="unknown"
             elif ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
               deploy_web=true
               deploy_worker=true
               reason="before SHA missing locally; deploying both"
+              changed_paths="unknown"
             else
-              while IFS= read -r path; do
+              mapfile -t paths < <(git diff --name-only "${before}" "${GITHUB_SHA}")
+              for path in "${paths[@]}"; do
                 case "${path}" in
                   web/*) deploy_web=true ;;
                   worker/*) deploy_worker=true ;;
                 esac
-              done < <(git diff --name-only "${before}" "${GITHUB_SHA}")
+                if [[ "${path}" =~ ^db/.+\.sql$ ]]; then
+                  db_sql_changed=true
+                fi
+              done
+              if [[ ${#paths[@]} -gt 0 ]]; then
+                changed_paths="$(printf '%s\n' "${paths[@]}" | paste -sd ',' -)"
+              fi
               reason="diff ${before}..${GITHUB_SHA}"
             fi
           fi
@@ -74,7 +93,9 @@ jobs:
           echo "deploy_web=${deploy_web}" >> "${GITHUB_OUTPUT}"
           echo "deploy_worker=${deploy_worker}" >> "${GITHUB_OUTPUT}"
           echo "any=${any}" >> "${GITHUB_OUTPUT}"
+          echo "db_sql_changed=${db_sql_changed}" >> "${GITHUB_OUTPUT}"
           echo "reason=${reason}" >> "${GITHUB_OUTPUT}"
+          echo "changed_paths=${changed_paths}" >> "${GITHUB_OUTPUT}"
 
       - name: Show deployment decision
         shell: bash
@@ -82,10 +103,36 @@ jobs:
           echo "deploy_web=${{ steps.changes.outputs.deploy_web }}"
           echo "deploy_worker=${{ steps.changes.outputs.deploy_worker }}"
           echo "any=${{ steps.changes.outputs.any }}"
+          echo "db_sql_changed=${{ steps.changes.outputs.db_sql_changed }}"
           echo "reason=${{ steps.changes.outputs.reason }}"
+          echo "changed_paths=${{ steps.changes.outputs.changed_paths }}"
+
+  await_db_migration_approval:
+    needs: detect_changes
+    if: needs.detect_changes.outputs.db_sql_changed == 'true'
+    runs-on: ubuntu-latest
+    environment: staging-db-migrations
+    steps:
+      - name: Await manual DB migration confirmation
+        shell: bash
+        run: |
+          echo "DB SQL changes were detected under db/**/*.sql."
+          echo "Apply DB migrations externally, then approve this environment to continue deployment."
+          echo "changed_paths=${{ needs.detect_changes.outputs.changed_paths }}"
+
+  deploy:
+    needs: [detect_changes, await_db_migration_approval]
+    if: ${{ always() && (needs.detect_changes.outputs.db_sql_changed != 'true' || needs.await_db_migration_approval.result == 'success') }}
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Azure Login (OIDC)
-        if: steps.changes.outputs.any == 'true'
+        if: needs.detect_changes.outputs.any == 'true'
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -93,13 +140,13 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Ensure Azure CLI extensions
-        if: steps.changes.outputs.any == 'true'
+        if: needs.detect_changes.outputs.any == 'true'
         run: |
           az config set extension.use_dynamic_install=yes_without_prompt
           az extension add --name containerapp --upgrade
 
       - name: Validate required variables
-        if: steps.changes.outputs.any == 'true'
+        if: needs.detect_changes.outputs.any == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -111,7 +158,7 @@ jobs:
           done
 
       - name: Validate web staging runtime config
-        if: steps.changes.outputs.deploy_web == 'true'
+        if: needs.detect_changes.outputs.deploy_web == 'true'
         shell: bash
         env:
           STG_DATABASE_URL: ${{ secrets.STG_DATABASE_URL }}
@@ -146,7 +193,7 @@ jobs:
           done
 
       - name: Validate worker staging runtime config
-        if: steps.changes.outputs.deploy_worker == 'true'
+        if: needs.detect_changes.outputs.deploy_worker == 'true'
         shell: bash
         env:
           STG_DATABASE_URL: ${{ secrets.STG_DATABASE_URL }}
@@ -193,7 +240,7 @@ jobs:
           done
 
       - name: Sync web staging runtime config
-        if: steps.changes.outputs.deploy_web == 'true'
+        if: needs.detect_changes.outputs.deploy_web == 'true'
         shell: bash
         env:
           STG_DATABASE_URL: ${{ secrets.STG_DATABASE_URL }}
@@ -258,7 +305,7 @@ jobs:
               DASHBOARD_RISK_SCAN_LIMIT="${STG_DASHBOARD_RISK_SCAN_LIMIT}"
 
       - name: Sync worker staging runtime config
-        if: steps.changes.outputs.deploy_worker == 'true'
+        if: needs.detect_changes.outputs.deploy_worker == 'true'
         shell: bash
         env:
           STG_DATABASE_URL: ${{ secrets.STG_DATABASE_URL }}
@@ -319,7 +366,7 @@ jobs:
               WORKER_HEARTBEAT_URL="${WORKER_HEARTBEAT_URL}"
 
       - name: Prepare image tag
-        if: steps.changes.outputs.any == 'true'
+        if: needs.detect_changes.outputs.any == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -327,7 +374,7 @@ jobs:
           echo "IMAGE_TAG=${IMAGE_TAG}" >> "${GITHUB_ENV}"
 
       - name: Build and push web image to ACR
-        if: steps.changes.outputs.deploy_web == 'true'
+        if: needs.detect_changes.outputs.deploy_web == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -338,7 +385,7 @@ jobs:
             ./web
 
       - name: Build and push worker image to ACR
-        if: steps.changes.outputs.deploy_worker == 'true'
+        if: needs.detect_changes.outputs.deploy_worker == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -349,7 +396,7 @@ jobs:
             ./worker
 
       - name: Resolve ACR login server
-        if: steps.changes.outputs.any == 'true'
+        if: needs.detect_changes.outputs.any == 'true'
         id: acr
         shell: bash
         run: |
@@ -362,7 +409,7 @@ jobs:
           echo "login_server=${ACR_LOGIN_SERVER}" >> "${GITHUB_OUTPUT}"
 
       - name: Update web app to new image
-        if: steps.changes.outputs.deploy_web == 'true'
+        if: needs.detect_changes.outputs.deploy_web == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -372,7 +419,7 @@ jobs:
             --image "${{ steps.acr.outputs.login_server }}/sentinel-web:${IMAGE_TAG}"
 
       - name: Update worker app to new image
-        if: steps.changes.outputs.deploy_worker == 'true'
+        if: needs.detect_changes.outputs.deploy_worker == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -382,11 +429,11 @@ jobs:
             --image "${{ steps.acr.outputs.login_server }}/sentinel-worker:${IMAGE_TAG}"
 
       - name: Show deployed revisions
-        if: steps.changes.outputs.any == 'true'
+        if: needs.detect_changes.outputs.any == 'true'
         shell: bash
         env:
-          DEPLOY_WEB: ${{ steps.changes.outputs.deploy_web }}
-          DEPLOY_WORKER: ${{ steps.changes.outputs.deploy_worker }}
+          DEPLOY_WEB: ${{ needs.detect_changes.outputs.deploy_web }}
+          DEPLOY_WORKER: ${{ needs.detect_changes.outputs.deploy_worker }}
         run: |
           if [[ "${DEPLOY_WEB}" == "true" ]]; then
             az containerapp show \
@@ -405,6 +452,6 @@ jobs:
           fi
 
       - name: Skip deploy when no app changes are detected
-        if: steps.changes.outputs.any != 'true'
+        if: needs.detect_changes.outputs.any != 'true'
         shell: bash
         run: echo "No changes under web/ or worker/. Skipping staging deployment."

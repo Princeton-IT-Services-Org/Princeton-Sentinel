@@ -3,6 +3,8 @@ import { requireAdmin, requireUser } from "@/app/lib/auth";
 import { graphDelete, graphGet } from "@/app/lib/graph";
 import { withTransaction } from "@/app/lib/db";
 import { writeAuditEvent } from "@/app/lib/audit";
+import { writeRevokePermissionLog } from "@/app/lib/revoke-log";
+
 export const dynamic = "force-dynamic";
 
 async function parseBody(req: Request) {
@@ -30,6 +32,35 @@ function getErrorMessage(err: unknown, fallback: string): string {
   return fallback;
 }
 
+function sanitizeReason(text: string, max = 240): string {
+  return text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+function actorFromSession(session: any): { oid?: string; upn?: string; name?: string } | null {
+  const oid = (session?.user as any)?.oid;
+  const upn = (session?.user as any)?.upn;
+  const name = session?.user?.name;
+  if (!oid && !upn && !name) return null;
+  return { oid, upn, name };
+}
+
+async function safeWriteRevokeLog(params: {
+  actor?: { oid?: string; upn?: string; name?: string } | null;
+  driveId?: string | null;
+  itemId?: string | null;
+  permissionId?: string | null;
+  outcome: "success" | "failed";
+  failureReason?: string | null;
+  warning?: string | null;
+  details?: Record<string, any>;
+}) {
+  try {
+    await writeRevokePermissionLog(params);
+  } catch {
+    // Best-effort logging only; never break revoke response.
+  }
+}
+
 export async function GET(req: Request) {
   await requireUser();
   const { searchParams } = new URL(req.url);
@@ -49,9 +80,11 @@ export async function GET(req: Request) {
 
 export async function DELETE(req: Request) {
   let session: any = null;
+  let actor: { oid?: string; upn?: string; name?: string } | null = null;
   try {
     const auth = await requireAdmin();
     session = auth.session;
+    actor = actorFromSession(session);
   } catch {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
@@ -61,32 +94,84 @@ export async function DELETE(req: Request) {
   const driveId = body.driveId || searchParams.get("driveId");
   const itemId = body.itemId || searchParams.get("itemId");
   const permissionId = body.permissionId || searchParams.get("permissionId");
+
   if (!driveId || !itemId || !permissionId) {
+    await safeWriteRevokeLog({
+      actor,
+      driveId: driveId ? String(driveId) : null,
+      itemId: itemId ? String(itemId) : null,
+      permissionId: permissionId ? String(permissionId) : null,
+      outcome: "failed",
+      failureReason: "driveId_itemId_permissionId_required",
+      details: { stage: "validation" },
+    });
     return NextResponse.json({ error: "driveId_itemId_permissionId_required" }, { status: 400 });
   }
-  const encodedPermissionId = encodeURIComponent(String(permissionId));
+
+  const normalizedDriveId = String(driveId);
+  const normalizedItemId = String(itemId);
+  const normalizedPermissionId = String(permissionId);
+  const encodedPermissionId = encodeURIComponent(normalizedPermissionId);
 
   let permission: any = null;
   try {
-    permission = await graphGet(`/drives/${driveId}/items/${itemId}/permissions/${encodedPermissionId}`);
+    permission = await graphGet(`/drives/${normalizedDriveId}/items/${normalizedItemId}/permissions/${encodedPermissionId}`);
   } catch (err: unknown) {
-    return NextResponse.json({ error: getErrorMessage(err, "graph_get_permission_failed") }, { status: 502 });
+    const errorMessage = getErrorMessage(err, "graph_get_permission_failed");
+    await safeWriteRevokeLog({
+      actor,
+      driveId: normalizedDriveId,
+      itemId: normalizedItemId,
+      permissionId: normalizedPermissionId,
+      outcome: "failed",
+      failureReason: sanitizeReason(errorMessage),
+      details: { stage: "graph_get_permission" },
+    });
+    return NextResponse.json({ error: errorMessage }, { status: 502 });
   }
 
   if (permission?.inheritedFrom) {
+    await safeWriteRevokeLog({
+      actor,
+      driveId: normalizedDriveId,
+      itemId: normalizedItemId,
+      permissionId: normalizedPermissionId,
+      outcome: "failed",
+      failureReason: "inherited_permission_delete_blocked",
+      details: { stage: "validation", inheritedFrom: permission?.inheritedFrom || null },
+    });
     return NextResponse.json({ error: "inherited_permission_delete_blocked" }, { status: 403 });
   }
 
   const roles: string[] = Array.isArray(permission?.roles) ? permission.roles : [];
   const hasOwnerRole = roles.some((role) => typeof role === "string" && role.toLowerCase().includes("owner"));
   if (hasOwnerRole) {
+    await safeWriteRevokeLog({
+      actor,
+      driveId: normalizedDriveId,
+      itemId: normalizedItemId,
+      permissionId: normalizedPermissionId,
+      outcome: "failed",
+      failureReason: "owner_permission_delete_blocked",
+      details: { stage: "validation", roles },
+    });
     return NextResponse.json({ error: "owner_permission_delete_blocked" }, { status: 403 });
   }
 
   try {
-    await graphDelete(`/drives/${driveId}/items/${itemId}/permissions/${encodedPermissionId}`);
+    await graphDelete(`/drives/${normalizedDriveId}/items/${normalizedItemId}/permissions/${encodedPermissionId}`);
   } catch (err: unknown) {
-    return NextResponse.json({ error: getErrorMessage(err, "graph_delete_permission_failed") }, { status: 502 });
+    const errorMessage = getErrorMessage(err, "graph_delete_permission_failed");
+    await safeWriteRevokeLog({
+      actor,
+      driveId: normalizedDriveId,
+      itemId: normalizedItemId,
+      permissionId: normalizedPermissionId,
+      outcome: "failed",
+      failureReason: sanitizeReason(errorMessage),
+      details: { stage: "graph_delete_permission" },
+    });
+    return NextResponse.json({ error: errorMessage }, { status: 502 });
   }
 
   let warning: string | null = null;
@@ -98,14 +183,14 @@ export async function DELETE(req: Request) {
       DELETE FROM msgraph_drive_item_permission_grants
       WHERE drive_id = $1 AND item_id = $2 AND permission_id = $3
       `,
-        [driveId, itemId, permissionId]
+        [normalizedDriveId, normalizedItemId, normalizedPermissionId]
       );
       await client.query(
         `
       DELETE FROM msgraph_drive_item_permissions
       WHERE drive_id = $1 AND item_id = $2 AND permission_id = $3
       `,
-        [driveId, itemId, permissionId]
+        [normalizedDriveId, normalizedItemId, normalizedPermissionId]
       );
       await client.query(
         `
@@ -115,7 +200,7 @@ export async function DELETE(req: Request) {
           permissions_last_error = NULL
       WHERE drive_id = $1 AND id = $2
       `,
-        [driveId, itemId]
+        [normalizedDriveId, normalizedItemId]
       );
     });
   } catch (err: unknown) {
@@ -126,16 +211,16 @@ export async function DELETE(req: Request) {
     await writeAuditEvent({
       action: "permission_deleted",
       entityType: "drive_item_permission",
-      entityId: `${driveId}:${itemId}:${permissionId}`,
+      entityId: `${normalizedDriveId}:${normalizedItemId}:${normalizedPermissionId}`,
       actor: {
         oid: (session?.user as any)?.oid,
         upn: (session?.user as any)?.upn,
         name: session?.user?.name,
       },
       details: {
-        driveId,
-        itemId,
-        permissionId,
+        driveId: normalizedDriveId,
+        itemId: normalizedItemId,
+        permissionId: normalizedPermissionId,
         roles,
         link: permission?.link || null,
       },
@@ -144,6 +229,20 @@ export async function DELETE(req: Request) {
     const auditWarning = `audit_write_failed: ${getErrorMessage(err, "unknown_audit_error")}`;
     warning = warning ? `${warning}; ${auditWarning}` : auditWarning;
   }
+
+  await safeWriteRevokeLog({
+    actor,
+    driveId: normalizedDriveId,
+    itemId: normalizedItemId,
+    permissionId: normalizedPermissionId,
+    outcome: "success",
+    warning: warning ? sanitizeReason(warning, 500) : null,
+    details: {
+      stage: "completed",
+      roles,
+      link: permission?.link || null,
+    },
+  });
 
   if (warning) {
     return NextResponse.json({ ok: true, warning });
