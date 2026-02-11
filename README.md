@@ -64,6 +64,7 @@ See `.env.example` for the full list. Key values:
 - `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, `ENTRA_CLIENT_SECRET`
 - `ADMIN_GROUP_ID`, `USER_GROUP_ID`
 - `DATABASE_URL`
+- `DB_WRITE_MAX_RETRIES`, `DB_WRITE_RETRY_BASE_MS`, `DB_WRITE_RETRY_MAX_MS`, `DB_WRITE_RETRY_JITTER_MS`
 - `GRAPH_MAX_CONCURRENCY`, `GRAPH_MAX_RETRIES`, `GRAPH_CONNECT_TIMEOUT`, `GRAPH_READ_TIMEOUT`
 - `GRAPH_PAGE_SIZE`, `GRAPH_PERMISSIONS_BATCH_SIZE`, `GRAPH_PERMISSIONS_STALE_AFTER_HOURS`
 - `FLUSH_EVERY`
@@ -75,5 +76,6 @@ See `.env.example` for the full list. Key values:
 - Inventory tables store **latest state only** with **soft deletes** (`deleted_at`).
 - Materialized views support `REFRESH MATERIALIZED VIEW CONCURRENTLY`.
 - Permission scans run a **full pass** until no stale items remain; use `GRAPH_PERMISSIONS_STALE_AFTER_HOURS` to control re-scan cadence.
+- Permission and drive-item permission-cleanup writes use retryable DB backoff to tolerate transient lock contention.
 - The worker writes per-run logs into Postgres (`job_run_logs`) keyed by `run_id`.
 - `graph_ingest` supports optional job config keys: `stages` / `skip_stages` for running a subset of the pipeline.

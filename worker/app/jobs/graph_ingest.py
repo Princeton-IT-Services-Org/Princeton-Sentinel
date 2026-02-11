@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Hashable, Iterable, Optional, Tuple
@@ -81,6 +82,52 @@ def _execute_values_dedup_merge_drives(
     if deduped:
         db.execute_values(cur, query, deduped)
     return len(deduped), dropped
+
+
+def _execute_db_mutation_with_retry(
+    conn,
+    *,
+    run_id: str,
+    op_name: str,
+    retry_log_message: str,
+    mutation_fn: Callable[[], None],
+) -> tuple[bool, int, Optional[str], Optional[str]]:
+    max_retries, base_ms, max_ms, jitter_ms = db.get_db_write_retry_config()
+    retries = 0
+    while True:
+        try:
+            mutation_fn()
+            conn.commit()
+            return True, retries, None, None
+        except Exception as exc:
+            conn.rollback()
+            sqlstate = db.get_db_error_sqlstate(exc)
+            if not db.is_retryable_db_error(exc):
+                raise
+            if retries >= max_retries:
+                return False, retries, sqlstate, str(exc)
+
+            retries += 1
+            sleep_seconds = db.compute_db_write_retry_sleep_seconds(
+                retries,
+                base_ms=base_ms,
+                max_ms=max_ms,
+                jitter_ms=jitter_ms,
+            )
+            log_job_run_log(
+                run_id=run_id,
+                level="WARN",
+                message=retry_log_message,
+                context={
+                    "operation": op_name,
+                    "retry_attempt": retries,
+                    "max_retries": max_retries,
+                    "sqlstate": sqlstate,
+                    "error": str(exc),
+                    "sleep_ms": int(round(sleep_seconds * 1000)),
+                },
+            )
+            time.sleep(sleep_seconds)
 
 
 def _load_user_maps(cur) -> tuple[dict[str, str], dict[str, str]]:
@@ -1307,6 +1354,7 @@ def _ingest_drive_items(client: GraphClient, *, run_id: str, flush_every: int) -
                 active_batch: list[tuple] = []
                 removed_batch: list[tuple] = []
                 removed_keys: list[tuple] = []
+                drive_write_incomplete = False
                 try:
                     while next_url:
                         data = client.get_json(next_url)
@@ -1382,15 +1430,39 @@ def _ingest_drive_items(client: GraphClient, *, run_id: str, flush_every: int) -
 
                             if len(removed_batch) >= flush_every:
                                 removed_batch, dropped = _dedupe_rows_keep_last(removed_batch, key_fn=lambda r: (r[0], r[1]))
+                                removed_batch.sort(key=lambda r: (r[0], r[1]))
                                 removed_keys = [(r[0], r[1]) for r in removed_batch]
-                                if removed_batch:
-                                    db.execute_values(cur, upsert_removed_sql, removed_batch)
-                                if removed_keys:
-                                    db.execute_values(cur, delete_permissions_grants_sql, removed_keys)
-                                    db.execute_values(cur, delete_permissions_sql, removed_keys)
-                                conn.commit()
-                                flushed_removed += len(removed_batch)
-                                dropped_removed_duplicates += dropped
+
+                                def write_removed_batch():
+                                    if removed_batch:
+                                        db.execute_values(cur, upsert_removed_sql, removed_batch)
+                                    if removed_keys:
+                                        db.execute_values(cur, delete_permissions_grants_sql, removed_keys)
+                                        db.execute_values(cur, delete_permissions_sql, removed_keys)
+
+                                success, _, sqlstate, error = _execute_db_mutation_with_retry(
+                                    conn,
+                                    run_id=run_id,
+                                    op_name=f"drive_items_removed_cleanup:{drive_id}",
+                                    retry_log_message="drive_items_db_write_retry",
+                                    mutation_fn=write_removed_batch,
+                                )
+                                if success:
+                                    flushed_removed += len(removed_batch)
+                                    dropped_removed_duplicates += dropped
+                                else:
+                                    drive_write_incomplete = True
+                                    log_job_run_log(
+                                        run_id=run_id,
+                                        level="WARN",
+                                        message="drive_items_db_write_retry",
+                                        context={
+                                            "operation": f"drive_items_removed_cleanup:{drive_id}",
+                                            "exhausted": True,
+                                            "sqlstate": sqlstate,
+                                            "error": error,
+                                        },
+                                    )
                                 removed_batch = []
                                 removed_keys = []
 
@@ -1410,19 +1482,53 @@ def _ingest_drive_items(client: GraphClient, *, run_id: str, flush_every: int) -
 
                     if removed_batch:
                         removed_batch, dropped = _dedupe_rows_keep_last(removed_batch, key_fn=lambda r: (r[0], r[1]))
+                        removed_batch.sort(key=lambda r: (r[0], r[1]))
                         removed_keys = [(r[0], r[1]) for r in removed_batch]
-                        if removed_batch:
-                            db.execute_values(cur, upsert_removed_sql, removed_batch)
-                        if removed_keys:
-                            db.execute_values(cur, delete_permissions_grants_sql, removed_keys)
-                            db.execute_values(cur, delete_permissions_sql, removed_keys)
-                        conn.commit()
-                        flushed_removed += len(removed_batch)
-                        dropped_removed_duplicates += dropped
+                        def write_removed_batch():
+                            if removed_batch:
+                                db.execute_values(cur, upsert_removed_sql, removed_batch)
+                            if removed_keys:
+                                db.execute_values(cur, delete_permissions_grants_sql, removed_keys)
+                                db.execute_values(cur, delete_permissions_sql, removed_keys)
 
-                    if delta_link_new:
+                        success, _, sqlstate, error = _execute_db_mutation_with_retry(
+                            conn,
+                            run_id=run_id,
+                            op_name=f"drive_items_removed_cleanup:{drive_id}",
+                            retry_log_message="drive_items_db_write_retry",
+                            mutation_fn=write_removed_batch,
+                        )
+                        if success:
+                            flushed_removed += len(removed_batch)
+                            dropped_removed_duplicates += dropped
+                        else:
+                            drive_write_incomplete = True
+                            log_job_run_log(
+                                run_id=run_id,
+                                level="WARN",
+                                message="drive_items_db_write_retry",
+                                context={
+                                    "operation": f"drive_items_removed_cleanup:{drive_id}",
+                                    "exhausted": True,
+                                    "sqlstate": sqlstate,
+                                    "error": error,
+                                },
+                            )
+
+                    if delta_link_new and not drive_write_incomplete:
                         _set_delta_link(cur, "drive_items", drive_id, delta_link_new)
                         conn.commit()
+                    elif delta_link_new and drive_write_incomplete:
+                        log_job_run_log(
+                            run_id=run_id,
+                            level="WARN",
+                            message="drive_items_db_write_retry",
+                            context={
+                                "operation": f"drive_items_removed_cleanup:{drive_id}",
+                                "delta_link_advanced": False,
+                                "reason": "cleanup_write_retry_exhausted",
+                            },
+                        )
 
                     break
                 except GraphError as exc:
@@ -1638,6 +1744,8 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
     items_err = 0
     dropped_permission_duplicates = 0
     dropped_grant_duplicates = 0
+    db_retry_attempts = 0
+    db_retry_exhausted_batches = 0
 
     conn = db.get_conn()
     try:
@@ -1661,7 +1769,7 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
                 break
 
             batches += 1
-            keys = [(row[0], row[1]) for row in rows]
+            keys = sorted([(row[0], row[1]) for row in rows], key=lambda r: (r[0], r[1]))
             items_processed += len(keys)
 
             results: Dict[Tuple[str, str], Dict[str, Any]] = {}
@@ -1744,32 +1852,106 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
                     if len(sample_errors) < 5:
                         sample_errors.append({"drive_id": drive_id, "item_id": item_id, "error": err})
 
-            if ok_keys:
-                db.execute_values(cur, delete_grants_sql, ok_keys)
-                db.execute_values(cur, delete_permissions_sql, ok_keys)
-                if permission_rows:
-                    permission_rows, dropped = _dedupe_rows_keep_last(
-                        permission_rows, key_fn=lambda r: (r[0], r[1], r[2])
-                    )
-                    dropped_permission_duplicates += dropped
+            ok_keys.sort(key=lambda r: (r[0], r[1]))
+            ok_updates.sort(key=lambda r: (r[0], r[1]))
+            err_updates.sort(key=lambda r: (r[0], r[1]))
+            if permission_rows:
+                permission_rows, dropped = _dedupe_rows_keep_last(
+                    permission_rows, key_fn=lambda r: (r[0], r[1], r[2])
+                )
+                dropped_permission_duplicates += dropped
+                permission_rows.sort(key=lambda r: (r[0], r[1], r[2]))
+            if grant_rows:
+                grant_rows, dropped = _dedupe_rows_keep_last(
+                    grant_rows, key_fn=lambda r: (r[0], r[1], r[2], r[3], r[4])
+                )
+                dropped_grant_duplicates += dropped
+                grant_rows.sort(key=lambda r: (r[0], r[1], r[2], r[3], r[4]))
+
+            def write_batch():
+                if ok_keys:
+                    db.execute_values(cur, delete_grants_sql, ok_keys)
+                    db.execute_values(cur, delete_permissions_sql, ok_keys)
                     if permission_rows:
                         db.execute_values(cur, insert_permissions_sql, permission_rows)
-                if grant_rows:
-                    grant_rows, dropped = _dedupe_rows_keep_last(
-                        grant_rows, key_fn=lambda r: (r[0], r[1], r[2], r[3], r[4])
-                    )
-                    dropped_grant_duplicates += dropped
                     if grant_rows:
                         db.execute_values(cur, insert_grants_sql, grant_rows)
-                db.execute_values(cur, update_items_ok_sql, ok_updates)
+                    db.execute_values(cur, update_items_ok_sql, ok_updates)
 
-            if err_updates:
-                db.execute_values(cur, update_items_err_sql, err_updates)
+                if err_updates:
+                    db.execute_values(cur, update_items_err_sql, err_updates)
 
-            conn.commit()
+            write_success, retries, sqlstate, write_error = _execute_db_mutation_with_retry(
+                conn,
+                run_id=run_id,
+                op_name=f"permissions_batch:{batches}",
+                retry_log_message="permissions_db_write_retry",
+                mutation_fn=write_batch,
+            )
+            db_retry_attempts += retries
+            if write_success:
+                items_ok += len(ok_updates)
+                items_err += len(err_updates)
+            else:
+                db_retry_exhausted_batches += 1
+                exhausted_error = f"db_write_retry_exhausted:{sqlstate or 'unknown'}"
+                log_job_run_log(
+                    run_id=run_id,
+                    level="WARN",
+                    message="permissions_db_write_retry_exhausted",
+                    context={
+                        "batch": batches,
+                        "items": len(keys),
+                        "sqlstate": sqlstate,
+                        "error": write_error,
+                    },
+                )
 
-            items_ok += len(ok_updates)
-            items_err += len(err_updates)
+                fallback_err_updates = [
+                    (drive_id, item_id, synced_at, synced_at, exhausted_error)
+                    for drive_id, item_id in keys
+                ]
+
+                def mark_batch_error():
+                    if fallback_err_updates:
+                        db.execute_values(cur, update_items_err_sql, fallback_err_updates)
+
+                mark_success, mark_retries, mark_sqlstate, mark_error = _execute_db_mutation_with_retry(
+                    conn,
+                    run_id=run_id,
+                    op_name=f"permissions_batch_mark_error:{batches}",
+                    retry_log_message="permissions_db_write_retry",
+                    mutation_fn=mark_batch_error,
+                )
+                db_retry_attempts += mark_retries
+                if mark_success:
+                    items_err += len(fallback_err_updates)
+                else:
+                    log_job_run_log(
+                        run_id=run_id,
+                        level="WARN",
+                        message="permissions_db_write_retry_exhausted",
+                        context={
+                            "batch": batches,
+                            "operation": "mark_batch_error",
+                            "sqlstate": mark_sqlstate,
+                            "error": mark_error,
+                        },
+                    )
+
+                if err_updates:
+                    log_job_run_log(
+                        run_id=run_id,
+                        level="WARN",
+                        message="permissions_batch_errors",
+                        context={
+                            "batch": batches,
+                            "errors": len(err_updates),
+                            "sample": sample_errors,
+                            "batch_write_exhausted": True,
+                        },
+                    )
+                continue
 
             if err_updates:
                 log_job_run_log(
@@ -1792,6 +1974,8 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
                 "items_err": items_err,
                 "dropped_permission_duplicates": dropped_permission_duplicates,
                 "dropped_grant_duplicates": dropped_grant_duplicates,
+                "db_retry_attempts": db_retry_attempts,
+                "db_retry_exhausted_batches": db_retry_exhausted_batches,
             },
         )
         return {
@@ -1802,6 +1986,8 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
             "stale_after_hours": stale_after_hours,
             "dropped_permission_duplicates": dropped_permission_duplicates,
             "dropped_grant_duplicates": dropped_grant_duplicates,
+            "db_retry_attempts": db_retry_attempts,
+            "db_retry_exhausted_batches": db_retry_exhausted_batches,
         }
     finally:
         conn.close()
