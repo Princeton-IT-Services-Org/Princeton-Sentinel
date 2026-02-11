@@ -1746,6 +1746,15 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
     dropped_grant_duplicates = 0
     db_retry_attempts = 0
     db_retry_exhausted_batches = 0
+    successful_db_batches = 0
+    terminal_skip_batches = 0
+    terminal_retry_requeues = 0
+    terminal_fail_count_by_key: Dict[Tuple[str, str], int] = {}
+    deferred_until_success_batch: Dict[Tuple[str, str], int] = {}
+    dropped_for_run: set[Tuple[str, str]] = set()
+    candidate_limit = min(max(permissions_batch_size * 10, permissions_batch_size), 1000)
+    terminal_retry_success_batch_delay = 5
+    terminal_fail_drop_threshold = 2
 
     conn = db.get_conn()
     try:
@@ -1761,15 +1770,30 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
                 ORDER BY permissions_last_synced_at NULLS FIRST
                 LIMIT %s
                 """,
-                [cutoff, permissions_batch_size],
+                [cutoff, candidate_limit],
             )
-            rows = cur.fetchall()
-            if not rows:
+            candidate_rows = cur.fetchall()
+            if not candidate_rows:
+                conn.commit()
+                break
+
+            candidate_keys = sorted([(row[0], row[1]) for row in candidate_rows], key=lambda r: (r[0], r[1]))
+            keys: list[Tuple[str, str]] = []
+            for key in candidate_keys:
+                if key in dropped_for_run:
+                    continue
+                eligible_after = deferred_until_success_batch.get(key)
+                if eligible_after is not None and successful_db_batches < eligible_after:
+                    continue
+                keys.append(key)
+                if len(keys) >= permissions_batch_size:
+                    break
+
+            if not keys:
                 conn.commit()
                 break
 
             batches += 1
-            keys = sorted([(row[0], row[1]) for row in rows], key=lambda r: (r[0], r[1]))
             items_processed += len(keys)
 
             results: Dict[Tuple[str, str], Dict[str, Any]] = {}
@@ -1890,6 +1914,9 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
             )
             db_retry_attempts += retries
             if write_success:
+                successful_db_batches += 1
+                for key in keys:
+                    deferred_until_success_batch.pop(key, None)
                 items_ok += len(ok_updates)
                 items_err += len(err_updates)
             else:
@@ -1925,8 +1952,61 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
                 )
                 db_retry_attempts += mark_retries
                 if mark_success:
+                    for key in keys:
+                        deferred_until_success_batch.pop(key, None)
                     items_err += len(fallback_err_updates)
                 else:
+                    terminal_skip_batches += 1
+                    deferred_in_batch = 0
+                    dropped_in_batch: list[Tuple[str, str]] = []
+                    next_eligible_success_batch = successful_db_batches + terminal_retry_success_batch_delay
+
+                    for key in keys:
+                        fail_count = terminal_fail_count_by_key.get(key, 0) + 1
+                        terminal_fail_count_by_key[key] = fail_count
+                        if fail_count < terminal_fail_drop_threshold:
+                            deferred_until_success_batch[key] = next_eligible_success_batch
+                            terminal_retry_requeues += 1
+                            deferred_in_batch += 1
+                        else:
+                            deferred_until_success_batch.pop(key, None)
+                            dropped_for_run.add(key)
+                            dropped_in_batch.append(key)
+
+                    if deferred_in_batch:
+                        log_job_run_log(
+                            run_id=run_id,
+                            level="WARN",
+                            message="permissions_batch_terminal_deferred",
+                            context={
+                                "batch": batches,
+                                "items": len(keys),
+                                "deferred_keys": deferred_in_batch,
+                                "retry_requeues_total": terminal_retry_requeues,
+                                "next_eligible_success_batch": next_eligible_success_batch,
+                                "write_sqlstate": sqlstate,
+                                "mark_sqlstate": mark_sqlstate,
+                            },
+                        )
+
+                    if dropped_in_batch:
+                        sample_dropped = [
+                            {"drive_id": drive_id, "item_id": item_id}
+                            for drive_id, item_id in dropped_in_batch[:5]
+                        ]
+                        log_job_run_log(
+                            run_id=run_id,
+                            level="WARN",
+                            message="permissions_key_terminal_dropped",
+                            context={
+                                "batch": batches,
+                                "dropped_keys": len(dropped_in_batch),
+                                "dropped_keys_total": len(dropped_for_run),
+                                "terminal_fail_drop_threshold": terminal_fail_drop_threshold,
+                                "sample": sample_dropped,
+                            },
+                        )
+
                     log_job_run_log(
                         run_id=run_id,
                         level="WARN",
@@ -1961,6 +2041,26 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
                     context={"batch": batches, "errors": len(err_updates), "sample": sample_errors},
                 )
 
+        terminal_deferred_keys = len(deferred_until_success_batch)
+        terminal_dropped_keys = len(dropped_for_run)
+        terminal_keys_pending_end_of_run = terminal_deferred_keys
+        if terminal_keys_pending_end_of_run > 0:
+            sample_pending = [
+                {"drive_id": drive_id, "item_id": item_id}
+                for drive_id, item_id in list(deferred_until_success_batch.keys())[:5]
+            ]
+            log_job_run_log(
+                run_id=run_id,
+                level="WARN",
+                message="permissions_terminal_pending_at_end",
+                context={
+                    "pending_keys": terminal_keys_pending_end_of_run,
+                    "deferred_keys": terminal_deferred_keys,
+                    "dropped_keys": terminal_dropped_keys,
+                    "sample": sample_pending,
+                },
+            )
+
         log_job_run_log(
             run_id=run_id,
             level="INFO",
@@ -1976,6 +2076,11 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
                 "dropped_grant_duplicates": dropped_grant_duplicates,
                 "db_retry_attempts": db_retry_attempts,
                 "db_retry_exhausted_batches": db_retry_exhausted_batches,
+                "terminal_skip_batches": terminal_skip_batches,
+                "terminal_deferred_keys": terminal_deferred_keys,
+                "terminal_dropped_keys": terminal_dropped_keys,
+                "terminal_retry_requeues": terminal_retry_requeues,
+                "terminal_keys_pending_end_of_run": terminal_keys_pending_end_of_run,
             },
         )
         return {
@@ -1988,6 +2093,11 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
             "dropped_grant_duplicates": dropped_grant_duplicates,
             "db_retry_attempts": db_retry_attempts,
             "db_retry_exhausted_batches": db_retry_exhausted_batches,
+            "terminal_skip_batches": terminal_skip_batches,
+            "terminal_deferred_keys": terminal_deferred_keys,
+            "terminal_dropped_keys": terminal_dropped_keys,
+            "terminal_retry_requeues": terminal_retry_requeues,
+            "terminal_keys_pending_end_of_run": terminal_keys_pending_end_of_run,
         }
     finally:
         conn.close()
