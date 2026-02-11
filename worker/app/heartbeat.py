@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 
 import requests
 
+from app.runtime_logger import emit
+
 
 WORKER_HEARTBEAT_URL = os.getenv("WORKER_HEARTBEAT_URL", "http://web:3000/api/internal/worker-heartbeat")
 WORKER_HEARTBEAT_INTERVAL_SECONDS = int(os.getenv("WORKER_HEARTBEAT_INTERVAL_SECONDS", "30"))
@@ -61,6 +63,7 @@ def _heartbeat_loop():
             error = str(exc)
 
         with _state_lock:
+            previous_failures = _heartbeat_state["consecutive_failures"]
             _heartbeat_state["last_attempt_at"] = attempted_at
             if ok:
                 _heartbeat_state["last_success_at"] = attempted_at
@@ -69,5 +72,22 @@ def _heartbeat_loop():
             else:
                 _heartbeat_state["consecutive_failures"] += 1
                 _heartbeat_state["last_error"] = error
+            failures = _heartbeat_state["consecutive_failures"]
+
+        if not ok:
+            short_error = (error or "heartbeat_failed").replace("\n", " ").replace("\r", " ").strip()
+            if len(short_error) > 220:
+                short_error = short_error[:217] + "..."
+            emit(
+                "WARN",
+                "HEARTBEAT",
+                f"Heartbeat failed: url={WORKER_HEARTBEAT_URL} failures={failures} error={short_error}",
+            )
+            if previous_failures < WORKER_HEARTBEAT_FAIL_THRESHOLD <= failures:
+                emit(
+                    "ERROR",
+                    "HEARTBEAT",
+                    f"Heartbeat fail threshold reached: url={WORKER_HEARTBEAT_URL} failures={failures}",
+                )
 
         time.sleep(interval_seconds)

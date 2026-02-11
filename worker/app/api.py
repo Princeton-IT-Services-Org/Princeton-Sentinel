@@ -1,8 +1,10 @@
+from http import HTTPStatus
 from threading import Thread
-from flask import Flask, jsonify, request
+from flask import Flask, g, jsonify, request
 
 from app import db
 from app.heartbeat import get_heartbeat_status, is_heartbeat_healthy
+from app.runtime_logger import emit
 from app.scheduler import get_scheduler_status, run_job_once
 from app.utils import log_audit_event
 
@@ -16,8 +18,66 @@ def _actor_from_body(body):
     }
 
 
+def _status_phrase(code: int) -> str:
+    try:
+        return HTTPStatus(code).phrase
+    except ValueError:
+        return "Unknown Status"
+
+
+def _response_error_summary(response) -> str:
+    payload = response.get_json(silent=True)
+    if isinstance(payload, dict):
+        if payload.get("error"):
+            return str(payload.get("error"))
+        if payload.get("message"):
+            return str(payload.get("message"))
+    body = response.get_data(as_text=True) or ""
+    body = body.replace("\n", " ").replace("\r", " ").strip()
+    if not body:
+        return "unspecified_error"
+    if len(body) > 220:
+        return body[:217] + "..."
+    return body
+
+
 def create_app():
     app = Flask(__name__)
+
+    @app.before_request
+    def log_request_start():
+        g._log_method = request.method
+        g._log_path = request.path
+        emit("INFO", "FLASK_API", f"Request received: {request.method} {request.path}")
+
+    @app.after_request
+    def log_request_end(response):
+        method = getattr(g, "_log_method", request.method)
+        path = getattr(g, "_log_path", request.path)
+        status = response.status_code
+        phrase = _status_phrase(status)
+        if 200 <= status < 300:
+            emit("INFO", "FLASK_API", f"Response sent: {status} {phrase} for {method} {path}")
+        else:
+            error_summary = _response_error_summary(response)
+            level = "WARN" if status < 500 else "ERROR"
+            emit(
+                level,
+                "FLASK_API",
+                f"Response sent: {status} {phrase} for {method} {path}; error={error_summary}",
+            )
+        return response
+
+    @app.teardown_request
+    def log_request_exception(exc):
+        if exc is None:
+            return
+        method = getattr(g, "_log_method", "UNKNOWN")
+        path = getattr(g, "_log_path", "UNKNOWN")
+        text = str(exc).replace("\n", " ").replace("\r", " ").strip()
+        if len(text) > 220:
+            text = text[:217] + "..."
+        emit("ERROR", "FLASK_API", f"Unhandled exception during {method} {path}: error={text}")
 
     @app.get("/health")
     def health():
