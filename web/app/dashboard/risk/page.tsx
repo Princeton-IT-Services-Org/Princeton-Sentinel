@@ -34,7 +34,7 @@ export default async function RiskPage({ searchParams }: { searchParams?: Promis
   const dormantDays = Number(getParam(resolvedSearchParams, "dormantDays") || process.env.DASHBOARD_DORMANT_LOOKBACK_DAYS || 90);
   const windowDays = getWindowDays(resolvedSearchParams, 90);
   const windowStart = windowDays ? new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString() : null;
-  const { page, pageSize, offset } = getPagination(resolvedSearchParams, { page: 1, pageSize: 50 });
+  const { page, pageSize } = getPagination(resolvedSearchParams, { page: 1, pageSize: 50 });
   const sort = getParam(resolvedSearchParams, "sort") || "flags";
   const dir = getSortDirection(resolvedSearchParams, "desc");
 
