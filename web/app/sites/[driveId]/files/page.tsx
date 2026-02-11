@@ -50,10 +50,11 @@ function Heatmap({ cells }: { cells: Array<{ dayOfWeek: number; hour: number; co
   );
 }
 
-export default async function DriveFilesPage({ params }: { params: { driveId: string } }) {
+export default async function DriveFilesPage({ params }: { params: Promise<{ driveId: string }> }) {
   await requireUser();
 
-  const driveId = safeDecode(params.driveId);
+  const { driveId: encodedDriveId } = await params;
+  const driveId = safeDecode(encodedDriveId);
 
   const driveRows = await query<any>(
     `

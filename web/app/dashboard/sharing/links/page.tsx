@@ -21,17 +21,19 @@ function parseNullable(value: string | null) {
   return decoded;
 }
 
-export default async function SharingLinksPage({ searchParams }: { searchParams?: SearchParams }) {
+export default async function SharingLinksPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
   await requireUser();
 
-  const scopeRaw = getParam(searchParams, "scope");
-  const typeRaw = getParam(searchParams, "type");
+  const resolvedSearchParams = searchParams ? await searchParams : undefined;
+
+  const scopeRaw = getParam(resolvedSearchParams, "scope");
+  const typeRaw = getParam(resolvedSearchParams, "type");
   if (scopeRaw == null || typeRaw == null) notFound();
 
   const scope = parseNullable(scopeRaw);
   const type = parseNullable(typeRaw);
-  const search = getParam(searchParams, "q") || "";
-  const { page, pageSize } = getPagination(searchParams, { page: 1, pageSize: 50 });
+  const search = getParam(resolvedSearchParams, "q") || "";
+  const { page, pageSize } = getPagination(resolvedSearchParams, { page: 1, pageSize: 50 });
 
   const params: any[] = [];
   let idx = 1;

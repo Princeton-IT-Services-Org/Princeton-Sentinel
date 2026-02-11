@@ -18,14 +18,17 @@ export default async function GroupDetailPage({
   params,
   searchParams,
 }: {
-  params: { groupId: string };
-  searchParams?: SearchParams;
+  params: Promise<{ groupId: string }>;
+  searchParams?: Promise<SearchParams>;
 }) {
   await requireUser();
 
-  const groupId = safeDecode(params.groupId);
-  const search = getParam(searchParams, "q") || "";
-  const { page, pageSize } = getPagination(searchParams, { page: 1, pageSize: 50 });
+  const { groupId: encodedGroupId } = await params;
+  const resolvedSearchParams = searchParams ? await searchParams : undefined;
+
+  const groupId = safeDecode(encodedGroupId);
+  const search = getParam(resolvedSearchParams, "q") || "";
+  const { page, pageSize } = getPagination(resolvedSearchParams, { page: 1, pageSize: 50 });
 
   const groupRows = await query<any>(
     `SELECT id, display_name, mail, visibility FROM msgraph_groups WHERE id = $1 AND deleted_at IS NULL`,

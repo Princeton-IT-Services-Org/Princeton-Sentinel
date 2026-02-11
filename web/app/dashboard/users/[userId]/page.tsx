@@ -19,16 +19,19 @@ export default async function UserDetailPage({
   params,
   searchParams,
 }: {
-  params: { userId: string };
-  searchParams?: SearchParams;
+  params: Promise<{ userId: string }>;
+  searchParams?: Promise<SearchParams>;
 }) {
   await requireUser();
 
-  const userId = safeDecode(params.userId);
-  const windowDays = getWindowDays(searchParams, 90);
-  const daysParam = getParam(searchParams, "days") || "90";
+  const { userId: encodedUserId } = await params;
+  const resolvedSearchParams = searchParams ? await searchParams : undefined;
+
+  const userId = safeDecode(encodedUserId);
+  const windowDays = getWindowDays(resolvedSearchParams, 90);
+  const daysParam = getParam(resolvedSearchParams, "days") || "90";
   const windowStart = windowDays ? new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString() : null;
-  const { page, pageSize } = getPagination(searchParams, { page: 1, pageSize: 25 });
+  const { page, pageSize } = getPagination(resolvedSearchParams, { page: 1, pageSize: 25 });
 
   const userRows = await query<any>(
     `SELECT id, display_name, mail, user_principal_name FROM msgraph_users WHERE id = $1 AND deleted_at IS NULL`,

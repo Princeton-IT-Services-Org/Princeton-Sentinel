@@ -22,15 +22,17 @@ function buildSearchClause(search: string | null, startIndex: number) {
 
 export const dynamic = "force-dynamic";
 
-export default async function UsersPage({ searchParams }: { searchParams?: SearchParams }) {
+export default async function UsersPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
   await requireUser();
 
-  const search = getParam(searchParams, "q");
-  const windowDays = getWindowDays(searchParams, 90);
+  const resolvedSearchParams = searchParams ? await searchParams : undefined;
+
+  const search = getParam(resolvedSearchParams, "q");
+  const windowDays = getWindowDays(resolvedSearchParams, 90);
   const windowStart = windowDays ? new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString() : null;
-  const { page, pageSize, offset } = getPagination(searchParams, { page: 1, pageSize: 50 });
-  const sort = getParam(searchParams, "sort") || "modified";
-  const dir = getSortDirection(searchParams, "desc");
+  const { page, pageSize, offset } = getPagination(resolvedSearchParams, { page: 1, pageSize: 50 });
+  const sort = getParam(resolvedSearchParams, "sort") || "modified";
+  const dir = getSortDirection(resolvedSearchParams, "desc");
 
   const sortMap: Record<string, string> = {
     user: "u.display_name",

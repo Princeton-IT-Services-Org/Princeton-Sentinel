@@ -23,13 +23,15 @@ function buildSearchFilter(search: string | null) {
 
 export const dynamic = "force-dynamic";
 
-export default async function GroupsPage({ searchParams }: { searchParams?: SearchParams }) {
+export default async function GroupsPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
   await requireUser();
 
-  const search = getParam(searchParams, "q");
-  const { page, pageSize, offset } = getPagination(searchParams, { page: 1, pageSize: 50 });
-  const sort = getParam(searchParams, "sort") || "members";
-  const dir = getSortDirection(searchParams, "desc");
+  const resolvedSearchParams = searchParams ? await searchParams : undefined;
+
+  const search = getParam(resolvedSearchParams, "q");
+  const { page, pageSize, offset } = getPagination(resolvedSearchParams, { page: 1, pageSize: 50 });
+  const sort = getParam(resolvedSearchParams, "sort") || "members";
+  const dir = getSortDirection(resolvedSearchParams, "desc");
 
   const sortMap: Record<string, string> = {
     group: "g.display_name",
