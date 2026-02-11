@@ -1,9 +1,12 @@
 import os
 import random
+import re
 from contextlib import contextmanager
 
 import psycopg2
 import psycopg2.extras
+
+from app.runtime_logger import emit
 
 
 DB_URL = os.getenv("DATABASE_URL")
@@ -14,6 +17,30 @@ DB_WRITE_RETRY_MAX_MS = int(os.getenv("DB_WRITE_RETRY_MAX_MS", "3000"))
 DB_WRITE_RETRY_JITTER_MS = int(os.getenv("DB_WRITE_RETRY_JITTER_MS", "150"))
 
 RETRYABLE_DB_SQLSTATES = {"40P01", "55P03", "40001"}
+
+
+def _normalize_table_name(raw: str) -> str:
+    return raw.strip().strip('"')
+
+
+def _classify_write_query(query: str) -> tuple[str, str]:
+    normalized = " ".join((query or "").strip().split())
+    if not normalized:
+        return "unknown", "unknown"
+
+    match = re.match(r"(?is)^insert\s+into\s+([a-zA-Z0-9_.\"]+)", normalized)
+    if match:
+        return "insert", _normalize_table_name(match.group(1))
+
+    match = re.match(r"(?is)^update\s+([a-zA-Z0-9_.\"]+)", normalized)
+    if match:
+        return "update", _normalize_table_name(match.group(1))
+
+    match = re.match(r"(?is)^delete\s+from\s+([a-zA-Z0-9_.\"]+)", normalized)
+    if match:
+        return "delete", _normalize_table_name(match.group(1))
+
+    return "unknown", "unknown"
 
 
 def get_conn():
@@ -48,7 +75,15 @@ def transaction():
 
 
 def execute_values(cur, query: str, rows: list[tuple], page_size: int = 1000):
-    psycopg2.extras.execute_values(cur, query, rows, page_size=page_size)
+    op, table = _classify_write_query(query)
+    row_count = len(rows or [])
+    emit("INFO", "DB_CONN", f"Write requested: table={table} op={op} rows={row_count}")
+    try:
+        psycopg2.extras.execute_values(cur, query, rows, page_size=page_size)
+    except Exception as exc:
+        emit("ERROR", "DB_CONN", f"Write failed: table={table} op={op} rows={row_count} error={exc}")
+        raise
+    emit("INFO", "DB_CONN", f"Write completed: table={table} op={op} rows={row_count}")
 
 
 def jsonb(value):
@@ -68,9 +103,49 @@ def fetch_all(query, params=None):
 
 
 def execute(query, params=None):
+    op, table = _classify_write_query(query)
+    emit("INFO", "DB_CONN", f"Write requested: table={table} op={op} rows=unknown")
     with get_cursor(commit=True) as cur:
-        cur.execute(query, params or [])
-        return cur.rowcount
+        try:
+            cur.execute(query, params or [])
+        except Exception as exc:
+            emit("ERROR", "DB_CONN", f"Write failed: table={table} op={op} rows=unknown error={exc}")
+            raise
+        rowcount = cur.rowcount
+        emit("INFO", "DB_CONN", f"Write completed: table={table} op={op} rows={rowcount}")
+        return rowcount
+
+
+def try_advisory_lock(cur, key: str) -> bool:
+    lock_key = str(key)
+    emit("INFO", "DB_CONN", f"Advisory lock requested: key={lock_key}")
+    try:
+        cur.execute("SELECT pg_try_advisory_lock(hashtext(%s))", [lock_key])
+        locked = bool(cur.fetchone()[0])
+    except Exception as exc:
+        emit("ERROR", "DB_CONN", f"Advisory lock failed: key={lock_key} error={exc}")
+        raise
+    if locked:
+        emit("INFO", "DB_CONN", f"Advisory lock acquired: key={lock_key}")
+    else:
+        emit("WARN", "DB_CONN", f"Advisory lock not_acquired: key={lock_key}")
+    return locked
+
+
+def advisory_unlock(cur, key: str) -> bool:
+    lock_key = str(key)
+    emit("INFO", "DB_CONN", f"Advisory lock release requested: key={lock_key}")
+    try:
+        cur.execute("SELECT pg_advisory_unlock(hashtext(%s))", [lock_key])
+        unlocked = bool(cur.fetchone()[0])
+    except Exception as exc:
+        emit("ERROR", "DB_CONN", f"Advisory lock release failed: key={lock_key} error={exc}")
+        raise
+    if unlocked:
+        emit("INFO", "DB_CONN", f"Advisory lock released: key={lock_key}")
+    else:
+        emit("WARN", "DB_CONN", f"Advisory lock release_not_held: key={lock_key}")
+    return unlocked
 
 
 def get_db_error_sqlstate(exc: BaseException):

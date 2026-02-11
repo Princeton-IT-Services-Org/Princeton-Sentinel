@@ -8,6 +8,8 @@ from typing import Any, Dict, Iterable, Iterator, Optional
 import requests
 from msal import ConfidentialClientApplication
 
+from app.runtime_logger import emit
+
 
 DEFAULT_GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
@@ -66,6 +68,7 @@ class GraphClient:
                 result = self._cca.acquire_token_for_client(scopes=scopes)
             access_token = result.get("access_token")
             if not access_token:
+                emit("ERROR", "GRAPH", "Graph token acquisition failed: missing access_token")
                 raise RuntimeError("Failed to acquire Graph token")
 
             expires_in = result.get("expires_in")
@@ -91,6 +94,7 @@ class GraphClient:
         backoff = 2.0
 
         for attempt in range(self._max_retries + 1):
+            attempt_number = attempt + 1
             token = self._get_token()
             headers = {"Authorization": f"Bearer {token}"}
             try:
@@ -103,7 +107,13 @@ class GraphClient:
                 )
             except requests.RequestException as exc:
                 if attempt >= self._max_retries:
+                    emit("ERROR", "GRAPH", f"Graph request failed: method={method} url={url} error={exc}")
                     raise RuntimeError(f"Graph request failed: {exc}") from exc
+                emit(
+                    "WARN",
+                    "GRAPH",
+                    f"Graph request retrying after transport error: method={method} url={url} attempt={attempt_number}/{self._max_retries + 1} error={exc}",
+                )
                 time.sleep(backoff + random.uniform(0, 0.25))
                 backoff = min(backoff * 2, 60)
                 continue
@@ -111,11 +121,21 @@ class GraphClient:
             if resp.status_code == 401 and attempt < self._max_retries:
                 self._cached_token = None
                 self._cached_token_expires_at = 0.0
+                emit(
+                    "WARN",
+                    "GRAPH",
+                    f"Graph request retrying after 401: method={method} url={url} attempt={attempt_number}/{self._max_retries + 1}",
+                )
                 time.sleep(0.5)
                 continue
 
             if resp.status_code in (408, 429, 500, 502, 503, 504) and attempt < self._max_retries:
                 retry_after = resp.headers.get("Retry-After")
+                emit(
+                    "WARN",
+                    "GRAPH",
+                    f"Graph request retrying after status={resp.status_code}: method={method} url={url} attempt={attempt_number}/{self._max_retries + 1}",
+                )
                 if retry_after and retry_after.isdigit():
                     time.sleep(float(retry_after))
                 else:
@@ -126,6 +146,11 @@ class GraphClient:
             if not resp.ok:
                 text = resp.text or ""
                 message = text[:400] if text else "request_failed"
+                emit(
+                    "ERROR",
+                    "GRAPH",
+                    f"Graph request failed with status={resp.status_code}: method={method} url={url} error={message}",
+                )
                 raise GraphError(resp.status_code, message, url, text)
 
             if resp.status_code == 204:
@@ -133,8 +158,10 @@ class GraphClient:
             try:
                 return resp.json()
             except ValueError as exc:
+                emit("ERROR", "GRAPH", f"Graph response invalid JSON: method={method} url={url}")
                 raise RuntimeError("Graph response was not valid JSON") from exc
 
+        emit("ERROR", "GRAPH", f"Graph request retries exhausted: method={method} url={url}")
         raise RuntimeError("Graph request retries exhausted")
 
     def iter_paged(self, path_or_url: str) -> Iterator[Dict[str, Any]]:
@@ -158,4 +185,3 @@ def chunks(items: Iterable[Any], size: int) -> Iterator[list[Any]]:
             batch = []
     if batch:
         yield batch
-

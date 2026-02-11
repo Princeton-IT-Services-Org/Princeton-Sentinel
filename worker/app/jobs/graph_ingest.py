@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, Hashable, Iterable, Optional, Tuple
 
 from app import db
 from app.graph_client import GraphClient, GraphError
+from app.runtime_logger import emit
 from app.utils import log_audit_event, log_job_run_log
 
 
@@ -16,6 +17,17 @@ GRAPH_MAX_CONCURRENCY = int(os.getenv("GRAPH_MAX_CONCURRENCY", "4"))
 
 DEFAULT_PERMISSIONS_BATCH_SIZE = int(os.getenv("GRAPH_PERMISSIONS_BATCH_SIZE", "50"))
 DEFAULT_PERMISSIONS_STALE_AFTER_HOURS = int(os.getenv("GRAPH_PERMISSIONS_STALE_AFTER_HOURS", "24"))
+
+
+def _compact_json(value: Any, *, max_len: int = 300) -> str:
+    try:
+        text = json.dumps(value, sort_keys=True, default=str)
+    except TypeError:
+        text = str(value)
+    text = text.replace("\n", " ").replace("\r", " ").strip()
+    if len(text) > max_len:
+        return text[: max_len - 3] + "..."
+    return text
 
 
 def _dedupe_rows_keep_last(rows: list[tuple], key_fn: Callable[[tuple], Hashable]) -> tuple[list[tuple], int]:
@@ -103,8 +115,14 @@ def _execute_db_mutation_with_retry(
             conn.rollback()
             sqlstate = db.get_db_error_sqlstate(exc)
             if not db.is_retryable_db_error(exc):
+                emit("ERROR", "GRAPH", f"DB mutation failed: operation={op_name} sqlstate={sqlstate} error={exc}")
                 raise
             if retries >= max_retries:
+                emit(
+                    "ERROR",
+                    "GRAPH",
+                    f"DB mutation retries exhausted: operation={op_name} retries={retries} sqlstate={sqlstate} error={exc}",
+                )
                 return False, retries, sqlstate, str(exc)
 
             retries += 1
@@ -126,6 +144,11 @@ def _execute_db_mutation_with_retry(
                     "error": str(exc),
                     "sleep_ms": int(round(sleep_seconds * 1000)),
                 },
+            )
+            emit(
+                "WARN",
+                "GRAPH",
+                f"DB mutation retry: operation={op_name} attempt={retries}/{max_retries} sqlstate={sqlstate} sleep_ms={int(round(sleep_seconds * 1000))}",
             )
             time.sleep(sleep_seconds)
 
@@ -251,6 +274,16 @@ def run_graph_ingest(
     skip_stages = set(config.get("skip_stages") or [])
 
     client = GraphClient()
+    emit(
+        "INFO",
+        "GRAPH",
+        (
+            f"Job started: run_id={run_id} job_id={job_id} "
+            f"flush_every={flush_every} pull_permissions={pull_permissions} "
+            f"sync_group_memberships={sync_group_memberships} users_only={group_memberships_users_only} "
+            f"requested_stages={_compact_json(requested_stages)} skip_stages={_compact_json(sorted(skip_stages))}"
+        ),
+    )
 
     log_audit_event(
         action="graph_ingest_started",
@@ -282,6 +315,7 @@ def run_graph_ingest(
     for stage in stage_order:
         if stage in skip_stages:
             stages[stage] = {"skipped": True}
+            emit("INFO", "GRAPH", f"Stage completed: {stage} summary={_compact_json(stages[stage])}")
             continue
 
         log_job_run_log(
@@ -290,34 +324,48 @@ def run_graph_ingest(
             message=f"stage_started:{stage}",
             context={"job_id": job_id},
         )
+        emit("INFO", "GRAPH", f"Stage started: {stage}")
 
+        stage_result: Dict[str, Any]
         if stage == "users":
-            stages["users"] = _ingest_users(client, run_id=run_id, flush_every=flush_every)
+            stage_result = _ingest_users(client, run_id=run_id, flush_every=flush_every)
+            stages["users"] = stage_result
         elif stage == "groups":
-            stages["groups"] = _ingest_groups(client, run_id=run_id, flush_every=flush_every)
+            stage_result = _ingest_groups(client, run_id=run_id, flush_every=flush_every)
+            stages["groups"] = stage_result
         elif stage == "group_memberships":
             if not sync_group_memberships:
-                stages["group_memberships"] = {"skipped": True, "reason": "sync_group_memberships_disabled"}
+                stage_result = {"skipped": True, "reason": "sync_group_memberships_disabled"}
+                stages["group_memberships"] = stage_result
             else:
-                stages["group_memberships"] = _ingest_group_memberships(
+                stage_result = _ingest_group_memberships(
                     client,
                     run_id=run_id,
                     flush_every=flush_every,
                     users_only=group_memberships_users_only,
                 )
+                stages["group_memberships"] = stage_result
         elif stage == "sites":
-            stages["sites"] = _ingest_sites(client, run_id=run_id, flush_every=flush_every)
+            stage_result = _ingest_sites(client, run_id=run_id, flush_every=flush_every)
+            stages["sites"] = stage_result
         elif stage == "drives":
-            stages["drives"] = _ingest_drives(client, run_id=run_id, flush_every=flush_every)
+            stage_result = _ingest_drives(client, run_id=run_id, flush_every=flush_every)
+            stages["drives"] = stage_result
         elif stage == "drive_items":
-            stages["drive_items"] = _ingest_drive_items(client, run_id=run_id, flush_every=flush_every)
+            stage_result = _ingest_drive_items(client, run_id=run_id, flush_every=flush_every)
+            stages["drive_items"] = stage_result
         elif stage == "permissions":
             if not pull_permissions:
-                stages["permissions"] = {"skipped": True, "reason": "pull_permissions_disabled"}
+                stage_result = {"skipped": True, "reason": "pull_permissions_disabled"}
+                stages["permissions"] = stage_result
             else:
-                stages["permissions"] = _scan_permissions(client, config, run_id=run_id)
+                stage_result = _scan_permissions(client, config, run_id=run_id)
+                stages["permissions"] = stage_result
         else:
-            stages[stage] = {"skipped": True, "reason": "unknown_stage"}
+            stage_result = {"skipped": True, "reason": "unknown_stage"}
+            stages[stage] = stage_result
+
+        emit("INFO", "GRAPH", f"Stage completed: {stage} summary={_compact_json(stage_result)}")
 
     log_job_run_log(
         run_id=run_id,
@@ -331,6 +379,12 @@ def run_graph_ingest(
         entity_id=run_id,
         actor=actor,
         details={"job_id": job_id, "stages": stages},
+    )
+    duration_seconds = int((datetime.now(timezone.utc) - started_at).total_seconds())
+    emit(
+        "INFO",
+        "GRAPH",
+        f"Job finished: run_id={run_id} job_id={job_id} duration_seconds={duration_seconds} stages={_compact_json(stages, max_len=500)}",
     )
 
 
@@ -659,6 +713,11 @@ def _ingest_group_memberships(
                 conn.commit()
             except GraphError as exc:
                 skipped_groups += 1
+                emit(
+                    "WARN",
+                    "GRAPH",
+                    f"Group memberships skipped: group_id={group_id} status_code={exc.status_code} error={exc}",
+                )
                 log_job_run_log(
                     run_id=run_id,
                     level="WARN",
@@ -815,6 +874,7 @@ def _ingest_sites(client: GraphClient, *, run_id: str, flush_every: int) -> Dict
                 delta_link_new = data.get("@odata.deltaLink") or delta_link_new
         except GraphError as exc:
             mode = "list_fallback"
+            emit("WARN", "GRAPH", f"Sites delta failed, switching to full listing: status_code={exc.status_code} error={exc}")
             log_job_run_log(
                 run_id=run_id,
                 level="WARN",
@@ -1093,6 +1153,7 @@ def _ingest_drives(client: GraphClient, *, run_id: str, flush_every: int) -> Dic
             except GraphError as exc:
                 if exc.status_code not in (403, 404, 410):
                     site_skipped_error += 1
+                emit("WARN", "GRAPH", f"Site drives skipped: site_id={site_id} status_code={exc.status_code} error={exc}")
                 log_job_run_log(
                     run_id=run_id,
                     level="WARN",
@@ -1128,7 +1189,9 @@ def _ingest_drives(client: GraphClient, *, run_id: str, flush_every: int) -> Dic
             except GraphError as exc:
                 if exc.status_code in (403, 404, 410):
                     group_no_drive += 1
+                    emit("WARN", "GRAPH", f"Group has no accessible drives: group_id={group_id} status_code={exc.status_code}")
                     continue
+                emit("ERROR", "GRAPH", f"Group drive listing failed: group_id={group_id} status_code={exc.status_code} error={exc}")
                 raise
 
             if len(batch) >= flush_every:
@@ -1165,7 +1228,9 @@ def _ingest_drives(client: GraphClient, *, run_id: str, flush_every: int) -> Dic
             except GraphError as exc:
                 if exc.status_code in (403, 404, 410):
                     user_no_drive += 1
+                    emit("WARN", "GRAPH", f"User has no accessible drives: user_id={user_id} status_code={exc.status_code}")
                     continue
+                emit("ERROR", "GRAPH", f"User drive listing failed: user_id={user_id} status_code={exc.status_code} error={exc}")
                 raise
 
             if len(batch) >= flush_every:
@@ -1452,6 +1517,11 @@ def _ingest_drive_items(client: GraphClient, *, run_id: str, flush_every: int) -
                                     dropped_removed_duplicates += dropped
                                 else:
                                     drive_write_incomplete = True
+                                    emit(
+                                        "WARN",
+                                        "GRAPH",
+                                        f"Drive items cleanup write retries exhausted: drive_id={drive_id} sqlstate={sqlstate} error={error}",
+                                    )
                                     log_job_run_log(
                                         run_id=run_id,
                                         level="WARN",
@@ -1503,6 +1573,11 @@ def _ingest_drive_items(client: GraphClient, *, run_id: str, flush_every: int) -
                             dropped_removed_duplicates += dropped
                         else:
                             drive_write_incomplete = True
+                            emit(
+                                "WARN",
+                                "GRAPH",
+                                f"Drive items cleanup write retries exhausted: drive_id={drive_id} sqlstate={sqlstate} error={error}",
+                            )
                             log_job_run_log(
                                 run_id=run_id,
                                 level="WARN",
@@ -1519,6 +1594,11 @@ def _ingest_drive_items(client: GraphClient, *, run_id: str, flush_every: int) -
                         _set_delta_link(cur, "drive_items", drive_id, delta_link_new)
                         conn.commit()
                     elif delta_link_new and drive_write_incomplete:
+                        emit(
+                            "WARN",
+                            "GRAPH",
+                            f"Drive items delta link not advanced due to incomplete writes: drive_id={drive_id}",
+                        )
                         log_job_run_log(
                             run_id=run_id,
                             level="WARN",
@@ -1534,6 +1614,11 @@ def _ingest_drive_items(client: GraphClient, *, run_id: str, flush_every: int) -
                 except GraphError as exc:
                     if exc.status_code == 410 and attempt == 0 and delta_link:
                         drive_delta_resets += 1
+                        emit(
+                            "WARN",
+                            "GRAPH",
+                            f"Drive items delta expired, resetting cursor: drive_id={drive_id} status_code={exc.status_code}",
+                        )
                         log_job_run_log(
                             run_id=run_id,
                             level="WARN",
@@ -1550,6 +1635,11 @@ def _ingest_drive_items(client: GraphClient, *, run_id: str, flush_every: int) -
                         continue
 
                     drive_skipped_error += 1
+                    emit(
+                        "WARN",
+                        "GRAPH",
+                        f"Drive items skipped: drive_id={drive_id} status_code={exc.status_code} error={exc}",
+                    )
                     log_job_run_log(
                         run_id=run_id,
                         level="WARN",
@@ -1922,6 +2012,11 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
             else:
                 db_retry_exhausted_batches += 1
                 exhausted_error = f"db_write_retry_exhausted:{sqlstate or 'unknown'}"
+                emit(
+                    "WARN",
+                    "GRAPH",
+                    f"Permissions batch write retries exhausted: batch={batches} items={len(keys)} sqlstate={sqlstate} error={write_error}",
+                )
                 log_job_run_log(
                     run_id=run_id,
                     level="WARN",
@@ -1974,6 +2069,14 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
                             dropped_in_batch.append(key)
 
                     if deferred_in_batch:
+                        emit(
+                            "WARN",
+                            "GRAPH",
+                            (
+                                f"Permissions keys deferred after terminal DB write failures: batch={batches} "
+                                f"deferred_keys={deferred_in_batch} next_success_batch={next_eligible_success_batch}"
+                            ),
+                        )
                         log_job_run_log(
                             run_id=run_id,
                             level="WARN",
@@ -1990,6 +2093,11 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
                         )
 
                     if dropped_in_batch:
+                        emit(
+                            "WARN",
+                            "GRAPH",
+                            f"Permissions keys dropped after repeated terminal failures: batch={batches} dropped_keys={len(dropped_in_batch)}",
+                        )
                         sample_dropped = [
                             {"drive_id": drive_id, "item_id": item_id}
                             for drive_id, item_id in dropped_in_batch[:5]
@@ -2018,8 +2126,18 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
                             "error": mark_error,
                         },
                     )
+                    emit(
+                        "WARN",
+                        "GRAPH",
+                        f"Permissions mark-batch-error retries exhausted: batch={batches} sqlstate={mark_sqlstate} error={mark_error}",
+                    )
 
                 if err_updates:
+                    emit(
+                        "WARN",
+                        "GRAPH",
+                        f"Permissions batch finished with item errors: batch={batches} errors={len(err_updates)}",
+                    )
                     log_job_run_log(
                         run_id=run_id,
                         level="WARN",
@@ -2034,6 +2152,7 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
                 continue
 
             if err_updates:
+                emit("WARN", "GRAPH", f"Permissions batch finished with item errors: batch={batches} errors={len(err_updates)}")
                 log_job_run_log(
                     run_id=run_id,
                     level="WARN",
@@ -2045,6 +2164,14 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
         terminal_dropped_keys = len(dropped_for_run)
         terminal_keys_pending_end_of_run = terminal_deferred_keys
         if terminal_keys_pending_end_of_run > 0:
+            emit(
+                "WARN",
+                "GRAPH",
+                (
+                    f"Permissions run ended with pending keys: pending={terminal_keys_pending_end_of_run} "
+                    f"deferred={terminal_deferred_keys} dropped={terminal_dropped_keys}"
+                ),
+            )
             sample_pending = [
                 {"drive_id": drive_id, "item_id": item_id}
                 for drive_id, item_id in list(deferred_until_success_batch.keys())[:5]

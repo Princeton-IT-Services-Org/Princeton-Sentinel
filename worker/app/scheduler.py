@@ -8,6 +8,7 @@ from croniter import croniter
 
 from app import db
 from app.jobs.graph_ingest import run_graph_ingest
+from app.runtime_logger import emit
 from app.utils import log_audit_event, log_job_run_log
 
 SCHEDULER_POLL_SECONDS = int(os.getenv("SCHEDULER_POLL_SECONDS", "30"))
@@ -26,6 +27,7 @@ def get_scheduler_status():
 def start_scheduler_thread():
     thread = threading.Thread(target=_scheduler_loop, daemon=True)
     thread.start()
+    emit("INFO", "SCHEDULER", "Scheduler thread started")
 
 
 def _scheduler_loop():
@@ -37,6 +39,7 @@ def _scheduler_loop():
             _scheduler_status["last_error"] = None
         except Exception as exc:
             _scheduler_status["last_error"] = str(exc)
+            emit("ERROR", "SCHEDULER", f"Scheduler loop failure: error={exc}")
         time.sleep(SCHEDULER_POLL_SECONDS)
 
 
@@ -64,6 +67,11 @@ def _run_due_schedule():
                 [next_run_at, schedule_id],
             )
             conn.commit()
+            emit(
+                "INFO",
+                "SCHEDULER",
+                f"New schedule picked up: schedule_id={schedule_id} next_run_at={next_run_at.isoformat()}",
+            )
             return
 
         cur.execute(
@@ -86,10 +94,14 @@ def _run_due_schedule():
 
         schedule_id, job_id, cron_expr, job_type, config = row
 
-        cur.execute("SELECT pg_try_advisory_lock(hashtext(%s))", [str(job_id)])
-        locked = cur.fetchone()[0]
+        locked = db.try_advisory_lock(cur, str(job_id))
         if not locked:
             conn.rollback()
+            emit(
+                "WARN",
+                "SCHEDULER",
+                f"Scheduled job skipped: advisory lock unavailable job_id={job_id}",
+            )
             return
 
         run_id = _insert_job_run(cur, job_id)
@@ -99,6 +111,11 @@ def _run_due_schedule():
             [next_run_at, schedule_id],
         )
         conn.commit()
+        emit(
+            "INFO",
+            "SCHEDULER",
+            f"Scheduled job triggered: job_id={job_id} job_type={job_type} run_id={run_id}",
+        )
 
         log_audit_event(
             action="job_run_started",
@@ -114,8 +131,20 @@ def _run_due_schedule():
             "UPDATE job_runs SET finished_at = now(), status = %s, error = %s WHERE run_id = %s",
             [status, error, run_id],
         )
-        cur.execute("SELECT pg_advisory_unlock(hashtext(%s))", [str(job_id)])
+        db.advisory_unlock(cur, str(job_id))
         conn.commit()
+        if status == "success":
+            emit(
+                "INFO",
+                "SCHEDULER",
+                f"Scheduled job finished: job_id={job_id} job_type={job_type} run_id={run_id} status={status}",
+            )
+        else:
+            emit(
+                "ERROR",
+                "SCHEDULER",
+                f"Scheduled job finished: job_id={job_id} job_type={job_type} run_id={run_id} status={status} error={error}",
+            )
 
         log_audit_event(
             action="job_run_%s" % ("succeeded" if status == "success" else "failed"),
@@ -142,14 +171,19 @@ def run_job_once(job, actor_claims=None):
     conn = db.get_conn()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT pg_try_advisory_lock(hashtext(%s))", [str(job_id)])
-        locked = cur.fetchone()[0]
+        locked = db.try_advisory_lock(cur, str(job_id))
         if not locked:
             conn.rollback()
+            emit("WARN", "SCHEDULER", f"Run-now job skipped: advisory lock unavailable job_id={job_id}")
             return
 
         run_id = _insert_job_run(cur, job_id)
         conn.commit()
+        emit(
+            "INFO",
+            "SCHEDULER",
+            f"Run-now job triggered: job_id={job_id} job_type={job_type} run_id={run_id}",
+        )
 
         log_audit_event(
             action="job_run_started",
@@ -171,8 +205,20 @@ def run_job_once(job, actor_claims=None):
             "UPDATE job_runs SET finished_at = now(), status = %s, error = %s WHERE run_id = %s",
             [status, error, run_id],
         )
-        cur.execute("SELECT pg_advisory_unlock(hashtext(%s))", [str(job_id)])
+        db.advisory_unlock(cur, str(job_id))
         conn.commit()
+        if status == "success":
+            emit(
+                "INFO",
+                "SCHEDULER",
+                f"Run-now job finished: job_id={job_id} job_type={job_type} run_id={run_id} status={status}",
+            )
+        else:
+            emit(
+                "ERROR",
+                "SCHEDULER",
+                f"Run-now job finished: job_id={job_id} job_type={job_type} run_id={run_id} status={status} error={error}",
+            )
 
         log_audit_event(
             action="job_run_%s" % ("succeeded" if status == "success" else "failed"),
@@ -223,6 +269,7 @@ def _execute_job(job_type, config, *, run_id: str, job_id: str, actor_claims=Non
             raise RuntimeError(f"Unknown job_type: {job_type}")
         return "success", None
     except Exception as exc:
+        emit("ERROR", "SCHEDULER", f"Job execution failed: job_id={job_id} job_type={job_type} error={exc}")
         log_job_run_log(
             run_id=run_id,
             level="ERROR",
