@@ -19,6 +19,10 @@ function isApiRequest(pathname: string) {
   return pathname.startsWith("/api/");
 }
 
+function isPublicAsset(pathname: string) {
+  return /\.[^/]+$/.test(pathname);
+}
+
 function forbiddenRedirect(req: NextRequest) {
   const url = req.nextUrl.clone();
   url.pathname = "/forbidden";
@@ -29,7 +33,7 @@ function forbiddenRedirect(req: NextRequest) {
 export async function middleware(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
 
-  if (pathname.startsWith("/api/auth") || pathname.startsWith("/_next") || pathname === "/favicon.ico") {
+  if (pathname.startsWith("/api/auth") || pathname.startsWith("/_next") || pathname === "/favicon.ico" || isPublicAsset(pathname)) {
     return NextResponse.next();
   }
   if (pathname.startsWith("/api/internal/worker-heartbeat")) {
