@@ -24,17 +24,19 @@ function buildSearchFilter(search: string | null) {
 
 export const dynamic = "force-dynamic";
 
-export default async function RiskPage({ searchParams }: { searchParams?: SearchParams }) {
+export default async function RiskPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
   await requireUser();
 
-  const search = getParam(searchParams, "q");
-  const scanLimit = Math.min(Math.max(Number(getParam(searchParams, "scanLimit") || process.env.DASHBOARD_RISK_SCAN_LIMIT || 500), 50), 2000);
-  const dormantDays = Number(getParam(searchParams, "dormantDays") || process.env.DASHBOARD_DORMANT_LOOKBACK_DAYS || 90);
-  const windowDays = getWindowDays(searchParams, 90);
+  const resolvedSearchParams = searchParams ? await searchParams : undefined;
+
+  const search = getParam(resolvedSearchParams, "q");
+  const scanLimit = Math.min(Math.max(Number(getParam(resolvedSearchParams, "scanLimit") || process.env.DASHBOARD_RISK_SCAN_LIMIT || 500), 50), 2000);
+  const dormantDays = Number(getParam(resolvedSearchParams, "dormantDays") || process.env.DASHBOARD_DORMANT_LOOKBACK_DAYS || 90);
+  const windowDays = getWindowDays(resolvedSearchParams, 90);
   const windowStart = windowDays ? new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString() : null;
-  const { page, pageSize, offset } = getPagination(searchParams, { page: 1, pageSize: 50 });
-  const sort = getParam(searchParams, "sort") || "flags";
-  const dir = getSortDirection(searchParams, "desc");
+  const { page, pageSize, offset } = getPagination(resolvedSearchParams, { page: 1, pageSize: 50 });
+  const sort = getParam(resolvedSearchParams, "sort") || "flags";
+  const dir = getSortDirection(resolvedSearchParams, "desc");
 
   const sortMap: Record<string, string> = {
     site: "title",

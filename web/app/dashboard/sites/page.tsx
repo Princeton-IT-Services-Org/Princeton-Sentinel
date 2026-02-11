@@ -30,13 +30,15 @@ function buildSearchFilter(search: string | null) {
 
 export const dynamic = "force-dynamic";
 
-export default async function SitesPage({ searchParams }: { searchParams?: SearchParams }) {
+export default async function SitesPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
   await requireUser();
 
-  const search = getParam(searchParams, "q");
-  const { page, pageSize, offset } = getPagination(searchParams, { page: 1, pageSize: 50 });
-  const sort = getParam(searchParams, "sort") || "lastActivity";
-  const dir = getSortDirection(searchParams, "desc");
+  const resolvedSearchParams = searchParams ? await searchParams : undefined;
+
+  const search = getParam(resolvedSearchParams, "q");
+  const { page, pageSize, offset } = getPagination(resolvedSearchParams, { page: 1, pageSize: 50 });
+  const sort = getParam(resolvedSearchParams, "sort") || "lastActivity";
+  const dir = getSortDirection(resolvedSearchParams, "desc");
 
   const sortMap: Record<string, string> = {
     title: "title",

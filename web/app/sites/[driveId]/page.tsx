@@ -17,14 +17,17 @@ export default async function DriveDetailPage({
   params,
   searchParams,
 }: {
-  params: { driveId: string };
-  searchParams?: SearchParams;
+  params: Promise<{ driveId: string }>;
+  searchParams?: Promise<SearchParams>;
 }) {
   await requireUser();
 
-  const driveId = safeDecode(params.driveId);
-  const windowDays = getWindowDays(searchParams, 90);
-  const daysParam = getParam(searchParams, "days") || "90";
+  const { driveId: encodedDriveId } = await params;
+  const resolvedSearchParams = searchParams ? await searchParams : undefined;
+
+  const driveId = safeDecode(encodedDriveId);
+  const windowDays = getWindowDays(resolvedSearchParams, 90);
+  const daysParam = getParam(resolvedSearchParams, "days") || "90";
   const windowStart = windowDays ? new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString() : null;
 
   const driveRows = await query<any>(

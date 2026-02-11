@@ -15,10 +15,11 @@ import {
 
 export const dynamic = "force-dynamic";
 
-export default async function DriveSharingPage({ params }: { params: { driveId: string } }) {
+export default async function DriveSharingPage({ params }: { params: Promise<{ driveId: string }> }) {
   await requireUser();
 
-  const driveId = safeDecode(params.driveId);
+  const { driveId: encodedDriveId } = await params;
+  const driveId = safeDecode(encodedDriveId);
 
   const driveRows = await query<any>(
     `

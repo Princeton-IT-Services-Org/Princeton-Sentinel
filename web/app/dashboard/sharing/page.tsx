@@ -26,16 +26,18 @@ function buildSearchFilter(search: string | null) {
 
 export const dynamic = "force-dynamic";
 
-export default async function SharingPage({ searchParams }: { searchParams?: SearchParams }) {
+export default async function SharingPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
   await requireUser();
 
-  const search = getParam(searchParams, "q");
-  const { page, pageSize, offset } = getPagination(searchParams, { page: 1, pageSize: 50 });
-  const lbPage = Number(getParam(searchParams, "lbPage") || 1);
-  const lbPageSize = Number(getParam(searchParams, "lbPageSize") || 10);
-  const sort = getParam(searchParams, "sort") || "links";
-  const dir = getSortDirection(searchParams, "desc");
-  const externalThreshold = Number(getParam(searchParams, "externalThreshold") || 10);
+  const resolvedSearchParams = searchParams ? await searchParams : undefined;
+
+  const search = getParam(resolvedSearchParams, "q");
+  const { page, pageSize, offset } = getPagination(resolvedSearchParams, { page: 1, pageSize: 50 });
+  const lbPage = Number(getParam(resolvedSearchParams, "lbPage") || 1);
+  const lbPageSize = Number(getParam(resolvedSearchParams, "lbPageSize") || 10);
+  const sort = getParam(resolvedSearchParams, "sort") || "links";
+  const dir = getSortDirection(resolvedSearchParams, "desc");
+  const externalThreshold = Number(getParam(resolvedSearchParams, "externalThreshold") || 10);
 
   const sortMap: Record<string, string> = {
     site: "i.title",

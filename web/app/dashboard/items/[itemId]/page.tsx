@@ -82,11 +82,12 @@ function extractPrincipals(permission: any): Array<{ id?: string; displayName?: 
 
 export const dynamic = "force-dynamic";
 
-export default async function ItemDetailPage({ params }: { params: { itemId: string } }) {
+export default async function ItemDetailPage({ params }: { params: Promise<{ itemId: string }> }) {
   const { groups } = await requireUser();
   const admin = isAdmin(groups);
 
-  const key = splitItemKey(params.itemId);
+  const { itemId: encodedItemId } = await params;
+  const key = splitItemKey(encodedItemId);
   if (!key) notFound();
 
   const { driveId, itemId } = key;
