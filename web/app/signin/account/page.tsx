@@ -1,9 +1,11 @@
 import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
 import { getServerSession } from "next-auth/next";
 
+import { sanitizeAccountHint, LAST_ACCOUNT_HINT_COOKIE } from "@/app/lib/account-hint";
 import { getAuthOptions } from "@/app/lib/auth";
 import { sanitizeCallbackUrl } from "@/app/lib/callback-url";
-import { AccountSignInButtons } from "@/app/signin/account/account-sign-in-buttons";
+import { SignInButton } from "@/app/signin/sign-in-button";
 import AuthShell from "@/components/auth-shell";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -13,15 +15,18 @@ type Props = {
 
 export const dynamic = "force-dynamic";
 
-export default async function AccountSignInPage({ searchParams }: Props) {
+export default async function SignInAccountPage({ searchParams }: Props) {
+  const session = await getServerSession(getAuthOptions());
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
   const callbackUrl = sanitizeCallbackUrl(resolvedSearchParams?.callbackUrl);
   const error = typeof resolvedSearchParams?.error === "string" ? resolvedSearchParams.error : undefined;
 
-  const session = await getServerSession(getAuthOptions());
   if (session?.user) {
     redirect(callbackUrl);
   }
+
+  const cookieStore = await cookies();
+  const accountHint = sanitizeAccountHint(cookieStore.get(LAST_ACCOUNT_HINT_COOKIE)?.value);
 
   return (
     <AuthShell
@@ -35,7 +40,7 @@ export default async function AccountSignInPage({ searchParams }: Props) {
           <CardDescription>Use your approved organization account to access dashboard data.</CardDescription>
         </CardHeader>
         <CardContent>
-          <AccountSignInButtons callbackUrl={callbackUrl} initialError={error} />
+          <SignInButton callbackUrl={callbackUrl} initialError={error} accountHint={accountHint} />
         </CardContent>
       </Card>
     </AuthShell>
