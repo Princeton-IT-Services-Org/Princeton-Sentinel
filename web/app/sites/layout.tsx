@@ -12,7 +12,7 @@ export default async function SitesLayout({ children }: { children: React.ReactN
   const canAdmin = session ? isAdmin(groups) : false;
 
   if (!session?.user) {
-    redirect("/signin?callbackUrl=/sites");
+    redirect("/signin/account?callbackUrl=/sites");
   }
 
   if (!canUser) {

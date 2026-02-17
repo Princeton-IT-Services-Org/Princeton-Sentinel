@@ -1,9 +1,18 @@
 import Link from "next/link";
 
+import { sanitizeCallbackUrl } from "@/app/lib/callback-url";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
-export default function ForbiddenPage() {
+type Props = {
+  searchParams?: Promise<{ callbackUrl?: string | string[] }>;
+};
+
+export default async function ForbiddenPage({ searchParams }: Props) {
+  const resolvedSearchParams = searchParams ? await searchParams : undefined;
+  const callbackUrl = sanitizeCallbackUrl(resolvedSearchParams?.callbackUrl);
+  const signOutUrl = `/signout?callbackUrl=${encodeURIComponent(callbackUrl)}`;
+
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-md flex-col justify-center p-6">
       <Card>
@@ -17,7 +26,7 @@ export default function ForbiddenPage() {
               <Link href="/">Home</Link>
             </Button>
             <Button asChild>
-              <Link href="/api/auth/signout">Sign out</Link>
+              <Link href={signOutUrl}>Sign out</Link>
             </Button>
           </div>
         </CardContent>
