@@ -13,10 +13,11 @@ export default function UserMenu({ userLabel, canAdmin }: UserMenuProps) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"light" | "dark">("light");
   const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const pathname = usePathname();
+  const pathname = usePathname() ?? "/dashboard";
   const searchParams = useSearchParams();
-  const callbackUrl = `${pathname}${searchParams?.toString() ? `?${searchParams.toString()}` : ""}`;
-  const signOutHref = `/signout?callbackUrl=${encodeURIComponent(callbackUrl)}`;
+  const query = searchParams?.toString();
+  const callbackUrl = `${pathname}${query ? `?${query}` : ""}`;
+  const signOutUrl = `/signout?callbackUrl=${encodeURIComponent(callbackUrl)}`;
 
   useEffect(() => {
     const isDark = document.documentElement.classList.contains("dark");
@@ -85,7 +86,7 @@ export default function UserMenu({ userLabel, canAdmin }: UserMenuProps) {
             Theme: {mode === "dark" ? "Dark" : "Light"}
           </button>
           <Link
-            href={signOutHref}
+            href={signOutUrl}
             role="menuitem"
             className="block rounded px-3 py-2 text-muted-foreground hover:bg-accent hover:text-foreground"
             onClick={() => setOpen(false)}

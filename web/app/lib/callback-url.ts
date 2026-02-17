@@ -9,9 +9,10 @@ export function sanitizeCallbackUrl(
   input?: string | string[] | null,
   fallback: string = DEFAULT_CALLBACK_URL,
 ): string {
-  const value = normalizeInput(input);
+  const value = normalizeInput(input)?.trim();
   if (!value) return fallback;
   if (!value.startsWith("/") || value.startsWith("//")) return fallback;
+  if (/[\x00-\x1F\x7F]/.test(value)) return fallback;
 
   try {
     const parsed = new URL(value, "http://localhost");

@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
+import {
+  LAST_ACCOUNT_HINT_COOKIE,
+  LAST_ACCOUNT_HINT_MAX_AGE_SECONDS,
+  sanitizeAccountHint,
+} from "@/app/lib/account-hint";
 
 const ADMIN_PREFIXES = [
   "/admin",
@@ -31,6 +36,27 @@ function forbiddenRedirect(req: NextRequest) {
   return NextResponse.redirect(url);
 }
 
+function clearLastAccountHintCookie(response: NextResponse) {
+  response.cookies.set({
+    name: LAST_ACCOUNT_HINT_COOKIE,
+    value: "",
+    path: "/",
+    maxAge: 0,
+  });
+}
+
+function setLastAccountHintCookie(response: NextResponse, hint: string) {
+  response.cookies.set({
+    name: LAST_ACCOUNT_HINT_COOKIE,
+    value: hint,
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: LAST_ACCOUNT_HINT_MAX_AGE_SECONDS,
+  });
+}
+
 export async function middleware(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
 
@@ -41,7 +67,29 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  if (pathname.startsWith("/signin") || pathname.startsWith("/signout") || pathname.startsWith("/forbidden") || pathname.startsWith("/403")) {
+  if (pathname.startsWith("/signout")) {
+    const response = NextResponse.next();
+    const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
+    const accountHint = sanitizeAccountHint(
+      typeof token?.upn === "string" ? token.upn : typeof token?.email === "string" ? token.email : undefined,
+    );
+    if (accountHint) {
+      setLastAccountHintCookie(response, accountHint);
+    } else {
+      clearLastAccountHintCookie(response);
+    }
+    return response;
+  }
+
+  if (pathname.startsWith("/signin/account")) {
+    const response = NextResponse.next();
+    if (req.nextUrl.searchParams.get("clearHint") === "1") {
+      clearLastAccountHintCookie(response);
+    }
+    return response;
+  }
+
+  if (pathname.startsWith("/signin") || pathname.startsWith("/forbidden") || pathname.startsWith("/403")) {
     return NextResponse.next();
   }
 

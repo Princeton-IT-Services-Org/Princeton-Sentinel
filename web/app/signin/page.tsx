@@ -12,10 +12,10 @@ export default async function SignInPage({ searchParams }: Props) {
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
   const callbackUrl = sanitizeCallbackUrl(resolvedSearchParams?.callbackUrl);
   const error = typeof resolvedSearchParams?.error === "string" ? resolvedSearchParams.error : undefined;
-  const query = new URLSearchParams({ callbackUrl });
+  const params = new URLSearchParams({ callbackUrl });
   if (error) {
-    query.set("error", error);
+    params.set("error", error);
   }
 
-  redirect(`/signin/account?${query.toString()}`);
+  redirect(`/signin/account?${params.toString()}`);
 }
