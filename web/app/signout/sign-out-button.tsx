@@ -4,7 +4,7 @@ import { signOut } from "next-auth/react";
 
 import { Button } from "@/components/ui/button";
 
-export function SignOutButton({ callbackUrl = "/signin" }: { callbackUrl?: string }) {
+export function SignOutButton({ callbackUrl = "/signin/account" }: { callbackUrl?: string }) {
   return (
     <Button
       type="button"

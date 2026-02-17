@@ -53,7 +53,7 @@ export function getAuthOptions(): NextAuthOptions {
     ],
     session: { strategy: "jwt" },
     pages: {
-      signIn: "/signin",
+      signIn: "/signin/account",
       signOut: "/signout",
     },
     callbacks: {
