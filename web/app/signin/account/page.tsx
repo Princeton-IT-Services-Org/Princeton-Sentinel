@@ -5,7 +5,7 @@ import { getServerSession } from "next-auth/next";
 import { sanitizeAccountHint, LAST_ACCOUNT_HINT_COOKIE } from "@/app/lib/account-hint";
 import { getAuthOptions } from "@/app/lib/auth";
 import { sanitizeCallbackUrl } from "@/app/lib/callback-url";
-import { SignInButton } from "@/app/signin/sign-in-button";
+import { AccountSignInButtons } from "@/app/signin/account/account-sign-in-buttons";
 import AuthShell from "@/components/auth-shell";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -40,7 +40,7 @@ export default async function SignInAccountPage({ searchParams }: Props) {
           <CardDescription>Use your approved organization account to access dashboard data.</CardDescription>
         </CardHeader>
         <CardContent>
-          <SignInButton callbackUrl={callbackUrl} initialError={error} accountHint={accountHint} />
+          <AccountSignInButtons callbackUrl={callbackUrl} initialError={error} accountHint={accountHint} />
         </CardContent>
       </Card>
     </AuthShell>
