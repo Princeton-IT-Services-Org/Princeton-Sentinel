@@ -27,6 +27,7 @@ function forbiddenRedirect(req: NextRequest) {
   const url = req.nextUrl.clone();
   url.pathname = "/forbidden";
   url.search = "";
+  url.searchParams.set("callbackUrl", req.nextUrl.pathname + req.nextUrl.search);
   return NextResponse.redirect(url);
 }
 
@@ -49,7 +50,7 @@ export async function middleware(req: NextRequest) {
     if (isApiRequest(pathname)) {
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
-    const signInUrl = new URL("/signin", req.nextUrl.origin);
+    const signInUrl = new URL("/signin/account", req.nextUrl.origin);
     signInUrl.searchParams.set("callbackUrl", pathname + search);
     return NextResponse.redirect(signInUrl);
   }

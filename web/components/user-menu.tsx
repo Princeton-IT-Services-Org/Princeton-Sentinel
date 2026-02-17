@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
 
 type UserMenuProps = {
   userLabel: string;
@@ -12,6 +13,10 @@ export default function UserMenu({ userLabel, canAdmin }: UserMenuProps) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"light" | "dark">("light");
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const callbackUrl = `${pathname}${searchParams?.toString() ? `?${searchParams.toString()}` : ""}`;
+  const signOutHref = `/signout?callbackUrl=${encodeURIComponent(callbackUrl)}`;
 
   useEffect(() => {
     const isDark = document.documentElement.classList.contains("dark");
@@ -80,7 +85,7 @@ export default function UserMenu({ userLabel, canAdmin }: UserMenuProps) {
             Theme: {mode === "dark" ? "Dark" : "Light"}
           </button>
           <Link
-            href="/api/auth/signout"
+            href={signOutHref}
             role="menuitem"
             className="block rounded px-3 py-2 text-muted-foreground hover:bg-accent hover:text-foreground"
             onClick={() => setOpen(false)}

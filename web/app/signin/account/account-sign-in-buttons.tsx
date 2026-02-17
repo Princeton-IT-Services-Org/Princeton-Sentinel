@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
 
-export function SignInButton({
+export function AccountSignInButtons({
   callbackUrl,
   initialError,
 }: {
@@ -30,6 +30,16 @@ export function SignInButton({
         }}
       >
         Continue
+      </Button>
+      <Button
+        className="w-full"
+        variant="outline"
+        type="button"
+        onClick={() => {
+          void signIn("azure-ad", { callbackUrl }, { prompt: "select_account" });
+        }}
+      >
+        Use different account
       </Button>
     </div>
   );

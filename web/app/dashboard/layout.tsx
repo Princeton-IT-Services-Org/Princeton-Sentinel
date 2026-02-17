@@ -11,7 +11,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const canAdmin = session ? isAdmin(groups) : false;
 
   if (!session?.user) {
-    redirect("/signin?callbackUrl=/dashboard");
+    redirect("/signin/account?callbackUrl=/dashboard");
   }
 
   if (!canUser) {
