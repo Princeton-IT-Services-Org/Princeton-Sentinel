@@ -7,7 +7,6 @@ import { requireUser } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
 import { formatNumber } from "@/app/lib/format";
 import { getPagination, getParam, getSortDirection, SearchParams } from "@/app/lib/params";
-import { ROUTABLE_SITE_DRIVES_CTE } from "@/app/lib/site-drive-routing";
 import { SitesTable } from "./sites-table";
 import { SitesSummaryGraph } from "@/components/sites-summary-graph";
 import PageHeader from "@/components/page-header";
@@ -51,63 +50,66 @@ async function SitesPage({ searchParams }: { searchParams?: Promise<SearchParams
   };
   const sortColumn = sortMap[sort] || "last_activity_dt";
   const { clause, params } = buildSearchFilter(search);
-
-  const countRows = await query<any>(
-    `
-    ${ROUTABLE_SITE_DRIVES_CTE}
-    SELECT COUNT(*)::int AS total
-    FROM routable_site_drives
-    WHERE ${PERSONAL_CACHE_LIBRARY_FILTER}
-    ${clause ? `AND ${clause.replace(/^WHERE\s+/i, "")}` : ""}
-    `,
-    params
-  );
+  const [countRows, summaryRows, createdSeries, rows] = await Promise.all([
+    query<any>(
+      `
+      SELECT COUNT(*)::int AS total
+      FROM mv_msgraph_routable_site_drives
+      WHERE ${PERSONAL_CACHE_LIBRARY_FILTER}
+      ${clause ? `AND ${clause.replace(/^WHERE\s+/i, "")}` : ""}
+      `,
+      params
+    ),
+    query<any>(
+      `
+      SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE created_dt >= now() - interval '30 days')::int AS new_30,
+        COUNT(*) FILTER (WHERE created_dt >= now() - interval '90 days')::int AS new_90,
+        COUNT(*) FILTER (WHERE is_personal = true)::int AS personal_count,
+        COUNT(*) FILTER (WHERE is_personal = false)::int AS sharepoint_count
+      FROM mv_msgraph_routable_site_drives
+      WHERE ${PERSONAL_CACHE_LIBRARY_FILTER}
+      ${clause ? `AND ${clause.replace(/^WHERE\s+/i, "")}` : ""}
+      `,
+      params
+    ),
+    search
+      ? query<any>(
+          `
+          SELECT date_trunc('month', created_dt) AS month, COUNT(*)::int AS count
+          FROM mv_msgraph_routable_site_drives
+          WHERE created_dt IS NOT NULL
+            AND ${PERSONAL_CACHE_LIBRARY_FILTER}
+            ${clause ? `AND ${clause.replace(/^WHERE\s+/i, "")}` : ""}
+          GROUP BY date_trunc('month', created_dt)
+          ORDER BY month DESC
+          LIMIT 12
+          `,
+          params
+        )
+      : query<any>(
+          `
+          SELECT month, (personal_count + sharepoint_count)::int AS count
+          FROM mv_msgraph_sites_created_month
+          ORDER BY month DESC
+          LIMIT 12
+          `
+        ),
+    query<any>(
+      `
+      SELECT site_key, site_id, route_drive_id, title, web_url, created_dt, is_personal, template,
+             storage_used_bytes, storage_total_bytes, last_activity_dt
+      FROM mv_msgraph_routable_site_drives
+      WHERE ${PERSONAL_CACHE_LIBRARY_FILTER}
+      ${clause ? `AND ${clause.replace(/^WHERE\s+/i, "")}` : ""}
+      ORDER BY ${sortColumn} ${dir.toUpperCase()} NULLS LAST
+      LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+      `,
+      [...params, pageSize, offset]
+    ),
+  ]);
   const total = countRows[0]?.total || 0;
-
-  const summaryRows = await query<any>(
-    `
-    ${ROUTABLE_SITE_DRIVES_CTE}
-    SELECT
-      COUNT(*)::int AS total,
-      COUNT(*) FILTER (WHERE created_dt >= now() - interval '30 days')::int AS new_30,
-      COUNT(*) FILTER (WHERE created_dt >= now() - interval '90 days')::int AS new_90,
-      COUNT(*) FILTER (WHERE is_personal = true)::int AS personal_count,
-      COUNT(*) FILTER (WHERE is_personal = false)::int AS sharepoint_count
-    FROM routable_site_drives
-    WHERE ${PERSONAL_CACHE_LIBRARY_FILTER}
-    ${clause ? `AND ${clause.replace(/^WHERE\s+/i, "")}` : ""}
-    `,
-    params
-  );
-
-  const createdSeries = await query<any>(
-    `
-    ${ROUTABLE_SITE_DRIVES_CTE}
-    SELECT date_trunc('month', created_dt) AS month, COUNT(*)::int AS count
-    FROM routable_site_drives
-    WHERE created_dt IS NOT NULL
-      AND ${PERSONAL_CACHE_LIBRARY_FILTER}
-    ${clause ? `AND ${clause.replace(/^WHERE\s+/i, "")}` : ""}
-    GROUP BY date_trunc('month', created_dt)
-    ORDER BY month DESC
-    LIMIT 12
-    `,
-    params
-  );
-
-  const rows = await query<any>(
-    `
-    ${ROUTABLE_SITE_DRIVES_CTE}
-    SELECT site_key, site_id, route_drive_id, title, web_url, created_dt, is_personal, template,
-           storage_used_bytes, storage_total_bytes, last_activity_dt
-    FROM routable_site_drives
-    WHERE ${PERSONAL_CACHE_LIBRARY_FILTER}
-    ${clause ? `AND ${clause.replace(/^WHERE\s+/i, "")}` : ""}
-    ORDER BY ${sortColumn} ${dir.toUpperCase()} NULLS LAST
-    LIMIT $${params.length + 1} OFFSET $${params.length + 2}
-    `,
-    [...params, pageSize, offset]
-  );
 
   const summary = summaryRows[0] || {};
   const typeBreakdown = [

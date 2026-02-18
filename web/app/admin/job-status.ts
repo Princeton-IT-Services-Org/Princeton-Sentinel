@@ -34,6 +34,7 @@ export function getJobStatusBadgeClass(status: DerivedJobStatus): string {
 export function formatJobTypeLabel(jobType?: string | null): string {
   if (!jobType) return "Unknown Job";
   if (jobType === "graph_ingest") return "Graph Sync Job";
+  if (jobType === "mv_refresh") return "MV Refresh Job";
   return jobType
     .split("_")
     .filter(Boolean)

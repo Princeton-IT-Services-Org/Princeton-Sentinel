@@ -225,6 +225,13 @@ CREATE TABLE IF NOT EXISTS mv_refresh_log (
   last_refreshed_at timestamptz
 );
 
+CREATE TABLE IF NOT EXISTS mv_refresh_queue (
+  mv_name text PRIMARY KEY,
+  dirty_since timestamptz NOT NULL DEFAULT now(),
+  last_attempt_at timestamptz,
+  attempts int NOT NULL DEFAULT 0
+);
+
 CREATE OR REPLACE FUNCTION refresh_impacted_mvs() RETURNS trigger AS $$
 DECLARE
   mv record;
@@ -234,11 +241,9 @@ BEGIN
   END IF;
 
   FOR mv IN SELECT DISTINCT mv_name FROM mv_dependencies WHERE table_name = TG_TABLE_NAME LOOP
-    EXECUTE format('REFRESH MATERIALIZED VIEW %I', mv.mv_name);
-    INSERT INTO mv_refresh_log (mv_name, last_refreshed_at)
+    INSERT INTO mv_refresh_queue (mv_name, dirty_since)
     VALUES (mv.mv_name, now())
-    ON CONFLICT (mv_name)
-    DO UPDATE SET last_refreshed_at = EXCLUDED.last_refreshed_at;
+    ON CONFLICT (mv_name) DO NOTHING;
   END LOOP;
 
   RETURN NULL;
@@ -250,8 +255,26 @@ CREATE INDEX IF NOT EXISTS idx_drive_items_drive_id ON msgraph_drive_items (driv
 CREATE INDEX IF NOT EXISTS idx_drive_item_permissions_item_id ON msgraph_drive_item_permissions (drive_id, item_id);
 CREATE INDEX IF NOT EXISTS idx_drive_item_permission_grants_item_id ON msgraph_drive_item_permission_grants (drive_id, item_id);
 CREATE INDEX IF NOT EXISTS idx_group_memberships_group_id ON msgraph_group_memberships (group_id);
+CREATE INDEX IF NOT EXISTS idx_drives_site_rank
+ON msgraph_drives (site_id, drive_type, created_dt, id)
+WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_drive_items_drive_modified
+ON msgraph_drive_items (drive_id, modified_dt DESC)
+WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_drive_items_drive_modified_user
+ON msgraph_drive_items (drive_id, modified_dt DESC, last_modified_by_user_id)
+WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_drive_item_permissions_drive_synced
+ON msgraph_drive_item_permissions (drive_id, synced_at DESC)
+WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_drive_item_permissions_scope_synced
+ON msgraph_drive_item_permissions (link_scope, synced_at DESC)
+WHERE deleted_at IS NULL AND link_scope IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_drive_item_permission_grants_active_item
+ON msgraph_drive_item_permission_grants (drive_id, item_id)
+WHERE deleted_at IS NULL;
 
--- Triggered MV refreshes on base table changes (statement-level)
+-- Triggered MV queue invalidation on base table changes (statement-level)
 CREATE TRIGGER trg_refresh_mvs_users
 AFTER INSERT OR UPDATE OR DELETE ON msgraph_users
 FOR EACH STATEMENT EXECUTE FUNCTION refresh_impacted_mvs();

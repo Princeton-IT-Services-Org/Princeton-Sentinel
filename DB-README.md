@@ -122,14 +122,14 @@ Function:
 Behavior:
 
 1. Read impacted MV names from `mv_dependencies` for the changed table.
-2. `REFRESH MATERIALIZED VIEW <mv_name>` for each match.
-3. Upsert `mv_refresh_log.last_refreshed_at`.
+2. Upsert impacted names into `mv_refresh_queue`.
 
 Statement-level triggers invoke this after insert/update/delete on key base tables, including `job_runs`.
 
 Important implication:
 
-- Refreshes happen synchronously in the same transaction path as writes, so heavy ingestion can increase write latency.
+- Refreshes are queued asynchronously; write transactions do not execute full MV refreshes.
+- Worker job `mv_refresh` performs `REFRESH MATERIALIZED VIEW CONCURRENTLY` on queued views.
 
 ---
 
@@ -146,7 +146,9 @@ Defined in `003_materialized_views.sql`.
 ## Site and sharing analytics views
 
 - `mv_msgraph_site_inventory`
+- `mv_msgraph_routable_site_drives`
 - `mv_msgraph_site_sharing_summary`
+- `mv_msgraph_site_external_principals`
 - `mv_msgraph_link_breakdown`
 - `mv_msgraph_sites_created_month`
 - `mv_msgraph_site_activity_daily`
@@ -175,6 +177,12 @@ Base-table indexes include:
 - `idx_drive_item_permissions_item_id`
 - `idx_drive_item_permission_grants_item_id`
 - `idx_group_memberships_group_id`
+- `idx_drives_site_rank`
+- `idx_drive_items_drive_modified`
+- `idx_drive_items_drive_modified_user`
+- `idx_drive_item_permissions_drive_synced`
+- `idx_drive_item_permissions_scope_synced`
+- `idx_drive_item_permission_grants_active_item`
 
 Job subsystem indexes:
 
@@ -261,8 +269,8 @@ A migration runner exists:
 
 Current note:
 
-- The script expects SQL files under `db/migrations`, but that directory does not currently exist in this repository state.
-- If adopting post-bootstrap migrations, create `db/migrations` and run via script as documented in `/Users/garrick-mac/Documents/GitHub/Princeton-Sentinel/scripts/README.md`.
+- Migration files are stored under `db/migrations`.
+- Run via `/Users/garrick-mac/Documents/GitHub/Princeton-Sentinel/scripts/db_migrations.py` as documented in `/Users/garrick-mac/Documents/GitHub/Princeton-Sentinel/scripts/README.md`.
 
 ---
 
@@ -272,4 +280,3 @@ Current note:
 - Lack of FKs among many `msgraph_*` tables improves ingest flexibility but requires application-level consistency discipline.
 - Permission tables can grow quickly in large tenants; monitor size/index maintenance and VACUUM behavior.
 - Soft-deleted rows remain queryable unless filters enforce `deleted_at IS NULL`.
-

@@ -58,3 +58,13 @@ INSERT INTO jobs (job_id, job_type, tenant_id, config, enabled)
 VALUES
   (gen_random_uuid(), 'graph_ingest', 'default', '{"permissions_batch_size": 50, "permissions_stale_after_hours": 24, "pull_permissions": true, "sync_group_memberships": true, "group_memberships_users_only": true, "flush_every": 500}'::jsonb, true)
 ON CONFLICT DO NOTHING;
+
+INSERT INTO jobs (job_id, job_type, tenant_id, config, enabled)
+SELECT gen_random_uuid(), 'mv_refresh', 'default', '{"max_views_per_run": 20}'::jsonb, true
+WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE job_type = 'mv_refresh');
+
+INSERT INTO job_schedules (schedule_id, job_id, cron_expr, next_run_at, enabled)
+SELECT gen_random_uuid(), j.job_id, '*/5 * * * *', NULL, true
+FROM jobs j
+LEFT JOIN job_schedules js ON js.job_id = j.job_id
+WHERE j.job_type = 'mv_refresh' AND js.job_id IS NULL;

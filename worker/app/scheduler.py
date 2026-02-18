@@ -7,6 +7,7 @@ from croniter import croniter
 
 from app import db
 from app.jobs.graph_ingest import run_graph_ingest
+from app.jobs.mv_refresh import run_mv_refresh
 from app.runtime_logger import emit
 from app.utils import log_audit_event, log_job_run_log
 
@@ -331,6 +332,9 @@ def _execute_job(job_type, *, run_id: str, job_id: str, actor_claims=None):
         if job_type == "graph_ingest":
             log_job_run_log(run_id=run_id, level="INFO", message="graph_ingest_started", context={"job_id": job_id})
             run_graph_ingest(run_id=run_id, job_id=job_id, actor=actor_claims)
+        elif job_type == "mv_refresh":
+            log_job_run_log(run_id=run_id, level="INFO", message="mv_refresh_started", context={"job_id": job_id})
+            run_mv_refresh(run_id=run_id, job_id=job_id, actor=actor_claims)
         else:
             raise RuntimeError(f"Unknown job_type: {job_type}")
         return "success", None
