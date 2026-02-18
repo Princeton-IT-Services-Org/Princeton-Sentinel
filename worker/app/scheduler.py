@@ -96,6 +96,7 @@ def _run_due_schedule():
             FROM job_schedules js
             JOIN jobs j ON j.job_id = js.job_id
             WHERE js.enabled = true
+              AND j.enabled = true
               AND js.next_run_at <= now()
             ORDER BY js.next_run_at ASC
             FOR UPDATE SKIP LOCKED
@@ -180,36 +181,58 @@ def _run_due_schedule():
 
 
 def _recover_interrupted_runs() -> int:
-    rows = db.fetch_all(
-        """
-        UPDATE job_runs
-        SET finished_at = now(),
-            status = 'failed',
-            error = COALESCE(error, %s)
-        WHERE status = 'running'
-          AND finished_at IS NULL
-        RETURNING run_id, job_id
-        """,
-        [INTERRUPTED_RUN_ERROR],
-    )
+    conn = db.get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE job_runs
+            SET finished_at = now(),
+                status = 'failed',
+                error = COALESCE(error, %s)
+            WHERE status = 'running'
+              AND finished_at IS NULL
+            RETURNING run_id, job_id
+            """,
+            [INTERRUPTED_RUN_ERROR],
+        )
+        rows = cur.fetchall()
+        conn.commit()
+    finally:
+        conn.close()
+
     recovered = 0
     for row in rows:
-        run_id = str(row["run_id"])
-        job_id = str(row["job_id"])
+        run_id = str(row[0])
+        job_id = str(row[1])
         recovered += 1
-        log_audit_event(
-            action="job_run_failed",
-            entity_type="job_run",
-            entity_id=run_id,
-            actor=None,
-            details={"job_id": job_id, "trigger": "worker_recovery", "error": INTERRUPTED_RUN_ERROR},
-        )
-        log_job_run_log(
-            run_id=run_id,
-            level="ERROR",
-            message="job_interrupted_recovered",
-            context={"job_id": job_id, "error": INTERRUPTED_RUN_ERROR, "trigger": "worker_recovery"},
-        )
+        try:
+            log_audit_event(
+                action="job_run_failed",
+                entity_type="job_run",
+                entity_id=run_id,
+                actor=None,
+                details={"job_id": job_id, "trigger": "worker_recovery", "error": INTERRUPTED_RUN_ERROR},
+            )
+        except Exception as exc:
+            emit(
+                "WARN",
+                "SCHEDULER",
+                f"Recovered run audit log failed: run_id={run_id} job_id={job_id} error={exc}",
+            )
+        try:
+            log_job_run_log(
+                run_id=run_id,
+                level="ERROR",
+                message="job_interrupted_recovered",
+                context={"job_id": job_id, "error": INTERRUPTED_RUN_ERROR, "trigger": "worker_recovery"},
+            )
+        except Exception as exc:
+            emit(
+                "WARN",
+                "SCHEDULER",
+                f"Recovered run log write failed: run_id={run_id} job_id={job_id} error={exc}",
+            )
     return recovered
 
 

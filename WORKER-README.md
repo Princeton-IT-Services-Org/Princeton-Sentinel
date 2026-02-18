@@ -387,3 +387,5 @@ Batching/retry:
 - `jobs.config` is not used for `graph_ingest`; runtime behavior is controlled by environment variables.
 - Job types are hardcoded; adding new jobs requires scheduler dispatch changes plus schema/API updates.
 - On startup, worker can auto-mark orphaned `running` rows as failed (`interrupted_worker_restart`) when `RECOVER_INTERRUPTED_RUNS_ON_STARTUP=true`.
+- Interrupted-run recovery commits DB updates before emitting recovered-count logs.
+- Recovery audit/log emission is best-effort; logging failures do not roll back recovered run state.

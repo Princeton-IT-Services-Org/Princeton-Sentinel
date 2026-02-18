@@ -13,6 +13,33 @@ async function parseJsonOrText(res: Response) {
   }
 }
 
+type SafeWorkerFetchResult = {
+  ok: boolean;
+  status?: number;
+  payload?: any;
+  error?: string;
+};
+
+async function safeWorkerFetch(url: string): Promise<SafeWorkerFetchResult> {
+  try {
+    const res = await fetch(url, { cache: "no-store" });
+    const parsed = await parseJsonOrText(res);
+    if (!res.ok) {
+      return {
+        ok: false,
+        status: res.status,
+        error: parsed.text || `HTTP ${res.status}`,
+      };
+    }
+    return { ok: true, status: res.status, payload: parsed.json };
+  } catch (err: any) {
+    return {
+      ok: false,
+      error: err?.message || "worker_unreachable",
+    };
+  }
+}
+
 export async function GET() {
   await requireAdmin();
   const base = process.env.WORKER_API_URL;
@@ -21,25 +48,29 @@ export async function GET() {
   }
 
   const [healthRes, jobsRes] = await Promise.all([
-    fetch(`${base}/health`, { cache: "no-store" }),
-    fetch(`${base}/jobs/status`, { cache: "no-store" }),
+    safeWorkerFetch(`${base}/health`),
+    safeWorkerFetch(`${base}/jobs/status`),
   ]);
 
-  const [healthPayload, jobsPayload] = await Promise.all([parseJsonOrText(healthRes), parseJsonOrText(jobsRes)]);
+  const healthPayload = healthRes.ok ? healthRes.payload || {} : null;
+  const jobsPayload = jobsRes.ok ? jobsRes.payload || {} : null;
+  const jobs = Array.isArray(jobsPayload?.jobs) ? jobsPayload.jobs : [];
 
   if (!healthRes.ok || !jobsRes.ok) {
     return NextResponse.json(
       {
         error: "worker_overview_failed",
-        health_error: healthRes.ok ? null : healthPayload.text || `HTTP ${healthRes.status}`,
-        jobs_error: jobsRes.ok ? null : jobsPayload.text || `HTTP ${jobsRes.status}`,
+        health_error: healthRes.ok ? null : healthRes.error || `HTTP ${healthRes.status || 502}`,
+        jobs_error: jobsRes.ok ? null : jobsRes.error || `HTTP ${jobsRes.status || 502}`,
+        health: healthPayload || {},
+        jobs,
       },
       { status: 502 }
     );
   }
 
   return NextResponse.json({
-    health: healthPayload.json || {},
-    jobs: Array.isArray(jobsPayload.json?.jobs) ? jobsPayload.json.jobs : [],
+    health: healthPayload || {},
+    jobs,
   });
 }
