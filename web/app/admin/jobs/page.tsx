@@ -1,10 +1,11 @@
+import { withPageRequestTiming } from "@/app/lib/request-timing";
 import { requireAdmin } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
 import { deriveJobStatus, formatJobTypeLabel, getJobStatusBadgeClass, getJobStatusLabel } from "@/app/admin/job-status";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import LocalDateTime from "@/components/local-date-time";
 
-export default async function JobsPage() {
+async function JobsPage() {
   await requireAdmin();
 
   const rows = await query<any>(
@@ -245,3 +246,5 @@ export default async function JobsPage() {
     </div>
   );
 }
+
+export default withPageRequestTiming("/admin/jobs", JobsPage);

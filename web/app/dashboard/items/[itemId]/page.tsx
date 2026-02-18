@@ -1,3 +1,4 @@
+import { withPageRequestTiming } from "@/app/lib/request-timing";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -82,7 +83,7 @@ function extractPrincipals(permission: any): Array<{ id?: string; displayName?: 
 
 export const dynamic = "force-dynamic";
 
-export default async function ItemDetailPage({ params }: { params: Promise<{ itemId: string }> }) {
+async function ItemDetailPage({ params }: { params: Promise<{ itemId: string }> }) {
   const { groups } = await requireUser();
   const admin = isAdmin(groups);
 
@@ -394,3 +395,5 @@ export default async function ItemDetailPage({ params }: { params: Promise<{ ite
     </main>
   );
 }
+
+export default withPageRequestTiming("/dashboard/items/[itemId]", ItemDetailPage);

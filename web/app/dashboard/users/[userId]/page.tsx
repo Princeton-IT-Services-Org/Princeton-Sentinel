@@ -1,3 +1,4 @@
+import { withPageRequestTiming } from "@/app/lib/request-timing";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -15,7 +16,7 @@ import { UserRecentItemsTable, UserTopSitesTable } from "./user-detail-tables";
 
 export const dynamic = "force-dynamic";
 
-export default async function UserDetailPage({
+async function UserDetailPage({
   params,
   searchParams,
 }: {
@@ -250,3 +251,5 @@ export default async function UserDetailPage({
     </main>
   );
 }
+
+export default withPageRequestTiming("/dashboard/users/[userId]", UserDetailPage);

@@ -1,4 +1,5 @@
 import { Pool, type PoolClient } from "pg";
+import { recordDbDuration } from "@/app/lib/request-timing";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -17,19 +18,43 @@ function getPool() {
 }
 
 export async function query<T = any>(text: string, params?: any[]): Promise<T[]> {
-  const result = await getPool().query(text, params);
+  const startedAt = Date.now();
+  const result = await getPool().query(text, params).finally(() => {
+    recordDbDuration(Date.now() - startedAt);
+  });
   return result.rows;
+}
+
+function wrapClientWithTiming(client: PoolClient): PoolClient {
+  return new Proxy(client, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (prop !== "query" || typeof value !== "function") {
+        return value;
+      }
+
+      return async (...args: any[]) => {
+        const startedAt = Date.now();
+        try {
+          return await (value as (...params: any[]) => Promise<any>).apply(target, args);
+        } finally {
+          recordDbDuration(Date.now() - startedAt);
+        }
+      };
+    },
+  }) as PoolClient;
 }
 
 export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
   const client = await getPool().connect();
+  const timedClient = wrapClientWithTiming(client);
   try {
-    await client.query("BEGIN");
-    const result = await fn(client);
-    await client.query("COMMIT");
+    await timedClient.query("BEGIN");
+    const result = await fn(timedClient);
+    await timedClient.query("COMMIT");
     return result;
   } catch (err) {
-    await client.query("ROLLBACK");
+    await timedClient.query("ROLLBACK");
     throw err;
   } finally {
     client.release();

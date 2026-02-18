@@ -1,3 +1,4 @@
+import { withPageRequestTiming } from "@/app/lib/request-timing";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -21,7 +22,7 @@ function parseNullable(value: string | null) {
   return decoded;
 }
 
-export default async function SharingLinksPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
+async function SharingLinksPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
   await requireUser();
 
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
@@ -164,3 +165,5 @@ export default async function SharingLinksPage({ searchParams }: { searchParams?
     </main>
   );
 }
+
+export default withPageRequestTiming("/dashboard/sharing/links", SharingLinksPage);

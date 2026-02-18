@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { query } from "@/app/lib/db";
 import { requireAdmin } from "@/app/lib/auth";
+import { withApiRequestTiming } from "@/app/lib/request-timing";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+const getHandler = async function GET() {
   await requireAdmin();
   const rows = await query(
     `
@@ -32,4 +33,6 @@ export async function GET() {
     `
   );
   return NextResponse.json({ runs: rows });
-}
+};
+
+export const GET = withApiRequestTiming("/api/runs", getHandler);

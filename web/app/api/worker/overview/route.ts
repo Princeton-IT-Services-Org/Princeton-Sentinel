@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { requireAdmin } from "@/app/lib/auth";
+import { withApiRequestTiming } from "@/app/lib/request-timing";
 
 export const dynamic = "force-dynamic";
 
@@ -40,7 +41,7 @@ async function safeWorkerFetch(url: string): Promise<SafeWorkerFetchResult> {
   }
 }
 
-export async function GET() {
+const getHandler = async function GET() {
   await requireAdmin();
   const base = process.env.WORKER_API_URL;
   if (!base) {
@@ -73,4 +74,6 @@ export async function GET() {
     health: healthPayload || {},
     jobs,
   });
-}
+};
+
+export const GET = withApiRequestTiming("/api/worker/overview", getHandler);

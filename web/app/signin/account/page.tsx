@@ -1,3 +1,4 @@
+import { withPageRequestTiming } from "@/app/lib/request-timing";
 import { redirect } from "next/navigation";
 import { cookies } from "next/headers";
 import { getServerSession } from "next-auth/next";
@@ -15,7 +16,7 @@ type Props = {
 
 export const dynamic = "force-dynamic";
 
-export default async function SignInAccountPage({ searchParams }: Props) {
+async function SignInAccountPage({ searchParams }: Props) {
   const session = await getServerSession(getAuthOptions());
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
   const callbackUrl = sanitizeCallbackUrl(resolvedSearchParams?.callbackUrl);
@@ -46,3 +47,5 @@ export default async function SignInAccountPage({ searchParams }: Props) {
     </AuthShell>
   );
 }
+
+export default withPageRequestTiming("/signin/account", SignInAccountPage);

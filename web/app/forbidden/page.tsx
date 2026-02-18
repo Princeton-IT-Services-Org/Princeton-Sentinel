@@ -1,3 +1,4 @@
+import { withPageRequestTiming } from "@/app/lib/request-timing";
 import Link from "next/link";
 
 import { sanitizeCallbackUrl } from "@/app/lib/callback-url";
@@ -8,7 +9,7 @@ type Props = {
   searchParams?: Promise<{ callbackUrl?: string | string[] }>;
 };
 
-export default async function ForbiddenPage({ searchParams }: Props) {
+async function ForbiddenPage({ searchParams }: Props) {
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
   const callbackUrl = sanitizeCallbackUrl(resolvedSearchParams?.callbackUrl);
   const signOutUrl = `/signout?callbackUrl=${encodeURIComponent(callbackUrl)}`;
@@ -34,3 +35,5 @@ export default async function ForbiddenPage({ searchParams }: Props) {
     </main>
   );
 }
+
+export default withPageRequestTiming("/forbidden", ForbiddenPage);

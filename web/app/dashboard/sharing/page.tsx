@@ -1,3 +1,4 @@
+import { withPageRequestTiming } from "@/app/lib/request-timing";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Pagination } from "@/components/pagination";
@@ -26,7 +27,7 @@ function buildSearchFilter(search: string | null) {
 
 export const dynamic = "force-dynamic";
 
-export default async function SharingPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
+async function SharingPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
   await requireUser();
 
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
@@ -260,3 +261,5 @@ export default async function SharingPage({ searchParams }: { searchParams?: Pro
     </main>
   );
 }
+
+export default withPageRequestTiming("/dashboard/sharing", SharingPage);

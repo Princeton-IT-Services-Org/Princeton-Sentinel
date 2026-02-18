@@ -1,3 +1,4 @@
+import { withPageRequestTiming } from "@/app/lib/request-timing";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -15,7 +16,7 @@ import {
 
 export const dynamic = "force-dynamic";
 
-export default async function DriveSharingPage({ params }: { params: Promise<{ driveId: string }> }) {
+async function DriveSharingPage({ params }: { params: Promise<{ driveId: string }> }) {
   await requireUser();
 
   const { driveId: encodedDriveId } = await params;
@@ -176,3 +177,5 @@ export default async function DriveSharingPage({ params }: { params: Promise<{ d
     </main>
   );
 }
+
+export default withPageRequestTiming("/sites/[driveId]/sharing", DriveSharingPage);

@@ -1,5 +1,8 @@
+import { withPageRequestTiming } from "@/app/lib/request-timing";
 import { redirect } from "next/navigation";
 
-export default function AnalyticsRedirect() {
+function AnalyticsRedirect() {
   redirect("/admin/analytics");
 }
+
+export default withPageRequestTiming("/analytics", AnalyticsRedirect);

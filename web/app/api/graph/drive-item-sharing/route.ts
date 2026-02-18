@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { requireUser } from "@/app/lib/auth";
 import { graphGet } from "@/app/lib/graph";
+import { withApiRequestTiming } from "@/app/lib/request-timing";
 export const dynamic = "force-dynamic";
 
-export async function GET(req: Request) {
+const getHandler = async function GET(req: Request) {
   await requireUser();
   const { searchParams } = new URL(req.url);
   const driveId = searchParams.get("driveId");
@@ -18,4 +19,6 @@ export async function GET(req: Request) {
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 502 });
   }
-}
+};
+
+export const GET = withApiRequestTiming("/api/graph/drive-item-sharing", getHandler);

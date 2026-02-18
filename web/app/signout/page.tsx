@@ -1,3 +1,4 @@
+import { withPageRequestTiming } from "@/app/lib/request-timing";
 import Link from "next/link";
 
 import { buildSignInAccountUrl, sanitizeCallbackUrl } from "@/app/lib/callback-url";
@@ -12,7 +13,7 @@ type Props = {
 
 export const dynamic = "force-dynamic";
 
-export default async function SignOutPage({ searchParams }: Props) {
+async function SignOutPage({ searchParams }: Props) {
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
   const callbackUrl = sanitizeCallbackUrl(resolvedSearchParams?.callbackUrl);
   const signInUrl = buildSignInAccountUrl(callbackUrl);
@@ -42,3 +43,5 @@ export default async function SignOutPage({ searchParams }: Props) {
     </AuthShell>
   );
 }
+
+export default withPageRequestTiming("/signout", SignOutPage);
