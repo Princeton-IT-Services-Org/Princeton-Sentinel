@@ -7,7 +7,6 @@ import { requireUser } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
 import { formatNumber } from "@/app/lib/format";
 import { getPagination, getParam, getSortDirection, getWindowDays, SearchParams } from "@/app/lib/params";
-import { DRIVE_SITE_KEY_EXPR, ROUTABLE_SITE_DRIVES_CTE } from "@/app/lib/site-drive-routing";
 import { ActivityTable } from "./activity-table";
 import ActivitySummaryGraphsWrapper from "@/components/activity-summary-graphs-wrapper";
 import PageHeader from "@/components/page-header";
@@ -48,48 +47,39 @@ async function ActivityPage({ searchParams }: { searchParams?: Promise<SearchPar
   };
   const sortColumn = sortMap[sort] || "last_activity_dt";
   const { clause, params } = buildSearchFilter(search);
-  const countRows = await query<any>(`${ROUTABLE_SITE_DRIVES_CTE} SELECT COUNT(*)::int AS total FROM routable_site_drives ${clause}`, params);
+  const [countRows, dataRows] = await Promise.all([
+    query<any>("SELECT COUNT(*)::int AS total FROM mv_msgraph_routable_site_drives " + clause, params),
+    query<any>(
+      `
+      WITH base AS (
+        SELECT site_key, route_drive_id, title, web_url, is_personal, template, storage_used_bytes, storage_total_bytes, last_activity_dt
+        FROM mv_msgraph_routable_site_drives
+        ${clause}
+      ), activity AS (
+        SELECT
+          d.site_key,
+          COALESCE(SUM(d.modified_items), 0)::int AS modified_items,
+          COALESCE(SUM(d.active_users), 0)::int AS active_users,
+          COALESCE(SUM(d.shares), 0)::int AS shares
+        FROM mv_msgraph_site_activity_daily d
+        JOIN base b ON b.site_key = d.site_key
+        ${windowStart ? `WHERE d.day >= date_trunc('day', $${params.length + 1}::timestamptz)` : ""}
+        GROUP BY d.site_key
+      )
+      SELECT
+        b.*,
+        COALESCE(a.modified_items, 0) AS modified_items,
+        COALESCE(a.active_users, 0) AS active_users,
+        COALESCE(a.shares, 0) AS shares
+      FROM base b
+      LEFT JOIN activity a ON a.site_key = b.site_key
+      ORDER BY ${sortColumn} ${dir.toUpperCase()} NULLS LAST
+      LIMIT $${params.length + (windowStart ? 2 : 1)} OFFSET $${params.length + (windowStart ? 3 : 2)}
+      `,
+      windowStart ? [...params, windowStart, pageSize, offset] : [...params, pageSize, offset]
+    ),
+  ]);
   const total = countRows[0]?.total || 0;
-
-  const dataRows = await query<any>(
-    `
-    ${ROUTABLE_SITE_DRIVES_CTE}
-    , base AS (
-      SELECT site_key, route_drive_id, title, web_url, is_personal, template, storage_used_bytes, storage_total_bytes, last_activity_dt
-      FROM routable_site_drives
-      ${clause}
-    ), activity AS (
-      SELECT
-        ${DRIVE_SITE_KEY_EXPR} AS site_key,
-        COUNT(*) FILTER (${windowStart ? "WHERE i.modified_dt >= $" + (params.length + 1) : "WHERE i.modified_dt IS NOT NULL"})::int AS modified_items,
-        COUNT(DISTINCT i.last_modified_by_user_id) FILTER (${windowStart ? "WHERE i.modified_dt >= $" + (params.length + 1) : "WHERE i.modified_dt IS NOT NULL"})::int AS active_users
-      FROM msgraph_drive_items i
-      JOIN msgraph_drives d ON d.id = i.drive_id
-      JOIN base b ON b.site_key = ${DRIVE_SITE_KEY_EXPR}
-      WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
-      GROUP BY ${DRIVE_SITE_KEY_EXPR}
-    ), shares AS (
-      SELECT
-        ${DRIVE_SITE_KEY_EXPR} AS site_key,
-        COUNT(*) FILTER (${windowStart ? "WHERE p.synced_at >= $" + (params.length + 1) : "WHERE p.synced_at IS NOT NULL"})::int AS shares
-      FROM msgraph_drive_item_permissions p
-      JOIN msgraph_drives d ON d.id = p.drive_id
-      JOIN base b ON b.site_key = ${DRIVE_SITE_KEY_EXPR}
-      WHERE p.deleted_at IS NULL AND d.deleted_at IS NULL AND p.link_scope IS NOT NULL
-      GROUP BY ${DRIVE_SITE_KEY_EXPR}
-    )
-    SELECT
-      b.*, COALESCE(a.modified_items, 0) AS modified_items,
-      COALESCE(a.active_users, 0) AS active_users,
-      COALESCE(s.shares, 0) AS shares
-    FROM base b
-    LEFT JOIN activity a ON a.site_key = b.site_key
-    LEFT JOIN shares s ON s.site_key = b.site_key
-    ORDER BY ${sortColumn} ${dir.toUpperCase()} NULLS LAST
-    LIMIT $${params.length + (windowStart ? 2 : 1)} OFFSET $${params.length + (windowStart ? 3 : 2)}
-    `,
-    windowStart ? [...params, windowStart, pageSize, offset] : [...params, pageSize, offset]
-  );
 
   const topSitesByActiveUsers = [...dataRows]
     .sort((a, b) => b.active_users - a.active_users)

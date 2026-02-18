@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, Hashable, Iterable, Optional, Tuple
 
 from app import db
 from app.graph_client import GraphClient, GraphError
+from app.jobs.mv_refresh import enqueue_impacted_mvs_for_tables
 from app.runtime_logger import emit
 from app.utils import log_audit_event, log_job_run_log
 
@@ -17,6 +18,16 @@ GRAPH_MAX_CONCURRENCY = int(os.getenv("GRAPH_MAX_CONCURRENCY", "4"))
 
 DEFAULT_PERMISSIONS_BATCH_SIZE = int(os.getenv("GRAPH_PERMISSIONS_BATCH_SIZE", "50"))
 DEFAULT_PERMISSIONS_STALE_AFTER_HOURS = int(os.getenv("GRAPH_PERMISSIONS_STALE_AFTER_HOURS", "24"))
+
+STAGE_IMPACTED_TABLES: Dict[str, Tuple[str, ...]] = {
+    "users": ("msgraph_users",),
+    "groups": ("msgraph_groups",),
+    "group_memberships": ("msgraph_group_memberships",),
+    "sites": ("msgraph_sites",),
+    "drives": ("msgraph_drives",),
+    "drive_items": ("msgraph_drive_items",),
+    "permissions": ("msgraph_drive_item_permissions", "msgraph_drive_item_permission_grants"),
+}
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -393,6 +404,23 @@ def run_graph_ingest(*, run_id: str, job_id: str, actor: Optional[Dict[str, Any]
             stages[stage] = stage_result
 
         emit("INFO", "GRAPH", f"Stage completed: {stage} summary={_compact_json(stage_result)}")
+
+    queued_mvs_summary: Dict[str, Any] = {"tables": [], "queued": 0, "queued_mvs": []}
+    try:
+        touched_tables: set[str] = set()
+        for stage_name, stage_result in stages.items():
+            if isinstance(stage_result, dict) and stage_result.get("skipped"):
+                continue
+            touched_tables.update(STAGE_IMPACTED_TABLES.get(stage_name, ()))
+        queued_mvs_summary = enqueue_impacted_mvs_for_tables(sorted(touched_tables))
+        emit(
+            "INFO",
+            "GRAPH",
+            f"Queued impacted MVs: queued={queued_mvs_summary.get('queued', 0)} tables={_compact_json(queued_mvs_summary.get('tables', []))}",
+        )
+    except Exception as exc:
+        emit("WARN", "GRAPH", f"Failed to queue impacted MVs: error={exc}")
+    stages["mv_refresh_queue"] = queued_mvs_summary
 
     log_job_run_log(
         run_id=run_id,
