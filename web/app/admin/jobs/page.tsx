@@ -18,7 +18,13 @@ export default async function JobsPage() {
            m.status AS latest_run_status
     FROM jobs j
     LEFT JOIN job_schedules s ON s.job_id = j.job_id
-    LEFT JOIN mv_latest_job_runs m ON m.job_id = j.job_id
+    LEFT JOIN LATERAL (
+      SELECT status
+      FROM job_runs r
+      WHERE r.job_id = j.job_id
+      ORDER BY r.started_at DESC NULLS LAST, r.run_id DESC
+      LIMIT 1
+    ) m ON true
     ORDER BY j.job_type
     `
   );
@@ -70,8 +76,12 @@ export default async function JobsPage() {
                         <form action="/api/worker/run-now" method="post">
                           <input type="hidden" name="job_id" value={row.job_id} />
                           <input type="hidden" name="redirect_to" value="/admin/jobs" />
-                          <button className="badge border-primary/35 bg-primary/15 text-foreground" type="submit">
-                            Run Now
+                          <button
+                            className="badge border-primary/35 bg-primary/15 text-foreground disabled:cursor-not-allowed disabled:opacity-70"
+                            type="submit"
+                            disabled={status === "running"}
+                          >
+                            {status === "running" ? "Running..." : "Run Now"}
                           </button>
                         </form>
                         {showPause ? (

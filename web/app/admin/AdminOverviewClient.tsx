@@ -200,8 +200,12 @@ export default function AdminOverviewClient() {
                         <form action="/api/worker/run-now" method="post">
                           <input type="hidden" name="job_id" value={row.job_id} />
                           <input type="hidden" name="redirect_to" value="/admin" />
-                          <button className="badge border-primary/35 bg-primary/15 text-foreground" type="submit">
-                            Run Now
+                          <button
+                            className="badge border-primary/35 bg-primary/15 text-foreground disabled:cursor-not-allowed disabled:opacity-70"
+                            type="submit"
+                            disabled={status === "running"}
+                          >
+                            {status === "running" ? "Running..." : "Run Now"}
                           </button>
                         </form>
                         {showPause ? (

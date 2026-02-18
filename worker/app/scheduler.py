@@ -11,12 +11,22 @@ from app.runtime_logger import emit
 from app.utils import log_audit_event, log_job_run_log
 
 SCHEDULER_POLL_SECONDS = int(os.getenv("SCHEDULER_POLL_SECONDS", "30"))
+RECOVER_INTERRUPTED_RUNS_ON_STARTUP = os.getenv("RECOVER_INTERRUPTED_RUNS_ON_STARTUP", "true").strip().lower() in {
+    "1",
+    "true",
+    "t",
+    "yes",
+    "y",
+    "on",
+}
 
 _scheduler_status = {
     "running": False,
     "last_tick": None,
     "last_error": None,
 }
+
+INTERRUPTED_RUN_ERROR = "interrupted_worker_restart"
 
 
 def get_scheduler_status():
@@ -31,6 +41,13 @@ def start_scheduler_thread():
 
 def _scheduler_loop():
     _scheduler_status["running"] = True
+    if RECOVER_INTERRUPTED_RUNS_ON_STARTUP:
+        try:
+            recovered = _recover_interrupted_runs()
+            if recovered:
+                emit("WARN", "SCHEDULER", f"Recovered interrupted runs at startup: count={recovered}")
+        except Exception as exc:
+            emit("ERROR", "SCHEDULER", f"Failed recovering interrupted runs: error={exc}")
     while True:
         _scheduler_status["last_tick"] = datetime.now(timezone.utc).isoformat()
         try:
@@ -160,6 +177,40 @@ def _run_due_schedule():
         )
     finally:
         conn.close()
+
+
+def _recover_interrupted_runs() -> int:
+    rows = db.fetch_all(
+        """
+        UPDATE job_runs
+        SET finished_at = now(),
+            status = 'failed',
+            error = COALESCE(error, %s)
+        WHERE status = 'running'
+          AND finished_at IS NULL
+        RETURNING run_id, job_id
+        """,
+        [INTERRUPTED_RUN_ERROR],
+    )
+    recovered = 0
+    for row in rows:
+        run_id = str(row["run_id"])
+        job_id = str(row["job_id"])
+        recovered += 1
+        log_audit_event(
+            action="job_run_failed",
+            entity_type="job_run",
+            entity_id=run_id,
+            actor=None,
+            details={"job_id": job_id, "trigger": "worker_recovery", "error": INTERRUPTED_RUN_ERROR},
+        )
+        log_job_run_log(
+            run_id=run_id,
+            level="ERROR",
+            message="job_interrupted_recovered",
+            context={"job_id": job_id, "error": INTERRUPTED_RUN_ERROR, "trigger": "worker_recovery"},
+        )
+    return recovered
 
 
 def run_job_once(job, actor_claims=None):

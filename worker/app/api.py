@@ -105,7 +105,13 @@ def create_app():
                    m.run_id, m.started_at, m.finished_at, m.status, m.status AS latest_run_status, m.error
             FROM jobs j
             LEFT JOIN job_schedules js ON js.job_id = j.job_id
-            LEFT JOIN mv_latest_job_runs m ON m.job_id = j.job_id
+            LEFT JOIN LATERAL (
+                SELECT run_id, started_at, finished_at, status, error
+                FROM job_runs
+                WHERE job_id = j.job_id
+                ORDER BY started_at DESC NULLS LAST, run_id DESC
+                LIMIT 1
+            ) m ON true
             ORDER BY j.job_type
             """
         )
