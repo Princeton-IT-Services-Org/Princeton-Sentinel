@@ -112,12 +112,11 @@ export async function middleware(req: NextRequest) {
   if (pathname.startsWith("/api/auth") || pathname.startsWith("/_next") || pathname === "/favicon.ico" || isPublicAsset(pathname)) {
     return NextResponse.next();
   }
+  if (pathname.startsWith("/api/internal/worker-heartbeat")) {
+    return NextResponse.next();
+  }
   const timing = createTimingMeta(req);
   logPerfStart(timing);
-
-  if (pathname.startsWith("/api/internal/worker-heartbeat")) {
-    return nextWithTiming(req, timing);
-  }
 
   if (pathname.startsWith("/signout")) {
     const response = nextWithTiming(req, timing);
