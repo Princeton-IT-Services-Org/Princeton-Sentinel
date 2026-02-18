@@ -1,3 +1,4 @@
+import { withPageRequestTiming } from "@/app/lib/request-timing";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { DashboardTotalsBarChartClient } from "@/components/dashboard-totals-bar-chart-client";
 import { SharingSummaryBarChartClient, SharingSummaryPieChartClient } from "@/components/sharing-summary-graphs-client";
@@ -10,7 +11,7 @@ import { MetricCard } from "@/components/metric-card";
 
 export const dynamic = "force-dynamic";
 
-export default async function DashboardPage() {
+async function DashboardPage() {
   await requireUser();
 
   const inventoryRows = await query<any>("SELECT * FROM mv_msgraph_inventory_summary LIMIT 1");
@@ -127,3 +128,5 @@ export default async function DashboardPage() {
     </main>
   );
 }
+
+export default withPageRequestTiming("/dashboard", DashboardPage);

@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { query } from "@/app/lib/db";
 import { requireAdmin } from "@/app/lib/auth";
+import { withApiRequestTiming } from "@/app/lib/request-timing";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+const getHandler = async function GET() {
   await requireAdmin();
   const inventory = await query("SELECT * FROM mv_msgraph_inventory_summary LIMIT 1");
   const sharing = await query("SELECT * FROM mv_msgraph_sharing_posture_summary LIMIT 1");
@@ -13,4 +14,6 @@ export async function GET() {
     sharing: sharing[0] || {},
     refresh,
   });
-}
+};
+
+export const GET = withApiRequestTiming("/api/analytics", getHandler);

@@ -1,3 +1,4 @@
+import { withPageRequestTiming } from "@/app/lib/request-timing";
 import { redirect } from "next/navigation";
 
 import { sanitizeCallbackUrl } from "@/app/lib/callback-url";
@@ -8,7 +9,7 @@ type Props = {
 
 export const dynamic = "force-dynamic";
 
-export default async function SignInPage({ searchParams }: Props) {
+async function SignInPage({ searchParams }: Props) {
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
   const callbackUrl = sanitizeCallbackUrl(resolvedSearchParams?.callbackUrl);
   const error = typeof resolvedSearchParams?.error === "string" ? resolvedSearchParams.error : undefined;
@@ -19,3 +20,5 @@ export default async function SignInPage({ searchParams }: Props) {
 
   redirect(`/signin/account?${params.toString()}`);
 }
+
+export default withPageRequestTiming("/signin", SignInPage);

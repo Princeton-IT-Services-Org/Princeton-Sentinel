@@ -1,3 +1,4 @@
+import { withPageRequestTiming } from "@/app/lib/request-timing";
 import Link from "next/link";
 
 import { requireAdmin } from "@/app/lib/auth";
@@ -39,7 +40,7 @@ function itemFallback(row: RevokeLogRow): string {
   return row.item_id || row.drive_id || "Unknown item";
 }
 
-export default async function AdminLogsPage() {
+async function AdminLogsPage() {
   await requireAdmin();
 
   const rows = await query<RevokeLogRow>(
@@ -144,3 +145,5 @@ export default async function AdminLogsPage() {
     </Card>
   );
 }
+
+export default withPageRequestTiming("/admin/logs", AdminLogsPage);

@@ -4,6 +4,7 @@ import { graphDelete, graphGet } from "@/app/lib/graph";
 import { withTransaction } from "@/app/lib/db";
 import { writeAuditEvent } from "@/app/lib/audit";
 import { writeRevokePermissionLog } from "@/app/lib/revoke-log";
+import { withApiRequestTiming } from "@/app/lib/request-timing";
 
 export const dynamic = "force-dynamic";
 
@@ -61,7 +62,7 @@ async function safeWriteRevokeLog(params: {
   }
 }
 
-export async function GET(req: Request) {
+const getHandler = async function GET(req: Request) {
   await requireUser();
   const { searchParams } = new URL(req.url);
   const driveId = searchParams.get("driveId");
@@ -76,9 +77,9 @@ export async function GET(req: Request) {
   } catch (err: unknown) {
     return NextResponse.json({ error: getErrorMessage(err, "graph_get_permissions_failed") }, { status: 502 });
   }
-}
+};
 
-export async function DELETE(req: Request) {
+const deleteHandler = async function DELETE(req: Request) {
   let session: any = null;
   let actor: { oid?: string; upn?: string; name?: string } | null = null;
   try {
@@ -249,4 +250,7 @@ export async function DELETE(req: Request) {
   }
 
   return NextResponse.json({ ok: true });
-}
+};
+
+export const GET = withApiRequestTiming("/api/graph/drive-item-permissions", getHandler);
+export const DELETE = withApiRequestTiming("/api/graph/drive-item-permissions", deleteHandler);

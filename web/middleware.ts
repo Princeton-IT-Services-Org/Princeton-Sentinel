@@ -2,6 +2,12 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
 import {
+  PS_REQ_ID_HEADER,
+  PS_REQ_METHOD_HEADER,
+  PS_REQ_PATH_HEADER,
+  PS_REQ_START_MS_HEADER,
+} from "@/app/lib/request-timing-headers";
+import {
   LAST_ACCOUNT_HINT_COOKIE,
   LAST_ACCOUNT_HINT_MAX_AGE_SECONDS,
   sanitizeAccountHint,
@@ -19,6 +25,14 @@ const ADMIN_PREFIXES = [
   "/api/analytics",
 ];
 const USER_PREFIXES = ["/dashboard", "/sites", "/api/graph"];
+const LOG_PREFIX = "[PERF] [WEBAPP]";
+
+type TimingMeta = {
+  requestId: string;
+  method: string;
+  path: string;
+  startMs: number;
+};
 
 function isApiRequest(pathname: string) {
   return pathname.startsWith("/api/");
@@ -34,6 +48,41 @@ function forbiddenRedirect(req: NextRequest) {
   url.search = "";
   url.searchParams.set("callbackUrl", req.nextUrl.pathname + req.nextUrl.search);
   return NextResponse.redirect(url);
+}
+
+function createTimingMeta(req: NextRequest): TimingMeta {
+  return {
+    requestId: crypto.randomUUID(),
+    method: req.method.toUpperCase(),
+    path: req.nextUrl.pathname,
+    startMs: Date.now(),
+  };
+}
+
+function nextWithTiming(req: NextRequest, timing: TimingMeta) {
+  const headers = new Headers(req.headers);
+  headers.set(PS_REQ_ID_HEADER, timing.requestId);
+  headers.set(PS_REQ_START_MS_HEADER, String(timing.startMs));
+  headers.set(PS_REQ_METHOD_HEADER, timing.method);
+  headers.set(PS_REQ_PATH_HEADER, timing.path);
+  return NextResponse.next({
+    request: {
+      headers,
+    },
+  });
+}
+
+function logPerfStart(timing: TimingMeta) {
+  console.log(
+    `${LOG_PREFIX} start req_id=${timing.requestId} source=app method=${timing.method} path=${timing.path} at=${new Date(timing.startMs).toISOString()}`
+  );
+}
+
+function logPerfDoneFromMiddleware(timing: TimingMeta, status: number) {
+  const totalMs = Math.max(0, Math.round(Date.now() - timing.startMs));
+  console.log(
+    `${LOG_PREFIX} done req_id=${timing.requestId} source=app method=${timing.method} path=${timing.path} status=${status} total_ms=${totalMs} db_ms=0 app_ms=${totalMs} render_ms=0`
+  );
 }
 
 function clearLastAccountHintCookie(response: NextResponse) {
@@ -63,12 +112,15 @@ export async function middleware(req: NextRequest) {
   if (pathname.startsWith("/api/auth") || pathname.startsWith("/_next") || pathname === "/favicon.ico" || isPublicAsset(pathname)) {
     return NextResponse.next();
   }
+  const timing = createTimingMeta(req);
+  logPerfStart(timing);
+
   if (pathname.startsWith("/api/internal/worker-heartbeat")) {
-    return NextResponse.next();
+    return nextWithTiming(req, timing);
   }
 
   if (pathname.startsWith("/signout")) {
-    const response = NextResponse.next();
+    const response = nextWithTiming(req, timing);
     const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
     const accountHint = sanitizeAccountHint(
       typeof token?.upn === "string" ? token.upn : typeof token?.email === "string" ? token.email : undefined,
@@ -82,7 +134,7 @@ export async function middleware(req: NextRequest) {
   }
 
   if (pathname.startsWith("/signin/account")) {
-    const response = NextResponse.next();
+    const response = nextWithTiming(req, timing);
     if (req.nextUrl.searchParams.get("clearHint") === "1") {
       clearLastAccountHintCookie(response);
     }
@@ -90,17 +142,21 @@ export async function middleware(req: NextRequest) {
   }
 
   if (pathname.startsWith("/signin") || pathname.startsWith("/forbidden") || pathname.startsWith("/403")) {
-    return NextResponse.next();
+    return nextWithTiming(req, timing);
   }
 
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
   if (!token) {
     if (isApiRequest(pathname)) {
-      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+      const response = NextResponse.json({ error: "unauthorized" }, { status: 401 });
+      logPerfDoneFromMiddleware(timing, response.status);
+      return response;
     }
     const signInUrl = new URL("/signin/account", req.nextUrl.origin);
     signInUrl.searchParams.set("callbackUrl", pathname + search);
-    return NextResponse.redirect(signInUrl);
+    const response = NextResponse.redirect(signInUrl);
+    logPerfDoneFromMiddleware(timing, response.status);
+    return response;
   }
 
   const groups = (token.groups as string[]) || [];
@@ -112,22 +168,30 @@ export async function middleware(req: NextRequest) {
   if (ADMIN_PREFIXES.some((p) => pathname.startsWith(p))) {
     if (!isAdmin) {
       if (isApiRequest(pathname)) {
-        return NextResponse.json({ error: "forbidden" }, { status: 403 });
+        const response = NextResponse.json({ error: "forbidden" }, { status: 403 });
+        logPerfDoneFromMiddleware(timing, response.status);
+        return response;
       }
-      return forbiddenRedirect(req);
+      const response = forbiddenRedirect(req);
+      logPerfDoneFromMiddleware(timing, response.status);
+      return response;
     }
   }
 
   if (USER_PREFIXES.some((p) => pathname.startsWith(p))) {
     if (!isUser) {
       if (isApiRequest(pathname)) {
-        return NextResponse.json({ error: "forbidden" }, { status: 403 });
+        const response = NextResponse.json({ error: "forbidden" }, { status: 403 });
+        logPerfDoneFromMiddleware(timing, response.status);
+        return response;
       }
-      return forbiddenRedirect(req);
+      const response = forbiddenRedirect(req);
+      logPerfDoneFromMiddleware(timing, response.status);
+      return response;
     }
   }
 
-  return NextResponse.next();
+  return nextWithTiming(req, timing);
 }
 
 export const config = {

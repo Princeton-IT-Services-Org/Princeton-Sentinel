@@ -1,8 +1,9 @@
+import { withPageRequestTiming } from "@/app/lib/request-timing";
 import { query } from "@/app/lib/db";
 import { requireAdmin } from "@/app/lib/auth";
 import AdminAnalyticsClient from "@/app/admin/AdminAnalyticsClient";
 
-export default async function AnalyticsPage() {
+async function AnalyticsPage() {
   await requireAdmin();
 
   const inventoryRows = await query<any>("SELECT * FROM mv_msgraph_inventory_summary LIMIT 1");
@@ -11,3 +12,5 @@ export default async function AnalyticsPage() {
 
   return <AdminAnalyticsClient initialData={{ inventory: inventoryRows[0] || {}, sharing: sharingRows[0] || {}, refresh: refreshRows }} />;
 }
+
+export default withPageRequestTiming("/admin/analytics", AnalyticsPage);

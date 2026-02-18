@@ -1,9 +1,10 @@
+import { withPageRequestTiming } from "@/app/lib/request-timing";
 import { requireAdmin } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
 import RunsTable from "@/app/runs/RunsTable";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-export default async function RunsPage() {
+async function RunsPage() {
   await requireAdmin();
 
   const runs = await query<any>(
@@ -44,3 +45,5 @@ export default async function RunsPage() {
     </Card>
   );
 }
+
+export default withPageRequestTiming("/admin/runs", RunsPage);

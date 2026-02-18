@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/app/lib/auth";
+import { withApiRequestTiming } from "@/app/lib/request-timing";
 export const dynamic = "force-dynamic";
 
 async function parseBody(req: Request) {
@@ -20,7 +21,7 @@ function redirectTarget(body: any, fallback: string) {
   return fallback;
 }
 
-export async function POST(req: Request) {
+const postHandler = async function POST(req: Request) {
   const { session } = await requireAdmin();
   const base = process.env.WORKER_API_URL;
   if (!base) {
@@ -47,4 +48,6 @@ export async function POST(req: Request) {
   });
 
   return new NextResponse(null, { status: 303, headers: { Location: redirectTarget(body, "/admin") } });
-}
+};
+
+export const POST = withApiRequestTiming("/api/worker/run-now", postHandler);

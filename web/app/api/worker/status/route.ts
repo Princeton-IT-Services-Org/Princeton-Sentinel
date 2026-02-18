@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/app/lib/auth";
+import { withApiRequestTiming } from "@/app/lib/request-timing";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+const getHandler = async function GET() {
   await requireAdmin();
   const base = process.env.WORKER_API_URL;
   if (!base) {
@@ -15,4 +16,6 @@ export async function GET() {
 
   const text = await res.text();
   return new NextResponse(text, { status: res.status });
-}
+};
+
+export const GET = withApiRequestTiming("/api/worker/status", getHandler);

@@ -1,3 +1,4 @@
+import { withPageRequestTiming } from "@/app/lib/request-timing";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -50,7 +51,7 @@ function Heatmap({ cells }: { cells: Array<{ dayOfWeek: number; hour: number; co
   );
 }
 
-export default async function DriveFilesPage({ params }: { params: Promise<{ driveId: string }> }) {
+async function DriveFilesPage({ params }: { params: Promise<{ driveId: string }> }) {
   await requireUser();
 
   const { driveId: encodedDriveId } = await params;
@@ -227,3 +228,5 @@ export default async function DriveFilesPage({ params }: { params: Promise<{ dri
     </main>
   );
 }
+
+export default withPageRequestTiming("/sites/[driveId]/files", DriveFilesPage);

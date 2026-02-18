@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { query } from "@/app/lib/db";
 import { requireAdmin } from "@/app/lib/auth";
 import { writeAuditEvent } from "@/app/lib/audit";
+import { withApiRequestTiming } from "@/app/lib/request-timing";
 export const dynamic = "force-dynamic";
 
 async function parseBody(req: Request) {
@@ -17,7 +18,7 @@ async function parseBody(req: Request) {
   return {};
 }
 
-export async function GET() {
+const getHandler = async function GET() {
   await requireAdmin();
   const rows = await query(
     `
@@ -27,9 +28,9 @@ export async function GET() {
     `
   );
   return NextResponse.json({ schedules: rows });
-}
+};
 
-export async function POST(req: Request) {
+const postHandler = async function POST(req: Request) {
   const { session } = await requireAdmin();
   const body: any = await parseBody(req);
   const action = body.action || "create";
@@ -197,4 +198,7 @@ export async function POST(req: Request) {
   }
 
   return NextResponse.json({ error: "unsupported_action" }, { status: 400 });
-}
+};
+
+export const GET = withApiRequestTiming("/api/schedules", getHandler);
+export const POST = withApiRequestTiming("/api/schedules", postHandler);

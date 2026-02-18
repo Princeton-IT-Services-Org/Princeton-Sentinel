@@ -1,3 +1,4 @@
+import { withPageRequestTiming } from "@/app/lib/request-timing";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -13,7 +14,7 @@ import { SiteActivityTrendTable, SiteTopUsersTable } from "./site-detail-tables"
 
 export const dynamic = "force-dynamic";
 
-export default async function DriveDetailPage({
+async function DriveDetailPage({
   params,
   searchParams,
 }: {
@@ -394,3 +395,5 @@ export default async function DriveDetailPage({
     </main>
   );
 }
+
+export default withPageRequestTiming("/sites/[driveId]", DriveDetailPage);

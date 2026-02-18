@@ -1,3 +1,4 @@
+import { withPageRequestTiming } from "@/app/lib/request-timing";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -14,7 +15,7 @@ import { GroupMembersTable } from "./group-members-table";
 
 export const dynamic = "force-dynamic";
 
-export default async function GroupDetailPage({
+async function GroupDetailPage({
   params,
   searchParams,
 }: {
@@ -207,3 +208,5 @@ export default async function GroupDetailPage({
     </main>
   );
 }
+
+export default withPageRequestTiming("/dashboard/groups/[groupId]", GroupDetailPage);

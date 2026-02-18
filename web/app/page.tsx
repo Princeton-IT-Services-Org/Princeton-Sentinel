@@ -1,10 +1,11 @@
+import { withPageRequestTiming } from "@/app/lib/request-timing";
 import Link from "next/link";
 
 import AuthShell from "@/components/auth-shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
-export default function HomePage() {
+function HomePage() {
   return (
     <AuthShell
       support="Secure Access"
@@ -37,3 +38,5 @@ export default function HomePage() {
     </AuthShell>
   );
 }
+
+export default withPageRequestTiming("/", HomePage);
