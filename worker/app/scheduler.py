@@ -1,4 +1,3 @@
-import json
 import os
 import threading
 import time
@@ -12,12 +11,22 @@ from app.runtime_logger import emit
 from app.utils import log_audit_event, log_job_run_log
 
 SCHEDULER_POLL_SECONDS = int(os.getenv("SCHEDULER_POLL_SECONDS", "30"))
+RECOVER_INTERRUPTED_RUNS_ON_STARTUP = os.getenv("RECOVER_INTERRUPTED_RUNS_ON_STARTUP", "true").strip().lower() in {
+    "1",
+    "true",
+    "t",
+    "yes",
+    "y",
+    "on",
+}
 
 _scheduler_status = {
     "running": False,
     "last_tick": None,
     "last_error": None,
 }
+
+INTERRUPTED_RUN_ERROR = "interrupted_worker_restart"
 
 
 def get_scheduler_status():
@@ -32,6 +41,13 @@ def start_scheduler_thread():
 
 def _scheduler_loop():
     _scheduler_status["running"] = True
+    if RECOVER_INTERRUPTED_RUNS_ON_STARTUP:
+        try:
+            recovered = _recover_interrupted_runs()
+            if recovered:
+                emit("WARN", "SCHEDULER", f"Recovered interrupted runs at startup: count={recovered}")
+        except Exception as exc:
+            emit("ERROR", "SCHEDULER", f"Failed recovering interrupted runs: error={exc}")
     while True:
         _scheduler_status["last_tick"] = datetime.now(timezone.utc).isoformat()
         try:
@@ -76,7 +92,7 @@ def _run_due_schedule():
 
         cur.execute(
             """
-            SELECT js.schedule_id, js.job_id, js.cron_expr, j.job_type, j.config
+            SELECT js.schedule_id, js.job_id, js.cron_expr, j.job_type
             FROM job_schedules js
             JOIN jobs j ON j.job_id = js.job_id
             WHERE js.enabled = true
@@ -92,7 +108,7 @@ def _run_due_schedule():
             conn.rollback()
             return
 
-        schedule_id, job_id, cron_expr, job_type, config = row
+        schedule_id, job_id, cron_expr, job_type = row
 
         locked = db.try_advisory_lock(cur, str(job_id))
         if not locked:
@@ -125,7 +141,7 @@ def _run_due_schedule():
             details={"job_id": str(job_id), "job_type": job_type, "trigger": "schedule"},
         )
 
-        status, error = _execute_job(job_type, config, run_id=str(run_id), job_id=str(job_id), actor_claims=None)
+        status, error = _execute_job(job_type, run_id=str(run_id), job_id=str(job_id), actor_claims=None)
 
         cur.execute(
             "UPDATE job_runs SET finished_at = now(), status = %s, error = %s WHERE run_id = %s",
@@ -164,10 +180,65 @@ def _run_due_schedule():
         conn.close()
 
 
+def _recover_interrupted_runs() -> int:
+    conn = db.get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE job_runs
+            SET finished_at = now(),
+                status = 'failed',
+                error = COALESCE(error, %s)
+            WHERE status = 'running'
+              AND finished_at IS NULL
+            RETURNING run_id, job_id
+            """,
+            [INTERRUPTED_RUN_ERROR],
+        )
+        rows = cur.fetchall()
+        conn.commit()
+    finally:
+        conn.close()
+
+    recovered = 0
+    for row in rows:
+        run_id = str(row[0])
+        job_id = str(row[1])
+        recovered += 1
+        try:
+            log_audit_event(
+                action="job_run_failed",
+                entity_type="job_run",
+                entity_id=run_id,
+                actor=None,
+                details={"job_id": job_id, "trigger": "worker_recovery", "error": INTERRUPTED_RUN_ERROR},
+            )
+        except Exception as exc:
+            emit(
+                "WARN",
+                "SCHEDULER",
+                f"Recovered run audit log failed: run_id={run_id} job_id={job_id} error={exc}",
+            )
+        try:
+            log_job_run_log(
+                run_id=run_id,
+                level="ERROR",
+                message="job_interrupted_recovered",
+                context={"job_id": job_id, "error": INTERRUPTED_RUN_ERROR, "trigger": "worker_recovery"},
+            )
+        except Exception as exc:
+            emit(
+                "WARN",
+                "SCHEDULER",
+                f"Recovered run log write failed: run_id={run_id} job_id={job_id} error={exc}",
+            )
+    return recovered
+
+
 def run_job_once(job, actor_claims=None):
     job_id = job["job_id"]
     job_type = job["job_type"]
-    config = job.get("config")
     conn = db.get_conn()
     try:
         cur = conn.cursor()
@@ -195,7 +266,6 @@ def run_job_once(job, actor_claims=None):
 
         status, error = _execute_job(
             job_type,
-            config,
             run_id=str(run_id),
             job_id=str(job_id),
             actor_claims=actor_claims,
@@ -256,15 +326,11 @@ def _compute_next_run(cron_expr):
     return itr.get_next(datetime)
 
 
-def _execute_job(job_type, config, *, run_id: str, job_id: str, actor_claims=None):
+def _execute_job(job_type, *, run_id: str, job_id: str, actor_claims=None):
     try:
-        if isinstance(config, str):
-            config = json.loads(config)
-        config = config or {}
-
         if job_type == "graph_ingest":
             log_job_run_log(run_id=run_id, level="INFO", message="graph_ingest_started", context={"job_id": job_id})
-            run_graph_ingest(config, run_id=run_id, job_id=job_id, actor=actor_claims)
+            run_graph_ingest(run_id=run_id, job_id=job_id, actor=actor_claims)
         else:
             raise RuntimeError(f"Unknown job_type: {job_type}")
         return "success", None

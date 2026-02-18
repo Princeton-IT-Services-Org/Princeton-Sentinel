@@ -19,6 +19,38 @@ DEFAULT_PERMISSIONS_BATCH_SIZE = int(os.getenv("GRAPH_PERMISSIONS_BATCH_SIZE", "
 DEFAULT_PERMISSIONS_STALE_AFTER_HOURS = int(os.getenv("GRAPH_PERMISSIONS_STALE_AFTER_HOURS", "24"))
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if value in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _env_csv(name: str) -> list[str]:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def get_graph_sync_runtime_config() -> Dict[str, Any]:
+    return {
+        "flush_every": FLUSH_EVERY_DEFAULT,
+        "pull_permissions": _env_bool("GRAPH_SYNC_PULL_PERMISSIONS", True),
+        "sync_group_memberships": _env_bool("GRAPH_SYNC_GROUP_MEMBERSHIPS", True),
+        "group_memberships_users_only": _env_bool("GRAPH_SYNC_GROUP_MEMBERSHIPS_USERS_ONLY", True),
+        "stages": _env_csv("GRAPH_SYNC_STAGES"),
+        "skip_stages": _env_csv("GRAPH_SYNC_SKIP_STAGES"),
+        "permissions_batch_size": DEFAULT_PERMISSIONS_BATCH_SIZE,
+        "permissions_stale_after_hours": DEFAULT_PERMISSIONS_STALE_AFTER_HOURS,
+    }
+
+
 def _compact_json(value: Any, *, max_len: int = 300) -> str:
     try:
         text = json.dumps(value, sort_keys=True, default=str)
@@ -258,13 +290,8 @@ def _compute_path_level(normalized_path: Optional[str]) -> Optional[int]:
     return len([seg for seg in path.split("/") if seg])
 
 
-def run_graph_ingest(
-    config: Dict[str, Any],
-    *,
-    run_id: str,
-    job_id: str,
-    actor: Optional[Dict[str, Any]] = None,
-):
+def run_graph_ingest(*, run_id: str, job_id: str, actor: Optional[Dict[str, Any]] = None):
+    config = get_graph_sync_runtime_config()
     started_at = datetime.now(timezone.utc)
     flush_every = int(config.get("flush_every", FLUSH_EVERY_DEFAULT))
     pull_permissions = bool(config.get("pull_permissions", True))

@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { query } from "@/app/lib/db";
 import { requireAdmin } from "@/app/lib/auth";
@@ -35,37 +34,7 @@ export async function POST(req: Request) {
   const action = body.action || "create";
 
   if (action === "create") {
-    const jobType = body.job_type;
-    const configRaw = (body.config || "").toString().trim();
-    let config = {};
-    try {
-      config = configRaw ? JSON.parse(configRaw) : {};
-    } catch {
-      return NextResponse.json({ error: "invalid_config_json" }, { status: 400 });
-    }
-
-    const jobId = randomUUID();
-    await query(
-      `
-      INSERT INTO jobs (job_id, job_type, tenant_id, config, enabled)
-      VALUES ($1, $2, $3, $4, $5)
-      `,
-      [jobId, jobType, "default", JSON.stringify(config), true]
-    );
-
-    await writeAuditEvent({
-      action: "job_created",
-      entityType: "job",
-      entityId: jobId,
-      actor: {
-        oid: (session.user as any)?.oid,
-        upn: (session.user as any)?.upn,
-        name: session.user?.name || undefined,
-      },
-      details: { job_type: jobType },
-    });
-
-    return new NextResponse(null, { status: 303, headers: { Location: "/admin/jobs" } });
+    return NextResponse.json({ error: "job_creation_disabled" }, { status: 403 });
   }
 
   if (action === "toggle") {

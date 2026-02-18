@@ -14,6 +14,12 @@ async function parseBody(req: Request) {
   return {};
 }
 
+function redirectTarget(body: any, fallback: string) {
+  const value = typeof body?.redirect_to === "string" ? body.redirect_to : "";
+  if (value.startsWith("/admin")) return value;
+  return fallback;
+}
+
 export async function POST(req: Request) {
   const { session } = await requireAdmin();
   const base = process.env.WORKER_API_URL;
@@ -40,5 +46,5 @@ export async function POST(req: Request) {
     }),
   });
 
-  return new NextResponse(null, { status: 303, headers: { Location: "/admin" } });
+  return new NextResponse(null, { status: 303, headers: { Location: redirectTarget(body, "/admin") } });
 }
