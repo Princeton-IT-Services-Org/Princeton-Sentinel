@@ -38,18 +38,42 @@ export async function POST(req: Request) {
     const scheduleId = randomUUID();
     const jobId = body.job_id;
     const cronExpr = body.cron_expr;
+    if (!jobId || !cronExpr) {
+      return NextResponse.json({ error: "job_id_and_cron_expr_required" }, { status: 400 });
+    }
+
+    const existing = await query(
+      `
+      SELECT schedule_id
+      FROM job_schedules
+      WHERE job_id = $1
+      LIMIT 1
+      `,
+      [jobId]
+    );
+    if (existing.length) {
+      return NextResponse.json({ error: "schedule_exists_for_job", schedule_id: existing[0].schedule_id }, { status: 409 });
+    }
+
     let nextRunAt = body.next_run_at || null;
     if (nextRunAt === "") {
       nextRunAt = null;
     }
 
-    await query(
-      `
-      INSERT INTO job_schedules (schedule_id, job_id, cron_expr, next_run_at, enabled)
-      VALUES ($1, $2, $3, $4::timestamptz, $5)
-      `,
-      [scheduleId, jobId, cronExpr, nextRunAt, true]
-    );
+    try {
+      await query(
+        `
+        INSERT INTO job_schedules (schedule_id, job_id, cron_expr, next_run_at, enabled)
+        VALUES ($1, $2, $3, $4::timestamptz, $5)
+        `,
+        [scheduleId, jobId, cronExpr, nextRunAt, true]
+      );
+    } catch (err: any) {
+      if (err?.code === "23505") {
+        return NextResponse.json({ error: "schedule_exists_for_job" }, { status: 409 });
+      }
+      throw err;
+    }
 
     await writeAuditEvent({
       action: "schedule_created",
@@ -69,7 +93,7 @@ export async function POST(req: Request) {
   if (action === "toggle") {
     const scheduleId = body.schedule_id;
     const enabled = body.enabled === "true";
-    await query("UPDATE job_schedules SET enabled = $1 WHERE schedule_id = $2", [enabled, scheduleId]);
+    await query("UPDATE job_schedules SET enabled = $1, next_run_at = NULL WHERE schedule_id = $2", [enabled, scheduleId]);
 
     await writeAuditEvent({
       action: enabled ? "schedule_enabled" : "schedule_disabled",

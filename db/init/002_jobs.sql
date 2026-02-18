@@ -39,6 +39,9 @@ CREATE INDEX IF NOT EXISTS idx_job_schedules_next_run
 ON job_schedules (next_run_at)
 WHERE enabled = true;
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_job_schedules_job_id_unique
+ON job_schedules (job_id);
+
 CREATE INDEX IF NOT EXISTS idx_job_runs_job_started
 ON job_runs (job_id, started_at DESC);
 

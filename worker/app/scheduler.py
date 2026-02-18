@@ -1,4 +1,3 @@
-import json
 import os
 import threading
 import time
@@ -76,11 +75,10 @@ def _run_due_schedule():
 
         cur.execute(
             """
-            SELECT js.schedule_id, js.job_id, js.cron_expr, j.job_type, j.config
+            SELECT js.schedule_id, js.job_id, js.cron_expr, j.job_type
             FROM job_schedules js
             JOIN jobs j ON j.job_id = js.job_id
             WHERE js.enabled = true
-              AND j.enabled = true
               AND js.next_run_at <= now()
             ORDER BY js.next_run_at ASC
             FOR UPDATE SKIP LOCKED
@@ -92,7 +90,7 @@ def _run_due_schedule():
             conn.rollback()
             return
 
-        schedule_id, job_id, cron_expr, job_type, config = row
+        schedule_id, job_id, cron_expr, job_type = row
 
         locked = db.try_advisory_lock(cur, str(job_id))
         if not locked:
@@ -125,7 +123,7 @@ def _run_due_schedule():
             details={"job_id": str(job_id), "job_type": job_type, "trigger": "schedule"},
         )
 
-        status, error = _execute_job(job_type, config, run_id=str(run_id), job_id=str(job_id), actor_claims=None)
+        status, error = _execute_job(job_type, run_id=str(run_id), job_id=str(job_id), actor_claims=None)
 
         cur.execute(
             "UPDATE job_runs SET finished_at = now(), status = %s, error = %s WHERE run_id = %s",
@@ -167,7 +165,6 @@ def _run_due_schedule():
 def run_job_once(job, actor_claims=None):
     job_id = job["job_id"]
     job_type = job["job_type"]
-    config = job.get("config")
     conn = db.get_conn()
     try:
         cur = conn.cursor()
@@ -195,7 +192,6 @@ def run_job_once(job, actor_claims=None):
 
         status, error = _execute_job(
             job_type,
-            config,
             run_id=str(run_id),
             job_id=str(job_id),
             actor_claims=actor_claims,
@@ -256,15 +252,11 @@ def _compute_next_run(cron_expr):
     return itr.get_next(datetime)
 
 
-def _execute_job(job_type, config, *, run_id: str, job_id: str, actor_claims=None):
+def _execute_job(job_type, *, run_id: str, job_id: str, actor_claims=None):
     try:
-        if isinstance(config, str):
-            config = json.loads(config)
-        config = config or {}
-
         if job_type == "graph_ingest":
             log_job_run_log(run_id=run_id, level="INFO", message="graph_ingest_started", context={"job_id": job_id})
-            run_graph_ingest(config, run_id=run_id, job_id=job_id, actor=actor_claims)
+            run_graph_ingest(run_id=run_id, job_id=job_id, actor=actor_claims)
         else:
             raise RuntimeError(f"Unknown job_type: {job_type}")
         return "success", None

@@ -100,9 +100,9 @@ def create_app():
     def jobs_status():
         rows = db.fetch_all(
             """
-            SELECT j.job_id, j.job_type, j.enabled, j.config,
+            SELECT j.job_id, j.job_type, j.enabled,
                    js.schedule_id, js.cron_expr, js.next_run_at, js.enabled AS schedule_enabled,
-                   m.run_id, m.started_at, m.finished_at, m.status, m.error
+                   m.run_id, m.started_at, m.finished_at, m.status, m.status AS latest_run_status, m.error
             FROM jobs j
             LEFT JOIN job_schedules js ON js.job_id = j.job_id
             LEFT JOIN mv_latest_job_runs m ON m.job_id = j.job_id
@@ -118,7 +118,7 @@ def create_app():
         if not job_id:
             return jsonify({"error": "job_id_required"}), 400
 
-        job = db.fetch_one("SELECT job_id, job_type, config FROM jobs WHERE job_id = %s", [job_id])
+        job = db.fetch_one("SELECT job_id, job_type FROM jobs WHERE job_id = %s", [job_id])
         if not job:
             return jsonify({"error": "job_not_found"}), 404
 
@@ -144,8 +144,7 @@ def create_app():
         if not job_id:
             return jsonify({"error": "job_id_required"}), 400
 
-        db.execute("UPDATE jobs SET enabled = false WHERE job_id = %s", [job_id])
-        db.execute("UPDATE job_schedules SET enabled = false WHERE job_id = %s", [job_id])
+        db.execute("UPDATE job_schedules SET enabled = false, next_run_at = NULL WHERE job_id = %s", [job_id])
 
         log_audit_event(
             action="job_paused",
@@ -163,8 +162,7 @@ def create_app():
         if not job_id:
             return jsonify({"error": "job_id_required"}), 400
 
-        db.execute("UPDATE jobs SET enabled = true WHERE job_id = %s", [job_id])
-        db.execute("UPDATE job_schedules SET enabled = true WHERE job_id = %s", [job_id])
+        db.execute("UPDATE job_schedules SET enabled = true, next_run_at = NULL WHERE job_id = %s", [job_id])
 
         log_audit_event(
             action="job_resumed",
