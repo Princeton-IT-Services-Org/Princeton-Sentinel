@@ -110,5 +110,91 @@ export async function POST(req: Request) {
     return new NextResponse(null, { status: 303, headers: { Location: "/admin/jobs" } });
   }
 
+  if (action === "update") {
+    const scheduleId = body.schedule_id;
+    const cronExpr = (body.cron_expr || "").toString().trim();
+    if (!scheduleId || !cronExpr) {
+      return NextResponse.json({ error: "schedule_id_and_cron_expr_required" }, { status: 400 });
+    }
+
+    let nextRunAt = body.next_run_at || null;
+    if (nextRunAt === "") {
+      nextRunAt = null;
+    }
+    let enabled: boolean | null = null;
+    if (body.enabled === "true") enabled = true;
+    if (body.enabled === "false") enabled = false;
+
+    const rows = await query<any>(
+      `
+      UPDATE job_schedules
+      SET cron_expr = $1,
+          next_run_at = $2::timestamptz,
+          enabled = COALESCE($3::boolean, enabled)
+      WHERE schedule_id = $4
+      RETURNING schedule_id, job_id
+      `,
+      [cronExpr, nextRunAt, enabled, scheduleId]
+    );
+    if (!rows.length) {
+      return NextResponse.json({ error: "schedule_not_found" }, { status: 404 });
+    }
+
+    await writeAuditEvent({
+      action: "schedule_updated",
+      entityType: "job_schedule",
+      entityId: scheduleId,
+      actor: {
+        oid: (session.user as any)?.oid,
+        upn: (session.user as any)?.upn,
+        name: session.user?.name || undefined,
+      },
+      details: {
+        job_id: rows[0].job_id,
+        cron_expr: cronExpr,
+        next_run_at: nextRunAt,
+        enabled,
+      },
+    });
+
+    return new NextResponse(null, { status: 303, headers: { Location: "/admin/jobs" } });
+  }
+
+  if (action === "delete") {
+    const scheduleId = body.schedule_id;
+    if (!scheduleId) {
+      return NextResponse.json({ error: "schedule_id_required" }, { status: 400 });
+    }
+
+    const rows = await query<any>(
+      `
+      DELETE FROM job_schedules
+      WHERE schedule_id = $1
+      RETURNING schedule_id, job_id, cron_expr
+      `,
+      [scheduleId]
+    );
+    if (!rows.length) {
+      return NextResponse.json({ error: "schedule_not_found" }, { status: 404 });
+    }
+
+    await writeAuditEvent({
+      action: "schedule_deleted",
+      entityType: "job_schedule",
+      entityId: scheduleId,
+      actor: {
+        oid: (session.user as any)?.oid,
+        upn: (session.user as any)?.upn,
+        name: session.user?.name || undefined,
+      },
+      details: {
+        job_id: rows[0].job_id,
+        cron_expr: rows[0].cron_expr,
+      },
+    });
+
+    return new NextResponse(null, { status: 303, headers: { Location: "/admin/jobs" } });
+  }
+
   return NextResponse.json({ error: "unsupported_action" }, { status: 400 });
 }

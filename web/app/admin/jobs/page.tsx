@@ -33,6 +33,7 @@ export default async function JobsPage() {
     (a.job_type || "").localeCompare(b.job_type || "")
   );
   const unscheduledJobs = uniqueJobs.filter((row) => !row.schedule_id);
+  const scheduledJobs = uniqueJobs.filter((row) => row.schedule_id);
 
   return (
     <div className="grid gap-4">
@@ -120,7 +121,7 @@ export default async function JobsPage() {
       </Card>
 
       <section className="grid gap-4 md:grid-cols-2">
-        <Card className="w-full md:col-span-2 md:max-w-2xl md:justify-self-center">
+        <Card>
           <CardHeader>
             <CardTitle>Create Schedule</CardTitle>
           </CardHeader>
@@ -158,6 +159,84 @@ export default async function JobsPage() {
               />
               <button className="badge bg-emerald-100 text-emerald-900" type="submit" disabled={!unscheduledJobs.length}>
                 Create Schedule
+              </button>
+            </form>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Edit Schedule</CardTitle>
+          </CardHeader>
+          <CardContent className="grid gap-4">
+            <form action="/api/schedules" method="post" className="grid gap-3">
+              <input type="hidden" name="action" value="update" />
+              <label className="text-sm text-slate">Schedule</label>
+              <select
+                name="schedule_id"
+                className="rounded-lg border border-input bg-background p-2"
+                disabled={!scheduledJobs.length}
+                required
+              >
+                {scheduledJobs.map((row) => (
+                  <option key={row.schedule_id} value={row.schedule_id}>
+                    {formatJobTypeLabel(row.job_type)} • {row.cron_expr || "--"} • {row.schedule_enabled ? "Enabled" : "Paused"}
+                  </option>
+                ))}
+              </select>
+              {!scheduledJobs.length ? <div className="text-xs text-slate">No existing schedules to edit.</div> : null}
+
+              <label className="text-sm text-slate">Cron (5-field)</label>
+              <input
+                name="cron_expr"
+                className="rounded-lg border border-input bg-background p-2 font-mono text-sm"
+                placeholder="*/15 * * * *"
+                required
+                disabled={!scheduledJobs.length}
+              />
+
+              <label className="text-sm text-slate">Next run (optional ISO timestamp)</label>
+              <input
+                name="next_run_at"
+                className="rounded-lg border border-input bg-background p-2 text-sm"
+                placeholder="2026-02-02T10:00:00Z"
+                disabled={!scheduledJobs.length}
+              />
+
+              <label className="text-sm text-slate">Schedule Status</label>
+              <select
+                name="enabled"
+                className="rounded-lg border border-input bg-background p-2"
+                defaultValue=""
+                disabled={!scheduledJobs.length}
+              >
+                <option value="">Keep Current</option>
+                <option value="true">Enabled</option>
+                <option value="false">Paused</option>
+              </select>
+
+              <button className="badge border-primary/35 bg-primary/15 text-foreground" type="submit" disabled={!scheduledJobs.length}>
+                Save Schedule Changes
+              </button>
+            </form>
+
+            <form action="/api/schedules" method="post" className="grid gap-3">
+              <input type="hidden" name="action" value="delete" />
+              <label className="text-sm text-slate">Delete Schedule</label>
+              <select
+                name="schedule_id"
+                className="rounded-lg border border-input bg-background p-2"
+                disabled={!scheduledJobs.length}
+                required
+              >
+                {scheduledJobs.map((row) => (
+                  <option key={`delete-${row.schedule_id}`} value={row.schedule_id}>
+                    {formatJobTypeLabel(row.job_type)} • {row.cron_expr || "--"}
+                  </option>
+                ))}
+              </select>
+              <button className="badge badge-error" type="submit" disabled={!scheduledJobs.length}>
+                Delete Schedule
               </button>
             </form>
           </CardContent>
