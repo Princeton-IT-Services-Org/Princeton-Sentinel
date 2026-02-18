@@ -72,12 +72,6 @@ function nextWithTiming(req: NextRequest, timing: TimingMeta) {
   });
 }
 
-function logPerfStart(timing: TimingMeta) {
-  console.log(
-    `${LOG_PREFIX} start req_id=${timing.requestId} source=app method=${timing.method} path=${timing.path} at=${new Date(timing.startMs).toISOString()}`
-  );
-}
-
 function logPerfDoneFromMiddleware(timing: TimingMeta, status: number) {
   const totalMs = Math.max(0, Math.round(Date.now() - timing.startMs));
   console.log(
@@ -116,7 +110,6 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
   const timing = createTimingMeta(req);
-  logPerfStart(timing);
 
   if (pathname.startsWith("/signout")) {
     const response = nextWithTiming(req, timing);
