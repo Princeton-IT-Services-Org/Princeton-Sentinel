@@ -168,6 +168,8 @@ def create_app():
         if not job_id:
             return jsonify({"error": "job_id_required"}), 400
 
+        # Resume should restore job-level enablement for legacy/pre-upgrade disabled rows.
+        db.execute("UPDATE jobs SET enabled = true WHERE job_id = %s", [job_id])
         db.execute("UPDATE job_schedules SET enabled = true, next_run_at = NULL WHERE job_id = %s", [job_id])
 
         log_audit_event(

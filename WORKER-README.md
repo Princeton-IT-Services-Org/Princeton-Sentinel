@@ -67,8 +67,8 @@ Provides consolidated admin/control-plane status.
 
 ### `POST /jobs/pause` and `POST /jobs/resume`
 
-- Updates `job_schedules.enabled` only
-- Clears `job_schedules.next_run_at` so scheduler recomputes next run time after state changes
+- `pause` updates `job_schedules.enabled=false` and clears `job_schedules.next_run_at`
+- `resume` updates `job_schedules.enabled=true`, clears `job_schedules.next_run_at`, and restores `jobs.enabled=true`
 - Writes audit events (`job_paused` / `job_resumed`)
 
 ### Auth note
