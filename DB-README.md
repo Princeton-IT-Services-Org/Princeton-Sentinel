@@ -11,11 +11,11 @@ Postgres is the system-of-record and analytics store for Princeton Sentinel. It 
 
 Initialization SQL is in:
 
-- `/Users/garrick-mac/Documents/GitHub/Princeton-Sentinel/db/init/001_schema.sql`
-- `/Users/garrick-mac/Documents/GitHub/Princeton-Sentinel/db/init/002_jobs.sql`
-- `/Users/garrick-mac/Documents/GitHub/Princeton-Sentinel/db/init/003_materialized_views.sql`
-- `/Users/garrick-mac/Documents/GitHub/Princeton-Sentinel/db/init/004_audit.sql`
-- `/Users/garrick-mac/Documents/GitHub/Princeton-Sentinel/db/init/005_revoke_permission_logs.sql`
+- `/db/init/001_schema.sql`
+- `/db/init/002_jobs.sql`
+- `/db/init/003_materialized_views.sql`
+- `/db/init/004_audit.sql`
+- `/db/init/005_revoke_permission_logs.sql`
 
 ---
 
