@@ -3,19 +3,20 @@ import { NextResponse } from "next/server";
 import { query } from "@/app/lib/db";
 import { requireAdmin } from "@/app/lib/auth";
 import { writeAuditEvent } from "@/app/lib/audit";
+import { isValidCronExpression } from "@/app/lib/cron";
+import { getNonEmptyString, parseBooleanInput, parseRequestBody } from "@/app/lib/request-body";
 import { withApiRequestTiming } from "@/app/lib/request-timing";
 export const dynamic = "force-dynamic";
 
-async function parseBody(req: Request) {
-  const contentType = req.headers.get("content-type") || "";
-  if (contentType.includes("application/json")) {
-    return req.json();
-  }
-  if (contentType.includes("form")) {
-    const form = await req.formData();
-    return Object.fromEntries(form.entries());
-  }
-  return {};
+function parseOptionalTimestamp(raw: unknown): string | null | undefined {
+  if (raw === undefined) return null;
+  if (raw === null || raw === "") return null;
+  if (typeof raw !== "string") return undefined;
+  const value = raw.trim();
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) return undefined;
+  return new Date(parsed).toISOString();
 }
 
 const getHandler = async function GET() {
@@ -32,15 +33,22 @@ const getHandler = async function GET() {
 
 const postHandler = async function POST(req: Request) {
   const { session } = await requireAdmin();
-  const body: any = await parseBody(req);
+  const parsed = await parseRequestBody(req);
+  if (parsed.invalidJson) {
+    return NextResponse.json({ error: "invalid_json_body" }, { status: 400 });
+  }
+  const body: any = parsed.body;
   const action = body.action || "create";
 
   if (action === "create") {
     const scheduleId = randomUUID();
-    const jobId = body.job_id;
-    const cronExpr = body.cron_expr;
+    const jobId = getNonEmptyString(body.job_id);
+    const cronExpr = getNonEmptyString(body.cron_expr);
     if (!jobId || !cronExpr) {
       return NextResponse.json({ error: "job_id_and_cron_expr_required" }, { status: 400 });
+    }
+    if (!isValidCronExpression(cronExpr)) {
+      return NextResponse.json({ error: "invalid_cron_expr" }, { status: 400 });
     }
 
     const existing = await query(
@@ -56,9 +64,9 @@ const postHandler = async function POST(req: Request) {
       return NextResponse.json({ error: "schedule_exists_for_job", schedule_id: existing[0].schedule_id }, { status: 409 });
     }
 
-    let nextRunAt = body.next_run_at || null;
-    if (nextRunAt === "") {
-      nextRunAt = null;
+    const nextRunAt = parseOptionalTimestamp(body.next_run_at);
+    if (nextRunAt === undefined) {
+      return NextResponse.json({ error: "invalid_next_run_at" }, { status: 400 });
     }
 
     try {
@@ -92,9 +100,26 @@ const postHandler = async function POST(req: Request) {
   }
 
   if (action === "toggle") {
-    const scheduleId = body.schedule_id;
-    const enabled = body.enabled === "true";
-    await query("UPDATE job_schedules SET enabled = $1, next_run_at = NULL WHERE schedule_id = $2", [enabled, scheduleId]);
+    const scheduleId = getNonEmptyString(body.schedule_id);
+    if (!scheduleId) {
+      return NextResponse.json({ error: "schedule_id_required" }, { status: 400 });
+    }
+    const enabled = parseBooleanInput(body.enabled);
+    if (enabled === null) {
+      return NextResponse.json({ error: "enabled_boolean_required" }, { status: 400 });
+    }
+    const rows = await query<any>(
+      `
+      UPDATE job_schedules
+      SET enabled = $1, next_run_at = NULL
+      WHERE schedule_id = $2
+      RETURNING schedule_id, job_id
+      `,
+      [enabled, scheduleId]
+    );
+    if (!rows.length) {
+      return NextResponse.json({ error: "schedule_not_found" }, { status: 404 });
+    }
 
     await writeAuditEvent({
       action: enabled ? "schedule_enabled" : "schedule_disabled",
@@ -105,26 +130,33 @@ const postHandler = async function POST(req: Request) {
         upn: (session.user as any)?.upn,
         name: session.user?.name || undefined,
       },
-      details: {},
+      details: { job_id: rows[0].job_id },
     });
 
     return new NextResponse(null, { status: 303, headers: { Location: "/admin/jobs" } });
   }
 
   if (action === "update") {
-    const scheduleId = body.schedule_id;
-    const cronExpr = (body.cron_expr || "").toString().trim();
+    const scheduleId = getNonEmptyString(body.schedule_id);
+    const cronExpr = getNonEmptyString(body.cron_expr);
     if (!scheduleId || !cronExpr) {
       return NextResponse.json({ error: "schedule_id_and_cron_expr_required" }, { status: 400 });
     }
-
-    let nextRunAt = body.next_run_at || null;
-    if (nextRunAt === "") {
-      nextRunAt = null;
+    if (!isValidCronExpression(cronExpr)) {
+      return NextResponse.json({ error: "invalid_cron_expr" }, { status: 400 });
     }
-    let enabled: boolean | null = null;
-    if (body.enabled === "true") enabled = true;
-    if (body.enabled === "false") enabled = false;
+
+    const nextRunAt = parseOptionalTimestamp(body.next_run_at);
+    if (nextRunAt === undefined) {
+      return NextResponse.json({ error: "invalid_next_run_at" }, { status: 400 });
+    }
+    const enabled =
+      body.enabled === undefined || body.enabled === null || body.enabled === ""
+        ? null
+        : parseBooleanInput(body.enabled);
+    if (enabled === null && body.enabled !== undefined && body.enabled !== null && body.enabled !== "") {
+      return NextResponse.json({ error: "enabled_boolean_required" }, { status: 400 });
+    }
 
     const rows = await query<any>(
       `
@@ -162,7 +194,7 @@ const postHandler = async function POST(req: Request) {
   }
 
   if (action === "delete") {
-    const scheduleId = body.schedule_id;
+    const scheduleId = getNonEmptyString(body.schedule_id);
     if (!scheduleId) {
       return NextResponse.json({ error: "schedule_id_required" }, { status: 400 });
     }

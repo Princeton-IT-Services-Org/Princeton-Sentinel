@@ -9,6 +9,7 @@ from app.runtime_logger import emit
 
 
 WORKER_HEARTBEAT_URL = os.getenv("WORKER_HEARTBEAT_URL", "http://web:3000/api/internal/worker-heartbeat")
+WORKER_HEARTBEAT_TOKEN = os.getenv("WORKER_HEARTBEAT_TOKEN", "")
 WORKER_HEARTBEAT_INTERVAL_SECONDS = int(os.getenv("WORKER_HEARTBEAT_INTERVAL_SECONDS", "30"))
 WORKER_HEARTBEAT_TIMEOUT_SECONDS = int(os.getenv("WORKER_HEARTBEAT_TIMEOUT_SECONDS", "5"))
 WORKER_HEARTBEAT_FAIL_THRESHOLD = int(os.getenv("WORKER_HEARTBEAT_FAIL_THRESHOLD", "2"))
@@ -47,6 +48,9 @@ def start_heartbeat_thread():
 
 def _heartbeat_loop():
     interval_seconds = max(1, WORKER_HEARTBEAT_INTERVAL_SECONDS)
+    headers = {}
+    if WORKER_HEARTBEAT_TOKEN:
+        headers["X-Worker-Heartbeat-Token"] = WORKER_HEARTBEAT_TOKEN
     while True:
         attempted_at = _now_iso()
         error = None
@@ -55,6 +59,7 @@ def _heartbeat_loop():
             resp = requests.post(
                 WORKER_HEARTBEAT_URL,
                 json={"sent_at": attempted_at},
+                headers=headers,
                 timeout=WORKER_HEARTBEAT_TIMEOUT_SECONDS,
             )
             resp.raise_for_status()

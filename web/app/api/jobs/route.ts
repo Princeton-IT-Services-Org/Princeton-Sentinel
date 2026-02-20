@@ -2,20 +2,9 @@ import { NextResponse } from "next/server";
 import { query } from "@/app/lib/db";
 import { requireAdmin } from "@/app/lib/auth";
 import { writeAuditEvent } from "@/app/lib/audit";
+import { getNonEmptyString, parseBooleanInput, parseRequestBody } from "@/app/lib/request-body";
 import { withApiRequestTiming } from "@/app/lib/request-timing";
 export const dynamic = "force-dynamic";
-
-async function parseBody(req: Request) {
-  const contentType = req.headers.get("content-type") || "";
-  if (contentType.includes("application/json")) {
-    return req.json();
-  }
-  if (contentType.includes("form")) {
-    const form = await req.formData();
-    return Object.fromEntries(form.entries());
-  }
-  return {};
-}
 
 const getHandler = async function GET() {
   await requireAdmin();
@@ -31,7 +20,11 @@ const getHandler = async function GET() {
 
 const postHandler = async function POST(req: Request) {
   const { session } = await requireAdmin();
-  const body: any = await parseBody(req);
+  const parsed = await parseRequestBody(req);
+  if (parsed.invalidJson) {
+    return NextResponse.json({ error: "invalid_json_body" }, { status: 400 });
+  }
+  const body: any = parsed.body;
   const action = body.action || "create";
 
   if (action === "create") {
@@ -39,9 +32,26 @@ const postHandler = async function POST(req: Request) {
   }
 
   if (action === "toggle") {
-    const jobId = body.job_id;
-    const enabled = body.enabled === "true";
-    await query("UPDATE jobs SET enabled = $1 WHERE job_id = $2", [enabled, jobId]);
+    const jobId = getNonEmptyString(body.job_id);
+    if (!jobId) {
+      return NextResponse.json({ error: "job_id_required" }, { status: 400 });
+    }
+    const enabled = parseBooleanInput(body.enabled);
+    if (enabled === null) {
+      return NextResponse.json({ error: "enabled_boolean_required" }, { status: 400 });
+    }
+    const rows = await query<{ job_id: string }>(
+      `
+      UPDATE jobs
+      SET enabled = $1
+      WHERE job_id = $2
+      RETURNING job_id
+      `,
+      [enabled, jobId]
+    );
+    if (!rows.length) {
+      return NextResponse.json({ error: "job_not_found" }, { status: 404 });
+    }
 
     await writeAuditEvent({
       action: enabled ? "job_enabled" : "job_disabled",

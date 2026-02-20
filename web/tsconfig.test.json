@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": ".tmp-tests",
+    "rootDir": ".",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "incremental": false
+  },
+  "include": [
+    "tests/**/*.ts",
+    "app/lib/cron.ts",
+    "app/lib/request-body.ts",
+    "app/api/internal/worker-heartbeat/route.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}
