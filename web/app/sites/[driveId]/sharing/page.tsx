@@ -28,7 +28,9 @@ async function DriveSharingPage({ params }: { params: Promise<{ driveId: string 
     FROM msgraph_drives d
     LEFT JOIN msgraph_users u ON u.id = d.owner_id AND u.deleted_at IS NULL
     LEFT JOIN msgraph_sites s ON s.id = d.site_id AND s.deleted_at IS NULL
-    WHERE d.id = $1 AND d.deleted_at IS NULL
+    WHERE d.id = $1
+      AND d.deleted_at IS NULL
+      AND LOWER(COALESCE(d.web_url, '')) NOT LIKE '%cachelibrary%'
     LIMIT 1
     `,
     [driveId]

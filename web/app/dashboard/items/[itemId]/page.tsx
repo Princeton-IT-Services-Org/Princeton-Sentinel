@@ -99,7 +99,9 @@ async function ItemDetailPage({ params }: { params: Promise<{ itemId: string }> 
            d.owner_display_name, d.owner_email
     FROM msgraph_drive_items i
     JOIN msgraph_drives d ON d.id = i.drive_id
-    WHERE i.drive_id = $1 AND i.id = $2
+    WHERE i.drive_id = $1
+      AND i.id = $2
+      AND LOWER(COALESCE(d.web_url, '')) NOT LIKE '%cachelibrary%'
     `,
     [driveId, itemId]
   );

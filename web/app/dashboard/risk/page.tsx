@@ -29,10 +29,6 @@ async function RiskPage({ searchParams }: { searchParams?: Promise<SearchParams>
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
 
   const search = getParam(resolvedSearchParams, "q");
-  const scanLimitRaw = getParam(resolvedSearchParams, "scanLimit");
-  const scanLimit = scanLimitRaw
-    ? Math.min(Math.max(Number(scanLimitRaw || process.env.DASHBOARD_RISK_SCAN_LIMIT || 500), 50), 2000)
-    : null;
   const dormantDays = Number(getParam(resolvedSearchParams, "dormantDays") || process.env.DASHBOARD_DORMANT_LOOKBACK_DAYS || 90);
   const windowDays = getWindowDays(resolvedSearchParams, 90);
   const windowStart = windowDays ? new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString() : null;
@@ -50,7 +46,6 @@ async function RiskPage({ searchParams }: { searchParams?: Promise<SearchParams>
 
   const { clause, params } = buildSearchFilter(search);
   const dormantParamIndex = params.length + 1;
-  const legacyScanClause = scanLimit ? `ORDER BY i.last_activity_dt DESC NULLS LAST LIMIT ${scanLimit}` : "";
   const flaggedBase = `
     WITH base AS (
       SELECT
@@ -71,7 +66,6 @@ async function RiskPage({ searchParams }: { searchParams?: Promise<SearchParams>
       LEFT JOIN mv_msgraph_site_sharing_summary s ON s.site_key = i.site_key
       LEFT JOIN mv_msgraph_site_external_principals e ON e.site_key = i.site_key
       ${clause}
-      ${legacyScanClause}
     ),
     flagged AS (
       SELECT
@@ -178,6 +172,7 @@ async function RiskPage({ searchParams }: { searchParams?: Promise<SearchParams>
       JOIN msgraph_drive_items i ON i.drive_id = d.drive_id AND i.id = d.item_id
       JOIN msgraph_drives dr ON dr.id = i.drive_id
       WHERE d.link_scope = 'anonymous' AND i.deleted_at IS NULL AND dr.deleted_at IS NULL
+        AND LOWER(COALESCE(dr.web_url, '')) NOT LIKE '%cachelibrary%'
         ${windowStart ? "AND d.day >= date_trunc('day', $1::timestamptz)" : ""}
       GROUP BY i.drive_id, i.id, i.name, i.web_url, i.normalized_path, i.size, i.modified_dt
       ORDER BY link_shares DESC NULLS LAST
@@ -201,6 +196,7 @@ async function RiskPage({ searchParams }: { searchParams?: Promise<SearchParams>
       JOIN msgraph_drive_items i ON i.drive_id = d.drive_id AND i.id = d.item_id
       JOIN msgraph_drives dr ON dr.id = i.drive_id
       WHERE d.link_scope = 'organization' AND i.deleted_at IS NULL AND dr.deleted_at IS NULL
+        AND LOWER(COALESCE(dr.web_url, '')) NOT LIKE '%cachelibrary%'
         ${windowStart ? "AND d.day >= date_trunc('day', $1::timestamptz)" : ""}
       GROUP BY i.drive_id, i.id, i.name, i.web_url, i.normalized_path, i.size, i.modified_dt
       ORDER BY link_shares DESC NULLS LAST
@@ -255,15 +251,6 @@ async function RiskPage({ searchParams }: { searchParams?: Promise<SearchParams>
             <option value="180">Dormant 180d+</option>
             <option value="365">Dormant 365d+</option>
           </select>
-          <Input
-            name="scanLimit"
-            type="number"
-            min={50}
-            max={2000}
-            defaultValue={scanLimit ? String(scanLimit) : ""}
-            className="w-28"
-            title="Scan limit (legacy)"
-          />
           <Input name="pageSize" type="number" min={10} max={200} defaultValue={String(pageSize)} className="w-24" title="Page size" />
           <Button type="submit" variant="outline">
             Apply
@@ -325,7 +312,6 @@ async function RiskPage({ searchParams }: { searchParams?: Promise<SearchParams>
           pageSize,
           sort,
           dir,
-          scanLimit: scanLimit == null ? undefined : String(scanLimit),
           dormantDays,
           days: windowDays == null ? "all" : windowDays,
         }}

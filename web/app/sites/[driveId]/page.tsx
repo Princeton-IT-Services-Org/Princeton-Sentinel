@@ -66,7 +66,9 @@ async function DriveDetailPage({
     LEFT JOIN msgraph_sites s ON s.id = d.site_id AND s.deleted_at IS NULL
     CROSS JOIN last_write lw
     CROSS JOIN last_share ls
-    WHERE d.id = $1 AND d.deleted_at IS NULL
+    WHERE d.id = $1
+      AND d.deleted_at IS NULL
+      AND LOWER(COALESCE(d.web_url, '')) NOT LIKE '%cachelibrary%'
     LIMIT 1
     `,
     [driveId]

@@ -50,6 +50,7 @@ async function UserDetailPage({
     FROM msgraph_drive_items i
     JOIN msgraph_drives d ON d.id = i.drive_id
     WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
+      AND LOWER(COALESCE(d.web_url, '')) NOT LIKE '%cachelibrary%'
       AND i.last_modified_by_user_id = $1
       ${windowStart ? "AND i.modified_dt >= $2" : ""}
     `,
@@ -67,6 +68,7 @@ async function UserDetailPage({
       FROM msgraph_drive_items i
       JOIN msgraph_drives d ON d.id = i.drive_id
       WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
+        AND LOWER(COALESCE(d.web_url, '')) NOT LIKE '%cachelibrary%'
         AND i.last_modified_by_user_id = $1
         ${windowStart ? "AND i.modified_dt >= $2" : ""}
       GROUP BY ${DRIVE_SITE_KEY_EXPR}
@@ -92,6 +94,7 @@ async function UserDetailPage({
     FROM msgraph_drive_items i
     JOIN msgraph_drives d ON d.id = i.drive_id
     WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
+      AND LOWER(COALESCE(d.web_url, '')) NOT LIKE '%cachelibrary%'
       AND i.last_modified_by_user_id = $1
       ${windowStart ? "AND i.modified_dt >= $2" : ""}
     `,
@@ -120,6 +123,7 @@ async function UserDetailPage({
     JOIN msgraph_drives d ON d.id = i.drive_id
     LEFT JOIN routable_site_drives rsd ON rsd.site_key = ${DRIVE_SITE_KEY_EXPR}
     WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
+      AND LOWER(COALESCE(d.web_url, '')) NOT LIKE '%cachelibrary%'
       AND i.last_modified_by_user_id = $1
       ${windowStart ? "AND i.modified_dt >= $2" : ""}
     ORDER BY i.modified_dt DESC NULLS LAST
