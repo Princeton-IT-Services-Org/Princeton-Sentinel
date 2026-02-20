@@ -1,3 +1,21 @@
+-- Exclude CacheLibrary URLs from dashboard-facing materialized views.
+-- This migration preserves raw ingest tables and only updates read-layer aggregates.
+
+DROP MATERIALIZED VIEW IF EXISTS mv_msgraph_site_external_principals;
+DROP MATERIALIZED VIEW IF EXISTS mv_msgraph_site_sharing_summary;
+DROP MATERIALIZED VIEW IF EXISTS mv_msgraph_sites_created_month;
+DROP MATERIALIZED VIEW IF EXISTS mv_msgraph_routable_site_drives;
+DROP MATERIALIZED VIEW IF EXISTS mv_msgraph_site_inventory;
+DROP MATERIALIZED VIEW IF EXISTS mv_msgraph_item_link_daily;
+DROP MATERIALIZED VIEW IF EXISTS mv_msgraph_user_activity_daily;
+DROP MATERIALIZED VIEW IF EXISTS mv_msgraph_site_activity_daily;
+DROP MATERIALIZED VIEW IF EXISTS mv_msgraph_drive_top_used;
+DROP MATERIALIZED VIEW IF EXISTS mv_msgraph_drive_type_counts;
+DROP MATERIALIZED VIEW IF EXISTS mv_msgraph_drive_storage_totals;
+DROP MATERIALIZED VIEW IF EXISTS mv_msgraph_link_breakdown;
+DROP MATERIALIZED VIEW IF EXISTS mv_msgraph_sharing_posture_summary;
+DROP MATERIALIZED VIEW IF EXISTS mv_msgraph_inventory_summary;
+
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_msgraph_inventory_summary AS
 WITH eligible_drives AS (
   SELECT d.*
@@ -55,20 +73,6 @@ SELECT
 
 CREATE UNIQUE INDEX IF NOT EXISTS mv_msgraph_sharing_posture_summary_uidx
 ON mv_msgraph_sharing_posture_summary (summary_id);
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS mv_latest_job_runs AS
-SELECT DISTINCT ON (job_id)
-  job_id,
-  run_id,
-  started_at,
-  finished_at,
-  status,
-  error
-FROM job_runs
-ORDER BY job_id, started_at DESC NULLS LAST;
-
-CREATE UNIQUE INDEX IF NOT EXISTS mv_latest_job_runs_uidx
-ON mv_latest_job_runs (job_id);
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_msgraph_site_inventory AS
 WITH sharepoint_sites AS (
@@ -541,17 +545,6 @@ GROUP BY i.last_modified_by_user_id, date_trunc('day', i.modified_dt);
 CREATE UNIQUE INDEX IF NOT EXISTS mv_msgraph_user_activity_daily_uidx
 ON mv_msgraph_user_activity_daily (user_id, day);
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS mv_msgraph_group_member_counts AS
-SELECT
-  group_id,
-  COUNT(*)::int AS member_count
-FROM msgraph_group_memberships
-WHERE deleted_at IS NULL
-GROUP BY group_id;
-
-CREATE UNIQUE INDEX IF NOT EXISTS mv_msgraph_group_member_counts_uidx
-ON mv_msgraph_group_member_counts (group_id);
-
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_msgraph_item_link_daily AS
 SELECT
   p.drive_id,
@@ -571,48 +564,29 @@ GROUP BY p.drive_id, p.item_id, p.link_scope, date_trunc('day', p.synced_at);
 CREATE UNIQUE INDEX IF NOT EXISTS mv_msgraph_item_link_daily_uidx
 ON mv_msgraph_item_link_daily (drive_id, item_id, link_scope, day);
 
-CREATE UNIQUE INDEX IF NOT EXISTS mv_dependencies_uidx
-ON mv_dependencies (mv_name, table_name);
-
 INSERT INTO mv_dependencies (mv_name, table_name) VALUES
-  ('mv_msgraph_inventory_summary', 'msgraph_users'),
-  ('mv_msgraph_inventory_summary', 'msgraph_groups'),
-  ('mv_msgraph_inventory_summary', 'msgraph_sites'),
-  ('mv_msgraph_inventory_summary', 'msgraph_drives'),
-  ('mv_msgraph_inventory_summary', 'msgraph_drive_items'),
-  ('mv_msgraph_sharing_posture_summary', 'msgraph_drive_item_permissions'),
-  ('mv_msgraph_sharing_posture_summary', 'msgraph_drive_item_permission_grants'),
   ('mv_msgraph_sharing_posture_summary', 'msgraph_drives'),
-  ('mv_latest_job_runs', 'job_runs'),
-  ('mv_msgraph_site_inventory', 'msgraph_sites'),
-  ('mv_msgraph_site_inventory', 'msgraph_drives'),
-  ('mv_msgraph_site_inventory', 'msgraph_drive_items'),
-  ('mv_msgraph_site_inventory', 'msgraph_drive_item_permissions'),
-  ('mv_msgraph_routable_site_drives', 'msgraph_sites'),
-  ('mv_msgraph_routable_site_drives', 'msgraph_drives'),
-  ('mv_msgraph_routable_site_drives', 'msgraph_drive_items'),
-  ('mv_msgraph_routable_site_drives', 'msgraph_drive_item_permissions'),
-  ('mv_msgraph_routable_site_drives', 'msgraph_users'),
-  ('mv_msgraph_site_sharing_summary', 'msgraph_sites'),
-  ('mv_msgraph_site_sharing_summary', 'msgraph_drives'),
-  ('mv_msgraph_site_sharing_summary', 'msgraph_drive_item_permissions'),
-  ('mv_msgraph_site_external_principals', 'msgraph_drives'),
   ('mv_msgraph_site_external_principals', 'msgraph_sites'),
-  ('mv_msgraph_site_external_principals', 'msgraph_drive_item_permissions'),
-  ('mv_msgraph_site_external_principals', 'msgraph_drive_item_permission_grants'),
-  ('mv_msgraph_link_breakdown', 'msgraph_drive_item_permissions'),
   ('mv_msgraph_link_breakdown', 'msgraph_drives'),
-  ('mv_msgraph_drive_storage_totals', 'msgraph_drives'),
-  ('mv_msgraph_drive_type_counts', 'msgraph_drives'),
-  ('mv_msgraph_drive_top_used', 'msgraph_drives'),
-  ('mv_msgraph_sites_created_month', 'msgraph_sites'),
-  ('mv_msgraph_sites_created_month', 'msgraph_drives'),
-  ('mv_msgraph_site_activity_daily', 'msgraph_drive_items'),
-  ('mv_msgraph_site_activity_daily', 'msgraph_drive_item_permissions'),
-  ('mv_msgraph_site_activity_daily', 'msgraph_drives'),
-  ('mv_msgraph_user_activity_daily', 'msgraph_drive_items'),
-  ('mv_msgraph_user_activity_daily', 'msgraph_drives'),
-  ('mv_msgraph_group_member_counts', 'msgraph_group_memberships'),
-  ('mv_msgraph_item_link_daily', 'msgraph_drive_item_permissions'),
   ('mv_msgraph_item_link_daily', 'msgraph_drives')
 ON CONFLICT DO NOTHING;
+
+INSERT INTO mv_refresh_queue (mv_name, dirty_since, attempts, last_attempt_at) VALUES
+  ('mv_msgraph_inventory_summary', now(), 0, NULL),
+  ('mv_msgraph_sharing_posture_summary', now(), 0, NULL),
+  ('mv_msgraph_site_inventory', now(), 0, NULL),
+  ('mv_msgraph_routable_site_drives', now(), 0, NULL),
+  ('mv_msgraph_site_sharing_summary', now(), 0, NULL),
+  ('mv_msgraph_site_external_principals', now(), 0, NULL),
+  ('mv_msgraph_link_breakdown', now(), 0, NULL),
+  ('mv_msgraph_drive_storage_totals', now(), 0, NULL),
+  ('mv_msgraph_drive_type_counts', now(), 0, NULL),
+  ('mv_msgraph_drive_top_used', now(), 0, NULL),
+  ('mv_msgraph_sites_created_month', now(), 0, NULL),
+  ('mv_msgraph_site_activity_daily', now(), 0, NULL),
+  ('mv_msgraph_user_activity_daily', now(), 0, NULL),
+  ('mv_msgraph_item_link_daily', now(), 0, NULL)
+ON CONFLICT (mv_name) DO UPDATE
+SET dirty_since = EXCLUDED.dirty_since,
+    attempts = 0,
+    last_attempt_at = NULL;

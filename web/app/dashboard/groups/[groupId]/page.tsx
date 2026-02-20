@@ -47,7 +47,9 @@ async function GroupDetailPage({
     `
     SELECT id, name, drive_type, web_url, site_id
     FROM msgraph_drives
-    WHERE owner_id = $1 AND deleted_at IS NULL
+    WHERE owner_id = $1
+      AND deleted_at IS NULL
+      AND LOWER(COALESCE(web_url, '')) NOT LIKE '%cachelibrary%'
     ORDER BY name
     `,
     [groupId]

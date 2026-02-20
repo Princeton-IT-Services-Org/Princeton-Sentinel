@@ -12,11 +12,8 @@ import { SitesSummaryGraph } from "@/components/sites-summary-graph";
 import PageHeader from "@/components/page-header";
 import FilterBar from "@/components/filter-bar";
 
-const PERSONAL_CACHE_LIBRARY_FILTER = `
-  NOT (
-    is_personal = true
-    AND LOWER(COALESCE(web_url, '')) LIKE '%/lists/personalcachelibrary%'
-  )
+const CACHE_LIBRARY_FILTER = `
+  LOWER(COALESCE(web_url, '')) NOT LIKE '%cachelibrary%'
 `;
 
 function buildSearchFilter(search: string | null) {
@@ -55,7 +52,7 @@ async function SitesPage({ searchParams }: { searchParams?: Promise<SearchParams
       `
       SELECT COUNT(*)::int AS total
       FROM mv_msgraph_routable_site_drives
-      WHERE ${PERSONAL_CACHE_LIBRARY_FILTER}
+      WHERE ${CACHE_LIBRARY_FILTER}
       ${clause ? `AND ${clause.replace(/^WHERE\s+/i, "")}` : ""}
       `,
       params
@@ -69,7 +66,7 @@ async function SitesPage({ searchParams }: { searchParams?: Promise<SearchParams
         COUNT(*) FILTER (WHERE is_personal = true)::int AS personal_count,
         COUNT(*) FILTER (WHERE is_personal = false)::int AS sharepoint_count
       FROM mv_msgraph_routable_site_drives
-      WHERE ${PERSONAL_CACHE_LIBRARY_FILTER}
+      WHERE ${CACHE_LIBRARY_FILTER}
       ${clause ? `AND ${clause.replace(/^WHERE\s+/i, "")}` : ""}
       `,
       params
@@ -80,7 +77,7 @@ async function SitesPage({ searchParams }: { searchParams?: Promise<SearchParams
           SELECT date_trunc('month', created_dt) AS month, COUNT(*)::int AS count
           FROM mv_msgraph_routable_site_drives
           WHERE created_dt IS NOT NULL
-            AND ${PERSONAL_CACHE_LIBRARY_FILTER}
+            AND ${CACHE_LIBRARY_FILTER}
             ${clause ? `AND ${clause.replace(/^WHERE\s+/i, "")}` : ""}
           GROUP BY date_trunc('month', created_dt)
           ORDER BY month DESC
@@ -101,7 +98,7 @@ async function SitesPage({ searchParams }: { searchParams?: Promise<SearchParams
       SELECT site_key, site_id, route_drive_id, title, web_url, created_dt, is_personal, template,
              storage_used_bytes, storage_total_bytes, last_activity_dt
       FROM mv_msgraph_routable_site_drives
-      WHERE ${PERSONAL_CACHE_LIBRARY_FILTER}
+      WHERE ${CACHE_LIBRARY_FILTER}
       ${clause ? `AND ${clause.replace(/^WHERE\s+/i, "")}` : ""}
       ORDER BY ${sortColumn} ${dir.toUpperCase()} NULLS LAST
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}

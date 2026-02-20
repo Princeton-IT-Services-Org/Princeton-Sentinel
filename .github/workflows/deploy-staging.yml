@@ -206,7 +206,6 @@ jobs:
           STG_USER_GROUP_ID: ${{ vars.STG_USER_GROUP_ID }}
           STG_INTERNAL_EMAIL_DOMAINS: ${{ vars.STG_INTERNAL_EMAIL_DOMAINS }}
           STG_DASHBOARD_DORMANT_LOOKBACK_DAYS: ${{ vars.STG_DASHBOARD_DORMANT_LOOKBACK_DAYS }}
-          STG_DASHBOARD_RISK_SCAN_LIMIT: ${{ vars.STG_DASHBOARD_RISK_SCAN_LIMIT }}
         run: |
           set -euo pipefail
           required=(
@@ -221,7 +220,6 @@ jobs:
             STG_USER_GROUP_ID
             STG_INTERNAL_EMAIL_DOMAINS
             STG_DASHBOARD_DORMANT_LOOKBACK_DAYS
-            STG_DASHBOARD_RISK_SCAN_LIMIT
           )
           for name in "${required[@]}"; do
             if [[ -z "${!name:-}" ]]; then
@@ -299,7 +297,6 @@ jobs:
           STG_USER_GROUP_ID: ${{ vars.STG_USER_GROUP_ID }}
           STG_INTERNAL_EMAIL_DOMAINS: ${{ vars.STG_INTERNAL_EMAIL_DOMAINS }}
           STG_DASHBOARD_DORMANT_LOOKBACK_DAYS: ${{ vars.STG_DASHBOARD_DORMANT_LOOKBACK_DAYS }}
-          STG_DASHBOARD_RISK_SCAN_LIMIT: ${{ vars.STG_DASHBOARD_RISK_SCAN_LIMIT }}
           STG_DB_CONNECT_TIMEOUT_SECONDS: ${{ vars.STG_DB_CONNECT_TIMEOUT_SECONDS }}
           STG_SCHEDULER_POLL_SECONDS: ${{ vars.STG_SCHEDULER_POLL_SECONDS }}
           STG_GRAPH_BASE: ${{ vars.STG_GRAPH_BASE }}
@@ -349,8 +346,7 @@ jobs:
               ADMIN_GROUP_ID="${STG_ADMIN_GROUP_ID}" \
               USER_GROUP_ID="${STG_USER_GROUP_ID}" \
               INTERNAL_EMAIL_DOMAINS="${STG_INTERNAL_EMAIL_DOMAINS}" \
-              DASHBOARD_DORMANT_LOOKBACK_DAYS="${STG_DASHBOARD_DORMANT_LOOKBACK_DAYS}" \
-              DASHBOARD_RISK_SCAN_LIMIT="${STG_DASHBOARD_RISK_SCAN_LIMIT}"
+              DASHBOARD_DORMANT_LOOKBACK_DAYS="${STG_DASHBOARD_DORMANT_LOOKBACK_DAYS}"
 
       - name: Sync worker staging runtime config
         if: needs.detect_changes.outputs.deploy_worker == 'true'

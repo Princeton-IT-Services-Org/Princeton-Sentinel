@@ -55,7 +55,10 @@ async function SharingLinksPage({ searchParams }: { searchParams?: Promise<Searc
     SELECT COUNT(DISTINCT (i.drive_id, i.id))::int AS total
     FROM msgraph_drive_item_permissions p
     JOIN msgraph_drive_items i ON i.drive_id = p.drive_id AND i.id = p.item_id
+    JOIN msgraph_drives d ON d.id = i.drive_id
     WHERE p.deleted_at IS NULL AND i.deleted_at IS NULL
+      AND d.deleted_at IS NULL
+      AND LOWER(COALESCE(d.web_url, '')) NOT LIKE '%cachelibrary%'
       AND ${scopeFilter}
       AND ${typeFilter}
       ${searchClause}
@@ -87,7 +90,10 @@ async function SharingLinksPage({ searchParams }: { searchParams?: Promise<Searc
       COUNT(p.permission_id)::int AS matching_permissions
     FROM msgraph_drive_item_permissions p
     JOIN msgraph_drive_items i ON i.drive_id = p.drive_id AND i.id = p.item_id
+    JOIN msgraph_drives d ON d.id = i.drive_id
     WHERE p.deleted_at IS NULL AND i.deleted_at IS NULL
+      AND d.deleted_at IS NULL
+      AND LOWER(COALESCE(d.web_url, '')) NOT LIKE '%cachelibrary%'
       AND ${scopeFilter}
       AND ${typeFilter}
       ${searchClause}
