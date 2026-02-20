@@ -44,13 +44,25 @@ async function DashboardPage() {
     value: Number(r.count ?? 0),
   }));
 
+  const toFiniteNumber = (value: unknown): number | null => {
+    if (value === null || value === undefined) return null;
+    if (typeof value === "string" && value.trim() === "") return null;
+    const parsed = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
   const topDrives = topDrivesRows
-    .filter((d: any) => typeof d.quota_used === "number" && Number.isFinite(d.quota_used))
-    .slice(0, 10)
-    .map((d: any) => ({
-      label: d.name ?? d.drive_id,
-      value: (d.quota_used ?? 0) / 1024 / 1024 / 1024,
-    }));
+    .map((d: any) => {
+      const quotaUsed = toFiniteNumber(d.quota_used);
+      return quotaUsed === null
+        ? null
+        : {
+            label: d.name ?? d.drive_id,
+            value: quotaUsed / 1024 / 1024 / 1024,
+          };
+    })
+    .filter((d): d is { label: string; value: number } => d !== null)
+    .slice(0, 10);
   const entityMix = [
     { label: "Sites", value: chartTotals.sites },
     { label: "Users", value: chartTotals.users },
