@@ -135,6 +135,11 @@ This dual model keeps dashboards fast while still enabling on-demand source-of-t
   - Reads `job_runs` + latest `job_run_logs` entry per run
   - Admin only
 
+- `GET /api/runs/summary`
+  - Reads only the latest run per `job_type` + latest `job_run_logs` entry
+  - Used by `/admin/runs` for live summary refresh
+  - Admin only
+
 ### Worker proxy APIs
 
 - `GET /api/worker/status` -> proxies `GET {WORKER_API_URL}/jobs/status`
@@ -291,6 +296,7 @@ Optional/tuning:
 - Worker heartbeat endpoint is intentionally lightweight and unauthenticated (internal-network assumption).
 - Revoke flow is best-effort audited; failures in auxiliary logging are surfaced as warnings, not hard failures after Graph delete succeeds.
 - Admin control pages (`/admin`, `/admin/analytics`, `/admin/runs`) use live polling every 5 seconds for near-real-time state.
+- `/admin/runs` shows latest run per job type; clicking a type opens `/admin/runs/[jobType]` for paginated history (no live polling on detail pages).
 - Job scheduling is one-schedule-per-job by design; create attempts for already scheduled jobs are rejected.
 
 ---
