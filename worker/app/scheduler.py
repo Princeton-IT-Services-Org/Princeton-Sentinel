@@ -1,4 +1,5 @@
 import os
+import json
 import threading
 import time
 from datetime import datetime, timezone
@@ -66,7 +67,7 @@ def _run_due_schedule():
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT schedule_id, cron_expr
+            SELECT schedule_id, job_id, cron_expr
             FROM job_schedules
             WHERE enabled = true
               AND next_run_at IS NULL
@@ -77,8 +78,18 @@ def _run_due_schedule():
         )
         row = cur.fetchone()
         if row:
-            schedule_id, cron_expr = row
-            next_run_at = _compute_next_run(cron_expr)
+            schedule_id, job_id, cron_expr = row
+            try:
+                next_run_at = _compute_next_run(cron_expr)
+            except Exception as exc:
+                conn.rollback()
+                _disable_invalid_schedule(
+                    schedule_id=schedule_id,
+                    job_id=job_id,
+                    cron_expr=cron_expr,
+                    error_reason=f"invalid_cron_expr: {exc}",
+                )
+                return
             cur.execute(
                 "UPDATE job_schedules SET next_run_at = %s WHERE schedule_id = %s",
                 [next_run_at, schedule_id],
@@ -110,6 +121,17 @@ def _run_due_schedule():
             return
 
         schedule_id, job_id, cron_expr, job_type = row
+        try:
+            next_run_at = _compute_next_run(cron_expr)
+        except Exception as exc:
+            conn.rollback()
+            _disable_invalid_schedule(
+                schedule_id=schedule_id,
+                job_id=job_id,
+                cron_expr=cron_expr,
+                error_reason=f"invalid_cron_expr: {exc}",
+            )
+            return
 
         locked = db.try_advisory_lock(cur, str(job_id))
         if not locked:
@@ -122,7 +144,6 @@ def _run_due_schedule():
             return
 
         run_id = _insert_job_run(cur, job_id)
-        next_run_at = _compute_next_run(cron_expr)
         cur.execute(
             "UPDATE job_schedules SET next_run_at = %s WHERE schedule_id = %s",
             [next_run_at, schedule_id],
@@ -179,6 +200,104 @@ def _run_due_schedule():
         )
     finally:
         conn.close()
+
+
+def _disable_invalid_schedule(*, schedule_id, job_id, cron_expr, error_reason: str):
+    schedule_id = str(schedule_id)
+    job_id = str(job_id) if job_id is not None else None
+    cron_expr = str(cron_expr or "")
+    short_error = str(error_reason or "invalid_cron_expr").replace("\n", " ").replace("\r", " ").strip()
+    if len(short_error) > 300:
+        short_error = short_error[:297] + "..."
+    run_id = None
+
+    conn = db.get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE job_schedules
+            SET enabled = false,
+                next_run_at = NULL
+            WHERE schedule_id = %s
+            RETURNING schedule_id
+            """,
+            [schedule_id],
+        )
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            return
+
+        if job_id:
+            cur.execute(
+                """
+                INSERT INTO job_runs (run_id, job_id, started_at, finished_at, status, error)
+                VALUES (gen_random_uuid(), %s, now(), now(), 'failed', %s)
+                RETURNING run_id
+                """,
+                [job_id, short_error],
+            )
+            run_row = cur.fetchone()
+            if run_row:
+                run_id = str(run_row[0])
+                cur.execute(
+                    """
+                    INSERT INTO job_run_logs (run_id, level, message, context)
+                    VALUES (%s, %s, %s, %s::jsonb)
+                    """,
+                    [
+                        run_id,
+                        "ERROR",
+                        "schedule_invalid_cron_disabled",
+                        json.dumps(
+                            {
+                                "job_id": job_id,
+                                "schedule_id": schedule_id,
+                                "cron_expr": cron_expr,
+                                "error": short_error,
+                                "trigger": "scheduler_validation",
+                            }
+                        ),
+                    ],
+                )
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        emit(
+            "ERROR",
+            "SCHEDULER",
+            f"Failed to disable invalid schedule: schedule_id={schedule_id} job_id={job_id} error={exc}",
+        )
+        return
+    finally:
+        conn.close()
+
+    emit(
+        "ERROR",
+        "SCHEDULER",
+        f"Disabled invalid schedule: schedule_id={schedule_id} job_id={job_id} cron_expr='{cron_expr}' error={short_error}",
+    )
+
+    try:
+        log_audit_event(
+            action="schedule_invalid_cron_disabled",
+            entity_type="job_schedule",
+            entity_id=schedule_id,
+            actor=None,
+            details={
+                "job_id": job_id,
+                "cron_expr": cron_expr,
+                "error": short_error,
+                "run_id": run_id,
+            },
+        )
+    except Exception as exc:
+        emit(
+            "WARN",
+            "SCHEDULER",
+            f"Failed writing invalid schedule audit event: schedule_id={schedule_id} job_id={job_id} error={exc}",
+        )
 
 
 def _recover_interrupted_runs() -> int:

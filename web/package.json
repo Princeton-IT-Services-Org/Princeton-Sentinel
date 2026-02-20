@@ -4,7 +4,8 @@
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build --webpack",
-    "start": "next start -p 3000"
+    "start": "next start -p 3000",
+    "test": "rm -rf .tmp-tests && tsc -p tsconfig.test.json && node --test .tmp-tests/tests/**/*.test.js && rm -rf .tmp-tests"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.4",

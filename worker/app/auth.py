@@ -1,4 +1,5 @@
 import os
+import hmac
 from functools import wraps
 from typing import Dict, Any
 
@@ -11,6 +12,7 @@ TENANT_ID = os.getenv("ENTRA_TENANT_ID")
 WORKER_API_AUDIENCE = os.getenv("WORKER_API_AUDIENCE")
 ADMIN_GROUP_ID = os.getenv("ADMIN_GROUP_ID")
 USER_GROUP_ID = os.getenv("USER_GROUP_ID")
+WORKER_INTERNAL_API_TOKEN_HEADER = "X-Worker-Internal-Token"
 
 ISSUER = None
 JWKS_URL = None
@@ -26,6 +28,19 @@ def _get_token_from_header() -> str | None:
     if not auth_header.startswith("Bearer "):
         return None
     return auth_header.split(" ", 1)[1]
+
+
+def _get_internal_token_from_header() -> str | None:
+    value = request.headers.get(WORKER_INTERNAL_API_TOKEN_HEADER, "")
+    value = value.strip()
+    return value or None
+
+
+def _is_valid_internal_token(provided_token: str | None) -> bool:
+    expected_token = os.getenv("WORKER_INTERNAL_API_TOKEN", "").strip()
+    if not expected_token or not provided_token:
+        return False
+    return hmac.compare_digest(provided_token, expected_token)
 
 
 def decode_token(token: str) -> Dict[str, Any]:
@@ -91,6 +106,19 @@ def require_admin(fn):
         claims = request.claims
         if not is_admin(claims):
             return jsonify({"error": "forbidden"}), 403
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def require_internal_token(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        token = _get_internal_token_from_header()
+        if not token:
+            return jsonify({"error": "missing_internal_token"}), 401
+        if not _is_valid_internal_token(token):
+            return jsonify({"error": "invalid_internal_token"}), 401
         return fn(*args, **kwargs)
 
     return wrapper

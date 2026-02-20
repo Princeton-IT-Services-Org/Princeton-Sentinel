@@ -1,7 +1,9 @@
 import { ConfidentialClientApplication } from "@azure/msal-node";
+import { fetchWithTimeout, getPositiveIntEnv, HttpTimeoutError } from "@/app/lib/http";
 
 const graphBase = "https://graph.microsoft.com/v1.0";
 let cachedCca: ConfidentialClientApplication | null = null;
+const GRAPH_FETCH_TIMEOUT_MS = getPositiveIntEnv("GRAPH_FETCH_TIMEOUT_MS", 15000);
 
 function getGraphEnv() {
   const tenantId = process.env.ENTRA_TENANT_ID;
@@ -38,12 +40,24 @@ async function getAppToken() {
 
 export async function graphGet(path: string) {
   const token = await getAppToken();
-  const res = await fetch(`${graphBase}${path}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-    cache: "no-store",
-  });
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(
+      `${graphBase}${path}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        cache: "no-store",
+      },
+      GRAPH_FETCH_TIMEOUT_MS
+    );
+  } catch (err) {
+    if (err instanceof HttpTimeoutError) {
+      throw new Error("graph_request_timeout");
+    }
+    throw err;
+  }
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Graph error ${res.status}: ${text}`);
@@ -53,13 +67,25 @@ export async function graphGet(path: string) {
 
 export async function graphDelete(path: string) {
   const token = await getAppToken();
-  const res = await fetch(`${graphBase}${path}`, {
-    method: "DELETE",
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-    cache: "no-store",
-  });
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(
+      `${graphBase}${path}`,
+      {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        cache: "no-store",
+      },
+      GRAPH_FETCH_TIMEOUT_MS
+    );
+  } catch (err) {
+    if (err instanceof HttpTimeoutError) {
+      throw new Error("graph_request_timeout");
+    }
+    throw err;
+  }
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Graph error ${res.status}: ${text}`);

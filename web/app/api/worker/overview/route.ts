@@ -2,15 +2,15 @@ import { NextResponse } from "next/server";
 
 import { requireAdmin } from "@/app/lib/auth";
 import { withApiRequestTiming } from "@/app/lib/request-timing";
+import { callWorker, isWorkerTimeoutError, parseWorkerErrorText } from "@/app/lib/worker-api";
 
 export const dynamic = "force-dynamic";
 
-async function parseJsonOrText(res: Response) {
-  const text = await res.text();
+async function parseWorkerJson(resBody: string) {
   try {
-    return { json: JSON.parse(text), text };
+    return resBody ? JSON.parse(resBody) : {};
   } catch {
-    return { json: null, text };
+    return null;
   }
 }
 
@@ -21,36 +21,38 @@ type SafeWorkerFetchResult = {
   error?: string;
 };
 
-async function safeWorkerFetch(url: string): Promise<SafeWorkerFetchResult> {
+async function safeWorkerFetch(path: string): Promise<SafeWorkerFetchResult> {
   try {
-    const res = await fetch(url, { cache: "no-store" });
-    const parsed = await parseJsonOrText(res);
+    const { res, text } = await callWorker(path);
+    const parsed = await parseWorkerJson(text);
     if (!res.ok) {
       return {
         ok: false,
         status: res.status,
-        error: parsed.text || `HTTP ${res.status}`,
+        error: parseWorkerErrorText(text),
       };
     }
-    return { ok: true, status: res.status, payload: parsed.json };
-  } catch (err: any) {
+    if (parsed === null) {
+      return { ok: false, status: 502, error: "worker_invalid_json_response" };
+    }
+    return { ok: true, status: res.status, payload: parsed };
+  } catch (err: unknown) {
+    if (isWorkerTimeoutError(err)) {
+      return { ok: false, status: 504, error: "worker_request_timeout" };
+    }
     return {
       ok: false,
-      error: err?.message || "worker_unreachable",
+      status: 502,
+      error: err instanceof Error ? err.message : "worker_unreachable",
     };
   }
 }
 
 const getHandler = async function GET() {
   await requireAdmin();
-  const base = process.env.WORKER_API_URL;
-  if (!base) {
-    return NextResponse.json({ error: "WORKER_API_URL not set" }, { status: 500 });
-  }
-
   const [healthRes, jobsRes] = await Promise.all([
-    safeWorkerFetch(`${base}/health`),
-    safeWorkerFetch(`${base}/jobs/status`),
+    safeWorkerFetch("/health"),
+    safeWorkerFetch("/jobs/status"),
   ]);
 
   const healthPayload = healthRes.ok ? healthRes.payload || {} : null;
@@ -66,7 +68,7 @@ const getHandler = async function GET() {
         health: healthPayload || {},
         jobs,
       },
-      { status: 502 }
+      { status: Math.max(healthRes.status || 502, jobsRes.status || 502) }
     );
   }
 

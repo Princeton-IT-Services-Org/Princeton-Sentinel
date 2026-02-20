@@ -131,6 +131,40 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup Node.js
+        if: needs.detect_changes.outputs.deploy_web == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Web checks (tests + build)
+        if: needs.detect_changes.outputs.deploy_web == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd web
+          npm ci
+          npm test
+          npm run build
+
+      - name: Setup Python
+        if: needs.detect_changes.outputs.deploy_worker == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Worker checks (tests + compile)
+        if: needs.detect_changes.outputs.deploy_worker == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r worker/requirements.txt
+          python -m unittest discover -s worker/tests -p "test_*.py"
+          python -m py_compile worker/app/*.py worker/app/jobs/*.py
+
       - name: Azure Login (OIDC)
         if: needs.detect_changes.outputs.any == 'true'
         uses: azure/login@v2
@@ -164,6 +198,8 @@ jobs:
           STG_DATABASE_URL: ${{ secrets.STG_DATABASE_URL }}
           STG_ENTRA_CLIENT_SECRET: ${{ secrets.STG_ENTRA_CLIENT_SECRET }}
           STG_NEXTAUTH_SECRET: ${{ secrets.STG_NEXTAUTH_SECRET }}
+          STG_WORKER_INTERNAL_API_TOKEN: ${{ secrets.STG_WORKER_INTERNAL_API_TOKEN }}
+          STG_WORKER_HEARTBEAT_TOKEN: ${{ secrets.STG_WORKER_HEARTBEAT_TOKEN }}
           STG_ENTRA_TENANT_ID: ${{ vars.STG_ENTRA_TENANT_ID }}
           STG_ENTRA_CLIENT_ID: ${{ vars.STG_ENTRA_CLIENT_ID }}
           STG_ADMIN_GROUP_ID: ${{ vars.STG_ADMIN_GROUP_ID }}
@@ -177,6 +213,8 @@ jobs:
             STG_DATABASE_URL
             STG_ENTRA_CLIENT_SECRET
             STG_NEXTAUTH_SECRET
+            STG_WORKER_INTERNAL_API_TOKEN
+            STG_WORKER_HEARTBEAT_TOKEN
             STG_ENTRA_TENANT_ID
             STG_ENTRA_CLIENT_ID
             STG_ADMIN_GROUP_ID
@@ -198,6 +236,8 @@ jobs:
         env:
           STG_DATABASE_URL: ${{ secrets.STG_DATABASE_URL }}
           STG_ENTRA_CLIENT_SECRET: ${{ secrets.STG_ENTRA_CLIENT_SECRET }}
+          STG_WORKER_INTERNAL_API_TOKEN: ${{ secrets.STG_WORKER_INTERNAL_API_TOKEN }}
+          STG_WORKER_HEARTBEAT_TOKEN: ${{ secrets.STG_WORKER_HEARTBEAT_TOKEN }}
           STG_ENTRA_TENANT_ID: ${{ vars.STG_ENTRA_TENANT_ID }}
           STG_ENTRA_CLIENT_ID: ${{ vars.STG_ENTRA_CLIENT_ID }}
           STG_INTERNAL_EMAIL_DOMAINS: ${{ vars.STG_INTERNAL_EMAIL_DOMAINS }}
@@ -217,6 +257,8 @@ jobs:
           required=(
             STG_DATABASE_URL
             STG_ENTRA_CLIENT_SECRET
+            STG_WORKER_INTERNAL_API_TOKEN
+            STG_WORKER_HEARTBEAT_TOKEN
             STG_ENTRA_TENANT_ID
             STG_ENTRA_CLIENT_ID
             STG_INTERNAL_EMAIL_DOMAINS
@@ -246,6 +288,8 @@ jobs:
           STG_DATABASE_URL: ${{ secrets.STG_DATABASE_URL }}
           STG_ENTRA_CLIENT_SECRET: ${{ secrets.STG_ENTRA_CLIENT_SECRET }}
           STG_NEXTAUTH_SECRET: ${{ secrets.STG_NEXTAUTH_SECRET }}
+          STG_WORKER_INTERNAL_API_TOKEN: ${{ secrets.STG_WORKER_INTERNAL_API_TOKEN }}
+          STG_WORKER_HEARTBEAT_TOKEN: ${{ secrets.STG_WORKER_HEARTBEAT_TOKEN }}
           STG_NEXTAUTH_URL: ${{ vars.STG_NEXTAUTH_URL }}
           STG_WORKER_API_URL: ${{ vars.STG_WORKER_API_URL }}
           STG_WORKER_HEARTBEAT_URL: ${{ vars.STG_WORKER_HEARTBEAT_URL || vars.WORKER_HEARTBEAT_URL }}
@@ -285,7 +329,9 @@ jobs:
             --secrets \
               dburl="${STG_DATABASE_URL}" \
               entrasecret="${STG_ENTRA_CLIENT_SECRET}" \
-              nextauthsecret="${STG_NEXTAUTH_SECRET}"
+              nextauthsecret="${STG_NEXTAUTH_SECRET}" \
+              workerinternaltoken="${STG_WORKER_INTERNAL_API_TOKEN}" \
+              workerheartbeattoken="${STG_WORKER_HEARTBEAT_TOKEN}"
 
           az containerapp update \
             --name "${AZ_WEB_APP_NAME}" \
@@ -293,6 +339,8 @@ jobs:
             --set-env-vars \
               DATABASE_URL=secretref:dburl \
               WORKER_API_URL="${WORKER_API_URL}" \
+              WORKER_INTERNAL_API_TOKEN=secretref:workerinternaltoken \
+              WORKER_HEARTBEAT_TOKEN=secretref:workerheartbeattoken \
               NEXTAUTH_URL="${NEXTAUTH_URL}" \
               NEXTAUTH_SECRET=secretref:nextauthsecret \
               ENTRA_TENANT_ID="${STG_ENTRA_TENANT_ID}" \
@@ -310,6 +358,8 @@ jobs:
         env:
           STG_DATABASE_URL: ${{ secrets.STG_DATABASE_URL }}
           STG_ENTRA_CLIENT_SECRET: ${{ secrets.STG_ENTRA_CLIENT_SECRET }}
+          STG_WORKER_INTERNAL_API_TOKEN: ${{ secrets.STG_WORKER_INTERNAL_API_TOKEN }}
+          STG_WORKER_HEARTBEAT_TOKEN: ${{ secrets.STG_WORKER_HEARTBEAT_TOKEN }}
           STG_WORKER_HEARTBEAT_URL: ${{ vars.STG_WORKER_HEARTBEAT_URL || vars.WORKER_HEARTBEAT_URL }}
           STG_ENTRA_TENANT_ID: ${{ vars.STG_ENTRA_TENANT_ID }}
           STG_ENTRA_CLIENT_ID: ${{ vars.STG_ENTRA_CLIENT_ID }}
@@ -341,13 +391,17 @@ jobs:
             --resource-group "${AZ_RESOURCE_GROUP}" \
             --secrets \
               dburl="${STG_DATABASE_URL}" \
-              entrasecret="${STG_ENTRA_CLIENT_SECRET}"
+              entrasecret="${STG_ENTRA_CLIENT_SECRET}" \
+              workerinternaltoken="${STG_WORKER_INTERNAL_API_TOKEN}" \
+              workerheartbeattoken="${STG_WORKER_HEARTBEAT_TOKEN}"
 
           az containerapp update \
             --name "${AZ_WORKER_APP_NAME}" \
             --resource-group "${AZ_RESOURCE_GROUP}" \
             --set-env-vars \
               DATABASE_URL=secretref:dburl \
+              WORKER_INTERNAL_API_TOKEN=secretref:workerinternaltoken \
+              WORKER_HEARTBEAT_TOKEN=secretref:workerheartbeattoken \
               DB_CONNECT_TIMEOUT_SECONDS="${STG_DB_CONNECT_TIMEOUT_SECONDS}" \
               SCHEDULER_POLL_SECONDS="${STG_SCHEDULER_POLL_SECONDS}" \
               ENTRA_TENANT_ID="${STG_ENTRA_TENANT_ID}" \
