@@ -424,7 +424,7 @@ WHERE p.deleted_at IS NULL
 GROUP BY p.link_scope, p.link_type;
 
 CREATE UNIQUE INDEX IF NOT EXISTS mv_msgraph_link_breakdown_uidx
-ON mv_msgraph_link_breakdown ((COALESCE(link_scope, '')), (COALESCE(link_type, '')));
+ON mv_msgraph_link_breakdown (link_scope, link_type);
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_msgraph_drive_storage_totals AS
 SELECT
@@ -448,7 +448,7 @@ WHERE deleted_at IS NULL
 GROUP BY drive_type;
 
 CREATE UNIQUE INDEX IF NOT EXISTS mv_msgraph_drive_type_counts_uidx
-ON mv_msgraph_drive_type_counts ((COALESCE(drive_type, '')));
+ON mv_msgraph_drive_type_counts (drive_type);
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS mv_msgraph_drive_top_used AS
 SELECT
