@@ -31,6 +31,7 @@ async function SharingLinksPage({ searchParams }: { searchParams?: Promise<Searc
   const typeRaw = getParam(resolvedSearchParams, "type");
   if (scopeRaw == null || typeRaw == null) notFound();
 
+  const driveId = getParam(resolvedSearchParams, "driveId");
   const scope = parseNullable(scopeRaw);
   const type = parseNullable(typeRaw);
   const search = getParam(resolvedSearchParams, "q") || "";
@@ -38,6 +39,8 @@ async function SharingLinksPage({ searchParams }: { searchParams?: Promise<Searc
 
   const params: any[] = [];
   let idx = 1;
+  const driveFilter = driveId ? `AND p.drive_id = $${idx++}` : "";
+  if (driveId) params.push(driveId);
   const scopeFilter = scope === null ? "p.link_scope IS NULL" : `p.link_scope = $${idx++}`;
   if (scope !== null) params.push(scope);
   const typeFilter = type === null ? "p.link_type IS NULL" : `p.link_type = $${idx++}`;
@@ -59,6 +62,7 @@ async function SharingLinksPage({ searchParams }: { searchParams?: Promise<Searc
     WHERE p.deleted_at IS NULL AND i.deleted_at IS NULL
       AND d.deleted_at IS NULL
       AND LOWER(COALESCE(d.web_url, '')) NOT LIKE '%cachelibrary%'
+      ${driveFilter}
       AND ${scopeFilter}
       AND ${typeFilter}
       ${searchClause}
@@ -94,6 +98,7 @@ async function SharingLinksPage({ searchParams }: { searchParams?: Promise<Searc
     WHERE p.deleted_at IS NULL AND i.deleted_at IS NULL
       AND d.deleted_at IS NULL
       AND LOWER(COALESCE(d.web_url, '')) NOT LIKE '%cachelibrary%'
+      ${driveFilter}
       AND ${scopeFilter}
       AND ${typeFilter}
       ${searchClause}
@@ -116,19 +121,30 @@ async function SharingLinksPage({ searchParams }: { searchParams?: Promise<Searc
   }));
 
   const title = `${scope ?? "—"} / ${type ?? "—"}`;
+  const backHref = driveId ? `/sites/${encodeURIComponent(driveId)}/sharing` : "/dashboard/sharing";
+  const backLabel = driveId ? "Site sharing" : "Sharing";
 
   return (
     <main className="ps-page">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h1 className="truncate text-2xl font-semibold">Sharing links: {title}</h1>
-          <p className="text-sm text-muted-foreground">Items that contribute to this link scope/type bucket.</p>
+          <p className="text-sm text-muted-foreground">
+            {driveId
+              ? "Items in this site drive that contribute to this link scope/type bucket."
+              : "Items that contribute to this link scope/type bucket."}
+          </p>
           <p className="mt-2 text-xs uppercase tracking-[0.3em] text-muted-foreground">Cached (DB)</p>
         </div>
         <div className="flex items-center gap-3 text-sm">
-          <Link className="text-muted-foreground hover:underline" href="/dashboard/sharing">
-            Sharing
+          <Link className="text-muted-foreground hover:underline" href={backHref}>
+            {backLabel}
           </Link>
+          {driveId ? (
+            <Link className="text-muted-foreground hover:underline" href="/dashboard/sharing">
+              All sites sharing
+            </Link>
+          ) : null}
         </div>
       </div>
 
@@ -141,6 +157,7 @@ async function SharingLinksPage({ searchParams }: { searchParams?: Promise<Searc
         </CardHeader>
         <CardContent className="overflow-x-auto space-y-3">
           <form className="flex flex-wrap items-center gap-2" action="/dashboard/sharing/links" method="get">
+            {driveId ? <input type="hidden" name="driveId" value={driveId} /> : null}
             <input type="hidden" name="scope" value={scopeRaw} />
             <input type="hidden" name="type" value={typeRaw} />
             <Input name="q" placeholder="Search items…" defaultValue={search} className="w-64" />
@@ -166,7 +183,7 @@ async function SharingLinksPage({ searchParams }: { searchParams?: Promise<Searc
         page={clampedPage}
         pageSize={pageSize}
         totalItems={total}
-        extraParams={{ scope: scopeRaw, type: typeRaw, q: search || undefined, pageSize }}
+        extraParams={{ driveId: driveId || undefined, scope: scopeRaw, type: typeRaw, q: search || undefined, pageSize }}
       />
     </main>
   );

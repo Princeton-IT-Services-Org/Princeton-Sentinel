@@ -137,7 +137,7 @@ async function DriveSharingPage({ params }: { params: Promise<{ driveId: string 
           <CardDescription>By scope and type</CardDescription>
         </CardHeader>
         <CardContent className="overflow-x-auto">
-          <SiteSharingLinkBreakdownTable breakdown={linkBreakdown} />
+          <SiteSharingLinkBreakdownTable driveId={driveId} breakdown={linkBreakdown} />
         </CardContent>
       </Card>
 

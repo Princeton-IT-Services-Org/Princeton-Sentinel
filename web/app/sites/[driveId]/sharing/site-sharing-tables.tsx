@@ -28,26 +28,48 @@ type MostSharedItemRow = {
   lastSharedDateTime: string | null;
 };
 
+function toBreakdownParam(v: string | null): string {
+  return v == null ? "null" : v;
+}
+
 function parseIsoToTs(value: string | null | undefined): number | null {
   if (!value) return null;
   const ts = Date.parse(value);
   return Number.isFinite(ts) ? ts : null;
 }
 
-export function SiteSharingLinkBreakdownTable({ breakdown }: { breakdown: LinkBreakdownRow[] }) {
+export function SiteSharingLinkBreakdownTable({ driveId, breakdown }: { driveId: string; breakdown: LinkBreakdownRow[] }) {
   const columns = React.useMemo(
     () => [
       {
         id: "scope",
         header: "Scope",
         sortValue: (r: LinkBreakdownRow) => r.link_scope ?? "",
-        cell: (r: LinkBreakdownRow) => <span className="text-muted-foreground">{r.link_scope ?? "—"}</span>,
+        cell: (r: LinkBreakdownRow) => (
+          <Link
+            className="text-muted-foreground hover:underline"
+            href={`/dashboard/sharing/links?driveId=${encodeURIComponent(driveId)}&scope=${encodeURIComponent(
+              toBreakdownParam(r.link_scope)
+            )}&type=${encodeURIComponent(toBreakdownParam(r.link_type))}`}
+          >
+            {r.link_scope ?? "—"}
+          </Link>
+        ),
       },
       {
         id: "type",
         header: "Type",
         sortValue: (r: LinkBreakdownRow) => r.link_type ?? "",
-        cell: (r: LinkBreakdownRow) => <span className="text-muted-foreground">{r.link_type ?? "—"}</span>,
+        cell: (r: LinkBreakdownRow) => (
+          <Link
+            className="text-muted-foreground hover:underline"
+            href={`/dashboard/sharing/links?driveId=${encodeURIComponent(driveId)}&scope=${encodeURIComponent(
+              toBreakdownParam(r.link_scope)
+            )}&type=${encodeURIComponent(toBreakdownParam(r.link_type))}`}
+          >
+            {r.link_type ?? "—"}
+          </Link>
+        ),
       },
       {
         id: "count",
@@ -56,7 +78,7 @@ export function SiteSharingLinkBreakdownTable({ breakdown }: { breakdown: LinkBr
         cell: (r: LinkBreakdownRow) => <span className="text-muted-foreground">{r.count.toLocaleString()}</span>,
       },
     ],
-    []
+    [driveId]
   );
 
   return (
