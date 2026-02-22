@@ -165,7 +165,9 @@ Defined in `003_materialized_views.sql`.
 - `mv_msgraph_group_member_counts`
 - `mv_msgraph_item_link_daily`
 
-Each MV has a unique index for deterministic access and refresh support.
+Each MV has a unique index for deterministic access and refresh support. For
+`REFRESH MATERIALIZED VIEW CONCURRENTLY`, this must be a plain-column unique
+index (no expression keys and no `WHERE` predicate).
 
 ---
 
