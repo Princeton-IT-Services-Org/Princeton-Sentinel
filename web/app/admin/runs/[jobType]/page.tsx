@@ -50,7 +50,7 @@ async function RunsByTypePage({
           <table className="w-full text-sm">
             <thead className="text-left text-muted-foreground">
               <tr>
-                <th className="py-2">Job ID</th>
+                <th className="py-2">Run ID</th>
                 <th className="py-2">Status</th>
                 <th className="py-2">Started</th>
                 <th className="py-2">Finished</th>
@@ -64,7 +64,11 @@ async function RunsByTypePage({
                   key={run.run_id}
                   className={run.status === "running" ? "border-t bg-amber-100/40 dark:bg-amber-900/20" : "border-t"}
                 >
-                  <td className="py-3 font-mono text-xs text-foreground">{run.job_id}</td>
+                  <td className="py-3 font-mono text-xs text-foreground">
+                    <Link className="hover:underline" href={`/admin/runs/${encodeURIComponent(jobType)}/${encodeURIComponent(run.run_id)}`}>
+                      {run.run_id}
+                    </Link>
+                  </td>
                   <td className="py-3">
                     <span className={statusBadge(run.status)}>{run.status}</span>
                   </td>

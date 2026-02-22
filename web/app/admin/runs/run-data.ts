@@ -13,6 +13,15 @@ export type RunRow = {
   last_log_message?: string | null;
 };
 
+export type RunLogRow = {
+  log_id: number;
+  run_id: string;
+  logged_at: string;
+  level: string;
+  message: string;
+  context: Record<string, any> | null;
+};
+
 export async function getLatestRunsByType(): Promise<RunRow[]> {
   return query<RunRow>(
     `
@@ -50,6 +59,47 @@ export async function getLatestRunsByType(): Promise<RunRow[]> {
     ) l ON true
     ORDER BY x.started_at DESC NULLS LAST, x.run_id DESC
     `
+  );
+}
+
+export async function getRunByTypeAndId(jobType: string, runId: string): Promise<RunRow | null> {
+  const rows = await query<RunRow>(
+    `
+    SELECT
+      r.run_id,
+      r.job_id,
+      r.started_at,
+      r.finished_at,
+      r.status,
+      r.error,
+      j.job_type
+    FROM job_runs r
+    JOIN jobs j ON j.job_id = r.job_id
+    WHERE j.job_type = $1
+      AND r.run_id = $2
+    LIMIT 1
+    `,
+    [jobType, runId]
+  );
+
+  return rows[0] || null;
+}
+
+export async function getRunLogsByRunId(runId: string): Promise<RunLogRow[]> {
+  return query<RunLogRow>(
+    `
+    SELECT
+      log_id,
+      run_id,
+      logged_at,
+      level,
+      message,
+      context
+    FROM job_run_logs
+    WHERE run_id = $1
+    ORDER BY logged_at DESC, log_id DESC
+    `,
+    [runId]
   );
 }
 

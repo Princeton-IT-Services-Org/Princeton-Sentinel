@@ -295,7 +295,7 @@ Optional/tuning:
 - Worker heartbeat endpoint is intentionally lightweight and unauthenticated (internal-network assumption).
 - Revoke flow is best-effort audited; failures in auxiliary logging are surfaced as warnings, not hard failures after Graph delete succeeds.
 - Admin control pages (`/admin`, `/admin/analytics`, `/admin/runs`) use live polling every 5 seconds for near-real-time state.
-- `/admin/runs` shows latest run per job type; clicking a type opens `/admin/runs/[jobType]` for paginated history (no live polling on detail pages).
+- `/admin/runs` shows latest run per job type; clicking a type opens `/admin/runs/[jobType]` for paginated history, and clicking a run opens `/admin/runs/[jobType]/[runId]` for full run logs (no live polling on detail pages).
 - Job scheduling is one-schedule-per-job by design; create attempts for already scheduled jobs are rejected.
 
 ---
