@@ -56,6 +56,7 @@ async function UsersPage({ searchParams }: { searchParams?: Promise<SearchParams
       FROM msgraph_drive_items i
       JOIN msgraph_drives d ON d.id = i.drive_id
       WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
+        AND LOWER(COALESCE(d.web_url, '')) NOT LIKE '%cachelibrary%'
         AND i.last_modified_by_user_id IS NOT NULL
         ${windowStart ? "AND i.modified_dt >= $1" : ""}
       GROUP BY i.last_modified_by_user_id
@@ -88,6 +89,7 @@ async function UsersPage({ searchParams }: { searchParams?: Promise<SearchParams
       FROM msgraph_drive_items i
       JOIN msgraph_drives d ON d.id = i.drive_id
       WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
+        AND LOWER(COALESCE(d.web_url, '')) NOT LIKE '%cachelibrary%'
         AND i.last_modified_by_user_id IS NOT NULL
         ${windowStart ? "AND i.modified_dt >= $1" : ""}
       GROUP BY i.last_modified_by_user_id
