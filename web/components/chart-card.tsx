@@ -11,14 +11,13 @@ export default function ChartCard({
   children: React.ReactNode;
 }) {
   return (
-    <Card className={cn("w-full", className)}>
+    <Card className={cn("w-full min-w-0", className)}>
       <CardHeader>
         <CardTitle>{title}</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="h-72">{children}</div>
+        <div className="h-72 w-full min-w-0">{children}</div>
       </CardContent>
     </Card>
   );
 }
-

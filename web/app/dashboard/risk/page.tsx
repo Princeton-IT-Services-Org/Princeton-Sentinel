@@ -285,9 +285,13 @@ async function RiskPage({ searchParams }: { searchParams?: Promise<SearchParams>
         </Card>
       </div>
 
-      <div className="w-full flex flex-col md:flex-row gap-6 items-center justify-center my-2">
-        <RiskSummaryBarChartClient topSites={topSites} />
-        <RiskSummaryPieChartClient flagBreakdown={flagBreakdown} />
+      <div className="grid w-full grid-cols-1 gap-6 md:grid-cols-2 my-2">
+        <div className="w-full min-w-0">
+          <RiskSummaryBarChartClient topSites={topSites} />
+        </div>
+        <div className="w-full min-w-0">
+          <RiskSummaryPieChartClient flagBreakdown={flagBreakdown} />
+        </div>
       </div>
 
       <Card>

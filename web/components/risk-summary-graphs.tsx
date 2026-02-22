@@ -26,6 +26,7 @@ export function RiskSummaryBarChart({ topSites }: RiskSummaryBarChartProps) {
   const baseOptions: any = commonBarOptions("y");
   const barOptions: any = {
     ...baseOptions,
+    maintainAspectRatio: false,
     plugins: {
       ...baseOptions.plugins,
       tooltip: {
