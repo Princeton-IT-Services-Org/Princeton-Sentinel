@@ -1,148 +1,135 @@
 import { withPageRequestTiming } from "@/app/lib/request-timing";
 import Link from "next/link";
 
+import { getRevokeLogCount, getRevokeLogsPage, itemFallback, itemPath, requestedBy } from "@/app/admin/logs/revoke-log-queries";
 import { requireAdmin } from "@/app/lib/auth";
-import { query } from "@/app/lib/db";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { getPagination, SearchParams } from "@/app/lib/params";
+import { Pagination } from "@/components/pagination";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import LocalDateTime from "@/components/local-date-time";
 
-type RevokeLogRow = {
-  log_id: number;
-  occurred_at: string;
-  actor_oid: string | null;
-  actor_upn: string | null;
-  actor_name: string | null;
-  drive_id: string | null;
-  item_id: string | null;
-  permission_id: string | null;
-  outcome: "success" | "failed";
-  failure_reason: string | null;
-  warning: string | null;
-  source: string;
-  details: Record<string, any> | null;
-  item_name: string | null;
-  normalized_path: string | null;
-  item_web_url: string | null;
-};
-
-function requestedBy(row: RevokeLogRow): string {
-  return row.actor_name || row.actor_upn || row.actor_oid || "Unknown";
-}
-
-function itemPath(row: RevokeLogRow): string | null {
-  if (!row.normalized_path && !row.item_name) return null;
-  if (row.normalized_path && row.item_name) return `${row.normalized_path}/${row.item_name}`;
-  return row.normalized_path || row.item_name;
-}
-
-function itemFallback(row: RevokeLogRow): string {
-  if (row.drive_id && row.item_id) return `${row.drive_id}::${row.item_id}`;
-  return row.item_id || row.drive_id || "Unknown item";
-}
-
-async function AdminLogsPage() {
+async function AdminLogsPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
   await requireAdmin();
 
-  const rows = await query<RevokeLogRow>(
-    `
-    SELECT
-      l.log_id,
-      l.occurred_at,
-      l.actor_oid,
-      l.actor_upn,
-      l.actor_name,
-      l.drive_id,
-      l.item_id,
-      l.permission_id,
-      l.outcome,
-      l.failure_reason,
-      l.warning,
-      l.source,
-      l.details,
-      i.name AS item_name,
-      i.normalized_path,
-      i.web_url AS item_web_url
-    FROM revoke_permission_logs l
-    LEFT JOIN msgraph_drive_items i
-      ON i.drive_id = l.drive_id
-     AND i.id = l.item_id
-    ORDER BY l.occurred_at DESC, l.log_id DESC
-    LIMIT 300
-    `
-  );
+  const resolvedSearchParams = searchParams ? await searchParams : undefined;
+  const { page, pageSize } = getPagination(resolvedSearchParams, { page: 1, pageSize: 50 });
+
+  const total = await getRevokeLogCount();
+  const totalPages = Math.max(Math.ceil(total / pageSize), 1);
+  const clampedPage = Math.min(page, totalPages);
+  const offset = (clampedPage - 1) * pageSize;
+  const rows = await getRevokeLogsPage(pageSize, offset);
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Revoke Activity Logs</CardTitle>
-      </CardHeader>
-      <CardContent className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="text-left text-slate/70">
-            <tr>
-              <th className="py-2">Triggered At</th>
-              <th className="py-2">Requested By</th>
-              <th className="py-2">File</th>
-              <th className="py-2">Permission ID</th>
-              <th className="py-2">Outcome</th>
-              <th className="py-2">Reason</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => {
-              const detailHref =
-                row.drive_id && row.item_id ? `/dashboard/items/${encodeURIComponent(`${row.drive_id}::${row.item_id}`)}` : null;
-              const displayPath = itemPath(row);
-              const displayItemName = row.item_name || itemFallback(row);
-              const reason = row.failure_reason || row.warning || "--";
-              return (
-                <tr key={row.log_id} className="border-t">
-                  <td className="py-3 text-slate">
-                    <LocalDateTime value={row.occurred_at} />
-                  </td>
-                  <td className="py-3 text-ink">{requestedBy(row)}</td>
-                  <td className="py-3">
-                    <div className="max-w-[420px]">
-                      <div className="font-medium text-ink">
-                        {detailHref ? (
-                          <Link className="hover:underline" href={detailHref}>
-                            {displayItemName}
-                          </Link>
-                        ) : (
-                          displayItemName
-                        )}
-                      </div>
-                      {displayPath ? <div className="truncate text-xs text-slate">{displayPath}</div> : null}
-                      {row.item_web_url ? (
-                        <a className="text-xs text-slate hover:underline" href={row.item_web_url} target="_blank" rel="noreferrer">
-                          Open in M365
-                        </a>
-                      ) : null}
-                    </div>
-                  </td>
-                  <td className="py-3">
-                    <span className="font-mono text-xs text-slate">{row.permission_id || "--"}</span>
-                  </td>
-                  <td className="py-3">
-                    <span className={row.outcome === "success" ? "badge badge-ok" : "badge badge-error"}>
-                      {row.outcome === "success" ? "Success" : "Failed"}
-                    </span>
-                  </td>
-                  <td className="py-3 text-slate">{reason}</td>
-                </tr>
-              );
-            })}
-            {!rows.length ? (
+    <div className="grid gap-4">
+      <Card>
+        <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <CardTitle>Revoke Activity Logs</CardTitle>
+            <CardDescription>
+              {total.toLocaleString()} events • showing {rows.length.toLocaleString()}
+            </CardDescription>
+          </div>
+          <Button asChild variant="outline">
+            <a href="/api/admin/revoke-logs/export">Download Logs</a>
+          </Button>
+        </CardHeader>
+        <CardContent className="overflow-x-auto">
+          <form action="/admin/logs" method="get" className="mb-4 flex flex-wrap items-end gap-2">
+            <input type="hidden" name="page" value="1" />
+            <label className="text-sm text-slate" htmlFor="pageSize">
+              Rows per page
+            </label>
+            <Input id="pageSize" name="pageSize" type="number" min={10} max={200} defaultValue={String(pageSize)} className="w-24" />
+            <Button type="submit" variant="outline">
+              Apply
+            </Button>
+          </form>
+
+          <table className="w-full table-fixed text-sm">
+            <thead className="text-left text-slate/70">
               <tr>
-                <td className="py-8 text-center text-muted-foreground" colSpan={6}>
-                  No revoke logs found.
-                </td>
+                <th className="w-[168px] py-2 pr-3">Triggered At</th>
+                <th className="w-[176px] py-2 pr-3">Requested By</th>
+                <th className="w-[290px] py-2 pr-3">File</th>
+                <th className="w-[152px] py-2 pr-3">Permission ID</th>
+                <th className="w-[112px] py-2 pr-3">Outcome</th>
+                <th className="py-2">Reason</th>
               </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </CardContent>
-    </Card>
+            </thead>
+            <tbody>
+              {rows.map((row) => {
+                const detailHref =
+                  row.drive_id && row.item_id ? `/dashboard/items/${encodeURIComponent(`${row.drive_id}::${row.item_id}`)}` : null;
+                const displayPath = itemPath(row);
+                const displayItemName = row.item_name || itemFallback(row);
+                const reason = row.failure_reason || row.warning || "--";
+                return (
+                  <tr key={row.log_id} className="border-t align-top">
+                    <td className="py-3 pr-3 text-slate">
+                      <LocalDateTime value={row.occurred_at} />
+                    </td>
+                    <td className="truncate py-3 pr-3 text-ink" title={requestedBy(row)}>
+                      {requestedBy(row)}
+                    </td>
+                    <td className="py-3 pr-3">
+                      <div className="max-w-[290px]">
+                        <div className="truncate font-medium text-ink" title={displayItemName}>
+                          {detailHref ? (
+                            <Link className="hover:underline" href={detailHref}>
+                              {displayItemName}
+                            </Link>
+                          ) : (
+                            displayItemName
+                          )}
+                        </div>
+                        {displayPath ? <div className="truncate text-[11px] leading-4 text-slate">{displayPath}</div> : null}
+                        {row.item_web_url ? (
+                          <a
+                            className="truncate text-[11px] leading-4 text-slate hover:underline"
+                            href={row.item_web_url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Open in M365
+                          </a>
+                        ) : null}
+                      </div>
+                    </td>
+                    <td className="py-3 pr-3">
+                      <span className="block max-w-[148px] truncate font-mono text-[11px] text-slate" title={row.permission_id || "--"}>
+                        {row.permission_id || "--"}
+                      </span>
+                    </td>
+                    <td className="py-3 pr-3">
+                      <span className={row.outcome === "success" ? "badge badge-ok" : "badge badge-error"}>
+                        {row.outcome === "success" ? "Success" : "Failed"}
+                      </span>
+                    </td>
+                    <td className="py-3 text-slate">
+                      <div className="truncate" title={reason}>
+                        {reason}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {!rows.length ? (
+                <tr>
+                  <td className="py-8 text-center text-muted-foreground" colSpan={6}>
+                    No revoke logs found.
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+
+      <Pagination pathname="/admin/logs" page={clampedPage} pageSize={pageSize} totalItems={total} extraParams={{ pageSize }} />
+    </div>
   );
 }
 
