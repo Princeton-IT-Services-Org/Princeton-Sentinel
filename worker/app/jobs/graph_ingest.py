@@ -1847,12 +1847,13 @@ def _classify_permission_sync_error(error: Any) -> Dict[str, Any]:
         if error.response_text:
             try:
                 payload = json.loads(error.response_text)
-                payload_error = payload.get("error")
+                payload_error = payload.get("error") if isinstance(payload, dict) else None
                 if isinstance(payload_error, dict):
                     parsed_graph_code = _truncate_text(payload_error.get("code"), max_len=120)
                     parsed_graph_message = _truncate_text(payload_error.get("message"), max_len=500)
-            except Exception:
-                pass
+            except (ValueError, TypeError):
+                # Best-effort parse only; fall back to default GraphError fields.
+                payload_error = None
 
         if status_code == 404:
             category = "graph_not_found"
