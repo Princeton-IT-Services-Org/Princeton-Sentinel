@@ -1,0 +1,37 @@
+name: Check Staging Version
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate_staging_version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require STAGING_VERSION to increase
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+
+          HEAD_VERSION="$(node scripts/staging-version.cjs from-file .github/workflows/deploy-staging.yml)"
+          BASE_VERSION="$(node scripts/staging-version.cjs from-git "${BASE_SHA}" .github/workflows/deploy-staging.yml)"
+          COMPARISON="$(node scripts/staging-version.cjs compare "${HEAD_VERSION}" "${BASE_VERSION}")"
+
+          echo "PR STAGING_VERSION=${HEAD_VERSION}"
+          echo "main STAGING_VERSION=${BASE_VERSION}"
+
+          if [[ "${COMPARISON}" != "gt" ]]; then
+            echo "STAGING_VERSION in the PR must be strictly greater than the value on main." >&2
+            exit 1
+          fi
