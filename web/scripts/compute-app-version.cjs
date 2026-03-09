@@ -26,6 +26,8 @@ function bumpVersion(currentVersion, releaseType, commitTitle) {
   const effectiveReleaseType = resolveReleaseType(releaseType, commitTitle);
 
   switch (effectiveReleaseType) {
+    case "redeploy":
+      return `${version.major}.${version.minor}.${version.patch}`;
     case "major":
       return `${version.major + 1}.0.0`;
     case "minor":
