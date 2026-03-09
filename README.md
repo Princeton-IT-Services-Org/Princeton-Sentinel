@@ -25,7 +25,7 @@ docker compose up --build
 - **Group-based access control** uses the `groups` claim in the token (configure the claim for **ID tokens**). The app **does not** call Graph for group overage resolution.
   - Ensure the `groups` claim is configured for ID tokens (Token configuration in Entra).
   - If your tenant has group overage, the claim will be replaced by `_claim_names` and access will be denied.
-- The worker API is internal-only and **unauthenticated**; the web app passes the actor identity (oid/upn/name) in the request body for audit logging.
+- The worker API is internal-only and protected by `WORKER_INTERNAL_API_TOKEN`; the web app passes the actor identity (oid/upn/name) in the request body for audit logging.
 
 ### Admin-consented Graph application permissions
 
@@ -64,6 +64,7 @@ See `.env.example` for the full list. Key values:
 - `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, `ENTRA_CLIENT_SECRET`
 - `ADMIN_GROUP_ID`, `USER_GROUP_ID`
 - `DATABASE_URL`
+- `WORKER_API_URL`, `WORKER_INTERNAL_API_TOKEN`, `WORKER_HEARTBEAT_TOKEN`
 - `DB_WRITE_MAX_RETRIES`, `DB_WRITE_RETRY_BASE_MS`, `DB_WRITE_RETRY_MAX_MS`, `DB_WRITE_RETRY_JITTER_MS`
 - `GRAPH_MAX_CONCURRENCY`, `GRAPH_MAX_RETRIES`, `GRAPH_CONNECT_TIMEOUT`, `GRAPH_READ_TIMEOUT`
 - `GRAPH_PAGE_SIZE`, `GRAPH_PERMISSIONS_BATCH_SIZE`, `GRAPH_PERMISSIONS_STALE_AFTER_HOURS`

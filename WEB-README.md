@@ -79,7 +79,7 @@ NPM scripts:
 - If token exists but group check fails:
   - API -> `403`
   - pages -> redirect `/forbidden`
-- `/api/internal/worker-heartbeat` is intentionally exempt from auth in middleware.
+- `/api/internal/worker-heartbeat` is intentionally exempt from middleware auth and instead validates `WORKER_HEARTBEAT_TOKEN`.
 
 ---
 
@@ -148,7 +148,7 @@ This dual model keeps dashboards fast while still enabling on-demand source-of-t
 - `POST /api/worker/pause` -> posts `job_id` + actor identity to worker
 - `POST /api/worker/resume` -> posts `job_id` + actor identity to worker
 
-All admin-only. The web layer is the policy gate; worker endpoints are internal.
+All admin-only. The web layer is the policy gate; worker endpoints are internal and authenticated with `WORKER_INTERNAL_API_TOKEN`.
 
 ### Graph APIs
 
@@ -175,7 +175,7 @@ All admin-only. The web layer is the policy gate; worker endpoints are internal.
 
 - `POST /api/internal/worker-heartbeat`
   - Liveness endpoint for worker heartbeat thread
-  - No auth by design
+  - Authenticated with `X-Worker-Heartbeat-Token` / `WORKER_HEARTBEAT_TOKEN`
   - Returns `{ ok: true, received_at: ... }`
 
 ---
@@ -280,6 +280,8 @@ Required:
 - `ADMIN_GROUP_ID`
 - `USER_GROUP_ID`
 - `WORKER_API_URL`
+- `WORKER_INTERNAL_API_TOKEN`
+- `WORKER_HEARTBEAT_TOKEN`
 
 Optional/tuning:
 
@@ -292,7 +294,7 @@ Optional/tuning:
 
 - Route authorization is centralized in middleware and reinforced in server helpers (`requireUser`, `requireAdmin`).
 - The app intentionally mixes cached DB intelligence with selective live Graph checks.
-- Worker heartbeat endpoint is intentionally lightweight and unauthenticated (internal-network assumption).
+- Worker heartbeat endpoint is intentionally lightweight and authenticated with a shared heartbeat token.
 - Revoke flow is best-effort audited; failures in auxiliary logging are surfaced as warnings, not hard failures after Graph delete succeeds.
 - Admin control pages (`/admin`, `/admin/analytics`, `/admin/runs`) use live polling every 5 seconds for near-real-time state.
 - `/admin/runs` shows latest run per job type; clicking a type opens `/admin/runs/[jobType]` for paginated history, and clicking a run opens `/admin/runs/[jobType]/[runId]` for full run logs (no live polling on detail pages).

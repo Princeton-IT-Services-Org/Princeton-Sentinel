@@ -1,6 +1,5 @@
 "use client";
 import { ActivityTopSitesBar, ActivityTopSitesSharesModsBar } from "@/components/activity-summary-graphs";
-import React from "react";
 
 export default function ActivitySummaryGraphsClient({
   topSitesByActiveUsers,
