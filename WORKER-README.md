@@ -73,7 +73,7 @@ Provides consolidated admin/control-plane status.
 
 ### Auth note
 
-An auth helper module exists (`app/auth.py`) but control endpoints are currently designed for internal use and are invoked via the web app proxy layer.
+Control endpoints are designed for internal use, are invoked via the web app proxy layer, and require `X-Worker-Internal-Token` / `WORKER_INTERNAL_API_TOKEN`.
 
 ---
 
@@ -108,7 +108,8 @@ For scheduled and run-now execution:
 
 Supported job types:
 
-- `graph_ingest` only
+- `graph_ingest`
+- `mv_refresh`
 
 Unknown job types raise runtime error and mark run as failed.
 
@@ -302,7 +303,7 @@ Persistent logs/audit:
 
 ## Integration with Web
 
-Web invokes worker through `WORKER_API_URL`:
+Web invokes worker through `WORKER_API_URL` and authenticates requests with `WORKER_INTERNAL_API_TOKEN`:
 
 - status
 - run-now
@@ -344,6 +345,8 @@ Required:
 - `ENTRA_TENANT_ID`
 - `ENTRA_CLIENT_ID`
 - `ENTRA_CLIENT_SECRET`
+- `WORKER_INTERNAL_API_TOKEN`
+- `WORKER_HEARTBEAT_TOKEN`
 
 Scheduler:
 
