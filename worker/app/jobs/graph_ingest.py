@@ -2015,7 +2015,7 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
         SET permissions_last_synced_at = v.synced_at,
             permissions_last_error_at = v.error_at,
             permissions_last_error = v.error,
-            permissions_last_error_details = v.error_details
+            permissions_last_error_details = v.error_details::jsonb
         FROM (VALUES %s) AS v(drive_id, item_id, synced_at, error_at, error, error_details)
         WHERE d.drive_id = v.drive_id AND d.id = v.item_id
     """
