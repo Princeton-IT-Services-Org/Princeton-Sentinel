@@ -99,7 +99,7 @@ async function CopilotPage({ searchParams }: { searchParams?: Promise<SearchPara
 
   const errorWhere = errorWheres.join(" AND ");
 
-  const [summaryRows, errorCount, topicRows, toolRows, newVsReturnRows, responseTimeRows, singleVsMultiRows, errorsPerAgentRows, errorDetailRows, convsPerAgentRows] = await Promise.all([
+  const [summaryRows, uniqueUserCountRows, errorCount, topicRows, toolRows, newVsReturnRows, responseTimeRows, singleVsMultiRows, errorsPerAgentRows, errorDetailRows, convsPerAgentRows] = await Promise.all([
     query<any>(
       `SELECT
          date_trunc('day', started_at)::date AS day,
@@ -117,6 +117,12 @@ async function CopilotPage({ searchParams }: { searchParams?: Promise<SearchPara
        WHERE ${sessionWhere}
        GROUP BY 1
        ORDER BY day DESC`,
+      sessionParams
+    ),
+    query<any>(
+      `SELECT COUNT(DISTINCT user_id)::int AS unique_users
+       FROM copilot_sessions
+       WHERE ${sessionWhere}`,
       sessionParams
     ),
     query<any>(
@@ -202,10 +208,10 @@ async function CopilotPage({ searchParams }: { searchParams?: Promise<SearchPara
   let totalResolved = 0;
   let totalEscalated = 0;
   let totalAbandoned = 0;
-  let totalUniqueUsers = 0;
   let turnSum = 0;
   let durationSum = 0;
   let durationCount = 0;
+  const totalUniqueUsers = Number(uniqueUserCountRows[0]?.unique_users || 0);
   let totalErrors = Number(errorCount[0]?.count || 0);
 
   for (const r of summaryRows) {
@@ -213,7 +219,6 @@ async function CopilotPage({ searchParams }: { searchParams?: Promise<SearchPara
     totalResolved += Number(r.resolved || 0);
     totalEscalated += Number(r.escalated || 0);
     totalAbandoned += Number(r.abandoned || 0);
-    totalUniqueUsers += Number(r.unique_users || 0);
     turnSum += Number(r.avg_turns || 0) * Number(r.total_sessions || 0);
     const dur = Number(r.avg_duration_min || 0);
     if (dur > 0) {
