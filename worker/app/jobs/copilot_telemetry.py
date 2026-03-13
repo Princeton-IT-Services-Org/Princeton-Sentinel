@@ -24,6 +24,7 @@ from datetime import datetime, timezone, timedelta
 import requests
 
 from app import db
+from app.jobs.mv_refresh import enqueue_impacted_mvs_for_tables
 from app.runtime_logger import emit
 from app.utils import log_job_run_log
 
@@ -60,9 +61,19 @@ def run_copilot_telemetry(*, run_id: str, job_id: str, actor=None):
                     context={"job_id": job_id, "lookback_hours": lookback_hours, "since": since_iso})
 
     # --- Stage 1: Conversation sessions ---
+    queued_mvs_summary = {"tables": [], "queued": 0, "queued_mvs": []}
     sessions = _fetch_sessions(since_iso)
     if sessions:
         _upsert_sessions(sessions)
+        try:
+            queued_mvs_summary = enqueue_impacted_mvs_for_tables(["copilot_sessions"])
+            emit(
+                "INFO",
+                "COPILOT_TELEMETRY",
+                f"Queued impacted MVs after session upsert: queued={queued_mvs_summary.get('queued', 0)} tables={queued_mvs_summary.get('tables', [])}",
+            )
+        except Exception as exc:
+            emit("WARN", "COPILOT_TELEMETRY", f"Failed to queue impacted MVs after session upsert: error={exc}")
 
     # --- Stage 2: Raw events ---
     events = _fetch_events(since_iso)
@@ -100,6 +111,7 @@ def run_copilot_telemetry(*, run_id: str, job_id: str, actor=None):
         "topics": len(topics),
         "tools": len(tools),
         "response_times": len(response_times),
+        "mv_refresh_queue": queued_mvs_summary,
     })
 
 
