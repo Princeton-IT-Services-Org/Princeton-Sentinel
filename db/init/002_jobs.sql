@@ -63,8 +63,18 @@ INSERT INTO jobs (job_id, job_type, tenant_id, config, enabled)
 SELECT gen_random_uuid(), 'mv_refresh', 'default', '{"max_views_per_run": 20}'::jsonb, true
 WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE job_type = 'mv_refresh');
 
+INSERT INTO jobs (job_id, job_type, tenant_id, config, enabled)
+SELECT gen_random_uuid(), 'copilot_telemetry', 'default', '{"lookback_hours": 24}'::jsonb, true
+WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE job_type = 'copilot_telemetry');
+
 INSERT INTO job_schedules (schedule_id, job_id, cron_expr, next_run_at, enabled)
 SELECT gen_random_uuid(), j.job_id, '*/5 * * * *', NULL, true
 FROM jobs j
 LEFT JOIN job_schedules js ON js.job_id = j.job_id
 WHERE j.job_type = 'mv_refresh' AND js.job_id IS NULL;
+
+INSERT INTO job_schedules (schedule_id, job_id, cron_expr, next_run_at, enabled)
+SELECT gen_random_uuid(), j.job_id, '*/60 * * * *', NULL, true
+FROM jobs j
+LEFT JOIN job_schedules js ON js.job_id = j.job_id
+WHERE j.job_type = 'copilot_telemetry' AND js.job_id IS NULL;

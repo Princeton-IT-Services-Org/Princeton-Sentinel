@@ -26,6 +26,7 @@ export default function AppShell({ userLabel, canAdmin, children }: AppShellProp
     { href: "/dashboard/risk", label: "Risk", active: pathname.startsWith("/dashboard/risk") },
     { href: "/dashboard/users", label: "Users", active: pathname.startsWith("/dashboard/users") },
     { href: "/dashboard/groups", label: "Groups", active: pathname.startsWith("/dashboard/groups") },
+    { href: "/dashboard/copilot", label: "Copilot", active: pathname.startsWith("/dashboard/copilot") },
   ];
 
   return (

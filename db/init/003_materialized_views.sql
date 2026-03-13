@@ -627,6 +627,27 @@ GROUP BY p.drive_id, p.item_id, p.link_scope, date_trunc('day', p.synced_at);
 CREATE UNIQUE INDEX IF NOT EXISTS mv_msgraph_item_link_daily_uidx
 ON mv_msgraph_item_link_daily (drive_id, item_id, link_scope, day);
 
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_copilot_summary AS
+SELECT
+  date_trunc('day', started_at)::date AS day,
+  bot_id,
+  bot_name,
+  COUNT(*)::int AS total_sessions,
+  COALESCE(AVG(turn_count), 0)::numeric(6,1) AS avg_turns,
+  COUNT(*) FILTER (WHERE outcome = 'resolved')::int AS resolved,
+  COUNT(*) FILTER (WHERE outcome = 'escalated')::int AS escalated,
+  COUNT(*) FILTER (WHERE outcome = 'abandoned')::int AS abandoned,
+  COUNT(DISTINCT user_id)::int AS unique_users,
+  COUNT(*) FILTER (WHERE is_test = true)::int AS test_sessions,
+  MIN(started_at) AS earliest_session,
+  MAX(started_at) AS latest_session
+FROM copilot_sessions
+WHERE deleted_at IS NULL
+GROUP BY 1, 2, 3;
+
+CREATE UNIQUE INDEX IF NOT EXISTS mv_copilot_summary_uidx
+ON mv_copilot_summary (day, bot_id);
+
 CREATE UNIQUE INDEX IF NOT EXISTS mv_dependencies_uidx
 ON mv_dependencies (mv_name, table_name);
 
@@ -674,5 +695,6 @@ INSERT INTO mv_dependencies (mv_name, table_name) VALUES
   ('mv_msgraph_user_activity_daily', 'msgraph_drives'),
   ('mv_msgraph_group_member_counts', 'msgraph_group_memberships'),
   ('mv_msgraph_item_link_daily', 'msgraph_drive_item_permissions'),
-  ('mv_msgraph_item_link_daily', 'msgraph_drives')
+  ('mv_msgraph_item_link_daily', 'msgraph_drives'),
+  ('mv_copilot_summary', 'copilot_sessions')
 ON CONFLICT DO NOTHING;

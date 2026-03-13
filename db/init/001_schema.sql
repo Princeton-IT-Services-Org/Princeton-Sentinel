@@ -167,6 +167,77 @@ CREATE TABLE IF NOT EXISTS msgraph_delta_state (
   PRIMARY KEY (resource_type, partition_key)
 );
 
+-- Copilot Studio telemetry tables
+CREATE TABLE IF NOT EXISTS copilot_sessions (
+  session_id text PRIMARY KEY,
+  bot_id text,
+  bot_name text,
+  channel text,
+  started_at timestamptz,
+  ended_at timestamptz,
+  outcome text,
+  turn_count int DEFAULT 0,
+  user_id text,
+  is_test boolean DEFAULT false,
+  synced_at timestamptz NOT NULL DEFAULT now(),
+  deleted_at timestamptz
+);
+
+CREATE TABLE IF NOT EXISTS copilot_events (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  session_id text REFERENCES copilot_sessions(session_id),
+  event_name text NOT NULL,
+  event_ts timestamptz NOT NULL,
+  properties jsonb DEFAULT '{}'::jsonb,
+  synced_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_copilot_events_dedup UNIQUE (session_id, event_name, event_ts)
+);
+
+CREATE TABLE IF NOT EXISTS copilot_errors (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  session_id text,
+  agent_name text,
+  channel text,
+  error_code text,
+  error_message text,
+  error_ts timestamptz NOT NULL,
+  synced_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_copilot_errors_dedup UNIQUE (session_id, error_code, error_ts)
+);
+
+CREATE TABLE IF NOT EXISTS copilot_topic_stats (
+  topic_name text PRIMARY KEY,
+  avg_duration_sec numeric(10,2) DEFAULT 0,
+  median_duration_sec numeric(10,2) DEFAULT 0,
+  max_duration_sec numeric(10,2) DEFAULT 0,
+  execution_count int DEFAULT 0,
+  synced_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS copilot_tool_stats (
+  tool_name text PRIMARY KEY,
+  tool_type text,
+  total_calls int DEFAULT 0,
+  successful_calls int DEFAULT 0,
+  failed_calls int DEFAULT 0,
+  success_rate numeric(5,2) DEFAULT 0,
+  avg_duration_sec numeric(10,2) DEFAULT 0,
+  p50_duration_sec numeric(10,2) DEFAULT 0,
+  p95_duration_sec numeric(10,2) DEFAULT 0,
+  unique_conversations int DEFAULT 0,
+  synced_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS copilot_response_times (
+  time_bucket timestamptz PRIMARY KEY,
+  avg_response_sec numeric(10,2) DEFAULT 0,
+  p50_response_sec numeric(10,2) DEFAULT 0,
+  p95_response_sec numeric(10,2) DEFAULT 0,
+  p99_response_sec numeric(10,2) DEFAULT 0,
+  total_responses int DEFAULT 0,
+  synced_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- Update tracking
 CREATE TABLE IF NOT EXISTS table_update_log (
   table_name text PRIMARY KEY,
@@ -277,6 +348,25 @@ WHERE deleted_at IS NULL AND link_scope IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_drive_item_permission_grants_active_item
 ON msgraph_drive_item_permission_grants (drive_id, item_id)
 WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_copilot_sessions_started
+ON copilot_sessions (started_at DESC)
+WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_copilot_sessions_bot
+ON copilot_sessions (bot_id, started_at DESC)
+WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_copilot_sessions_user
+ON copilot_sessions (user_id)
+WHERE deleted_at IS NULL AND user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_copilot_events_session
+ON copilot_events (session_id, event_ts);
+CREATE INDEX IF NOT EXISTS idx_copilot_events_name_ts
+ON copilot_events (event_name, event_ts DESC);
+CREATE INDEX IF NOT EXISTS idx_copilot_errors_ts
+ON copilot_errors (error_ts DESC);
+CREATE INDEX IF NOT EXISTS idx_copilot_errors_code
+ON copilot_errors (error_code, error_ts DESC);
+CREATE INDEX IF NOT EXISTS idx_copilot_response_times_bucket
+ON copilot_response_times (time_bucket DESC);
 
 -- Triggered MV queue invalidation on base table changes (statement-level)
 CREATE TRIGGER trg_refresh_mvs_users
