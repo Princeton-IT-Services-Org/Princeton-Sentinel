@@ -222,7 +222,6 @@ async function CopilotPage({ searchParams }: { searchParams?: Promise<SearchPara
     }
   }
 
-  const avgTurns = totalSessions > 0 ? (turnSum / totalSessions).toFixed(1) : "0";
   const avgDuration = durationCount > 0 ? (durationSum / durationCount).toFixed(1) : "0";
 
   // ── Chart data ──
