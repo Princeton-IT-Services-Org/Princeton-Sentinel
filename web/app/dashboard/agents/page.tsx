@@ -20,6 +20,7 @@ import PageHeader from "@/components/page-header";
 import FilterBar from "@/components/filter-bar";
 import MetricGrid from "@/components/metric-grid";
 import { MetricCard } from "@/components/metric-card";
+import { UniqueUsersCard, TotalConversationsCard, EscalatedOutcomeCard } from "@/components/unique-users-card";
 
 export const dynamic = "force-dynamic";
 
@@ -49,6 +50,9 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
   const hoursParam = getParam(resolvedSearchParams, "hours") || "2160"; // default 90 days
   const hours = Number(hoursParam) || 2160;
   const intervalStr = `${hours} hours`;
+
+  // Dynamic grain matching Azure Workbook's {TimeRange:grain}
+  const grainStr = "2 hours";
 
   const agentFilter = getParam(resolvedSearchParams, "agent") || "";
   const channelFilter = getParam(resolvedSearchParams, "channel") || "";
@@ -102,7 +106,7 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
 
   const errorWhere = errorWheres.join(" AND ");
 
-  const [summaryRows, uniqueUserCountRows, errorCount, topicRows, toolRows, newVsReturnRows, responseTimeRows, singleVsMultiRows, errorsPerAgentRows, errorDetailRows, convsPerAgentRows] = await Promise.all([
+  const [summaryRows, uniqueUserCountRows, uniqueUserIdRows, errorCount, avgDurationRows, topicRows, toolRows, newVsReturnRows, responseTimeRows, singleVsMultiRows, errorsPerAgentRows, errorDetailRows, convsPerAgentRows, latestSessionRows, escalatedRows] = await Promise.all([
     query<any>(
       `SELECT
          date_trunc('day', started_at)::date AS day,
@@ -129,8 +133,29 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
       sessionParams
     ),
     query<any>(
+      `SELECT DISTINCT user_id
+       FROM copilot_sessions
+       WHERE ${sessionWhere} AND user_id IS NOT NULL
+       ORDER BY user_id
+       LIMIT 500`,
+      sessionParams
+    ),
+    query<any>(
       `SELECT COUNT(*)::int AS count FROM copilot_errors
-       WHERE error_ts > now() - interval '${intervalStr}'`
+       WHERE ${errorWhere}`,
+      errorParams
+    ),
+    // Simple avg duration (not weighted) — matches workbook logic
+    query<any>(
+      `SELECT COALESCE(
+         ROUND(AVG(EXTRACT(EPOCH FROM (ended_at - started_at)) / 60.0)::numeric, 1),
+         0
+       ) AS avg_duration_min
+       FROM copilot_sessions
+       WHERE ${sessionWhere}
+         AND ended_at > started_at
+         AND EXTRACT(EPOCH FROM (ended_at - started_at)) <= 3600`,
+      sessionParams
     ),
     query<any>(
       `SELECT topic_name, avg_duration_sec, median_duration_sec,
@@ -161,11 +186,18 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
       sessionParams
     ),
     query<any>(
-      `SELECT time_bucket, avg_response_sec, p50_response_sec,
-              p95_response_sec, p99_response_sec, total_responses
+      `SELECT
+         date_bin('${grainStr}', time_bucket, '2000-01-01') AS bucket,
+         ROUND((SUM(avg_response_sec * total_responses) / NULLIF(SUM(total_responses), 0))::numeric, 2) AS avg_response_sec,
+         ROUND((SUM(p50_response_sec * total_responses) / NULLIF(SUM(total_responses), 0))::numeric, 2) AS p50_response_sec,
+         ROUND((SUM(p95_response_sec * total_responses) / NULLIF(SUM(total_responses), 0))::numeric, 2) AS p95_response_sec,
+         ROUND((SUM(p99_response_sec * total_responses) / NULLIF(SUM(total_responses), 0))::numeric, 2) AS p99_response_sec,
+         SUM(total_responses)::int AS total_responses
        FROM copilot_response_times
        WHERE time_bucket > now() - interval '${intervalStr}'
-       ORDER BY time_bucket ASC`
+       GROUP BY bucket
+       HAVING SUM(total_responses) > 0
+       ORDER BY bucket ASC`
     ),
     query<any>(
       `SELECT
@@ -204,6 +236,27 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
        GROUP BY bot_id`,
       sessionParams
     ),
+    // Latest 10 conversation IDs with agent name
+    query<any>(
+      `SELECT session_id, bot_id, started_at
+       FROM copilot_sessions
+       WHERE ${sessionWhere} AND session_id IS NOT NULL
+       ORDER BY started_at DESC
+       LIMIT 10`,
+      sessionParams
+    ),
+    // Escalated conversations with error reason (for outcome hover)
+    query<any>(
+      `SELECT s.session_id, s.bot_id, s.started_at,
+              (SELECT e.error_code FROM copilot_errors e
+               WHERE e.session_id = s.session_id
+               ORDER BY e.error_ts DESC LIMIT 1) AS error_reason
+       FROM copilot_sessions s
+       WHERE ${sessionWhere} AND s.outcome = 'escalated'
+       ORDER BY s.started_at DESC
+       LIMIT 50`,
+      sessionParams
+    ),
   ]);
 
   // ── Aggregate metrics ──
@@ -212,10 +265,20 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
   let totalEscalated = 0;
   let totalAbandoned = 0;
   let turnSum = 0;
-  let durationSum = 0;
-  let durationCount = 0;
   const totalUniqueUsers = Number(uniqueUserCountRows[0]?.unique_users || 0);
   let totalErrors = Number(errorCount[0]?.count || 0);
+  const avgDuration = String(avgDurationRows[0]?.avg_duration_min ?? "0");
+  const uniqueUserIds: string[] = uniqueUserIdRows.map((r: any) => String(r.user_id));
+  const latestSessions: { id: string; agent: string }[] = latestSessionRows.map((r: any) => ({
+    id: String(r.session_id),
+    agent: r.bot_id ?? "Unknown",
+  }));
+  const escalatedSessions: { id: string; agent: string; datetime: string; reason: string }[] = escalatedRows.map((r: any) => ({
+    id: String(r.session_id),
+    agent: r.bot_id ?? "Unknown",
+    datetime: typeof r.started_at === "string" ? r.started_at.slice(0, 19).replace("T", " ") : new Date(r.started_at).toISOString().slice(0, 19).replace("T", " "),
+    reason: r.error_reason ?? "Unknown",
+  }));
 
   for (const r of summaryRows) {
     totalSessions += Number(r.total_sessions || 0);
@@ -223,14 +286,7 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
     totalEscalated += Number(r.escalated || 0);
     totalAbandoned += Number(r.abandoned || 0);
     turnSum += Number(r.avg_turns || 0) * Number(r.total_sessions || 0);
-    const dur = Number(r.avg_duration_min || 0);
-    if (dur > 0) {
-      durationSum += dur * Number(r.total_sessions || 0);
-      durationCount += Number(r.total_sessions || 0);
-    }
   }
-
-  const avgDuration = durationCount > 0 ? (durationSum / durationCount).toFixed(1) : "0";
 
   // ── Chart data ──
   const dailyMap = new Map<string, number>();
@@ -400,8 +456,8 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
 
       {/* ── Overview ── */}
       <MetricGrid>
-        <MetricCard label="Total Conversations" value={totalSessions.toLocaleString()} />
-        <MetricCard label="Unique Users" value={totalUniqueUsers.toLocaleString()} />
+        <TotalConversationsCard count={totalSessions.toLocaleString()} sessions={latestSessions} />
+        <UniqueUsersCard count={totalUniqueUsers.toLocaleString()} userIds={uniqueUserIds} />
         <MetricCard label="Avg Duration" value={`${avgDuration} mins`} />
         <MetricCard label="Errors" value={totalErrors.toLocaleString()} />
       </MetricGrid>
@@ -417,15 +473,17 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Conversation outcomes</CardTitle>
-            <CardDescription>Resolved vs escalated vs abandoned</CardDescription>
-          </CardHeader>
-          <CardContent className="h-72">
-            <CopilotOutcomePieChartClient data={outcomePie} />
-          </CardContent>
-        </Card>
+        <EscalatedOutcomeCard escalatedCount={totalEscalated} escalatedSessions={escalatedSessions}>
+          <Card>
+            <CardHeader>
+              <CardTitle>Conversation outcomes</CardTitle>
+              <CardDescription>Resolved vs escalated vs abandoned</CardDescription>
+            </CardHeader>
+            <CardContent className="h-72">
+              <CopilotOutcomePieChartClient data={outcomePie} />
+            </CardContent>
+          </Card>
+        </EscalatedOutcomeCard>
       </div>
 
       {/* ── User Analytics ── */}
@@ -454,7 +512,7 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
         <Card>
           <CardHeader>
             <CardTitle>Single-turn vs multi-turn</CardTitle>
-            <CardDescription>Conversation complexity breakdown</CardDescription>
+            <CardDescription>Conversation complexity &amp; engagement</CardDescription>
           </CardHeader>
           <CardContent className="h-72">
             <CopilotOutcomePieChartClient data={singleVsMulti} />
@@ -464,17 +522,15 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
 
       {/* ── Performance ── */}
       <h2 className="mt-6 mb-3 text-lg font-semibold">Performance</h2>
-      <div className="grid gap-3">
-        <Card>
-          <CardHeader>
-            <CardTitle>Agent response time</CardTitle>
-            <CardDescription>BotMessageReceived → BotMessageSend latency over time (Avg, P50, P95, P99)</CardDescription>
-          </CardHeader>
-          <CardContent className="h-72">
-            <CopilotResponseTimeAreaChartClient data={responseTimeData} />
-          </CardContent>
-        </Card>
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Agent response time</CardTitle>
+          <CardDescription>Agent message received → Agent message sent latency over time (Avg, P50, P95, P99)</CardDescription>
+        </CardHeader>
+        <CardContent className="h-96 pr-6">
+          <CopilotResponseTimeAreaChartClient data={responseTimeData} />
+        </CardContent>
+      </Card>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
         <Card>
           <CardHeader>
