@@ -59,7 +59,7 @@ export function ActivityTable({ items, windowDays }: { items: ActivityRow[]; win
       },
       {
         id: "shares",
-        header: `Link shares (${windowLabel(windowDays)})`,
+        header: `Link permissions seen (${windowLabel(windowDays)})`,
         sortValue: (s: ActivityRow) => s.shares,
         cell: (s: ActivityRow) => <span className="text-muted-foreground">{s.shares.toLocaleString()}</span>,
       },

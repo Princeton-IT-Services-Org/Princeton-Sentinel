@@ -95,7 +95,7 @@ async function ActivityPage({ searchParams }: { searchParams?: Promise<SearchPar
     <main className="ps-page">
       <PageHeader
         title="Activity"
-        subtitle={`Based on items' current lastModifiedDateTime and link permissions. Window: ${windowDays ?? "all"}d.`}
+        subtitle={`Based on item timestamps and cached link-permission sync observations. Window: ${windowDays ?? "all"}d.`}
       />
 
       <form action="/dashboard/activity" method="get">

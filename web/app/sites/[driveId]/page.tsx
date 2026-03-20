@@ -34,7 +34,7 @@ async function DriveDetailPage({
   const driveRows = await query<any>(
     `
     WITH last_write AS (
-      SELECT MAX(i.modified_dt) AS last_write_dt
+      SELECT MAX(COALESCE(i.modified_dt, i.created_dt)) AS last_write_dt
       FROM msgraph_drive_items i
       WHERE i.deleted_at IS NULL AND i.drive_id = $1
     ),
@@ -60,7 +60,7 @@ async function DriveDetailPage({
       s.raw_json->>'webTemplate' AS site_template,
       lw.last_write_dt,
       ls.last_share_dt,
-      GREATEST(lw.last_write_dt, ls.last_share_dt) AS last_activity_dt
+      lw.last_write_dt AS last_activity_dt
     FROM msgraph_drives d
     LEFT JOIN msgraph_users u ON u.id = d.owner_id AND u.deleted_at IS NULL
     LEFT JOIN msgraph_sites s ON s.id = d.site_id AND s.deleted_at IS NULL
@@ -312,7 +312,7 @@ async function DriveDetailPage({
               <span className="font-medium">{formatNumber(activitySummary.modified_items || 0)}</span>
             </div>
             <div className="flex items-baseline justify-between">
-              <span className="text-muted-foreground">Link shares</span>
+              <span className="text-muted-foreground">Link permissions seen</span>
               <span className="font-medium">{formatNumber(activitySummary.shares || 0)}</span>
             </div>
             <div className="flex items-baseline justify-between">
@@ -347,7 +347,9 @@ async function DriveDetailPage({
       <Card>
         <CardHeader>
           <CardTitle>Activity trend</CardTitle>
-          <CardDescription>Distribution by date (window: {windowDays == null ? "All-time" : `${windowDays}d`})</CardDescription>
+          <CardDescription>
+            Distribution by date from item timestamps and cached permission sync observations (window: {windowDays == null ? "All-time" : `${windowDays}d`})
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <SiteActivityTrendTable points={series} maxModified={maxModified} maxShares={maxShares} windowDays={windowDays} />

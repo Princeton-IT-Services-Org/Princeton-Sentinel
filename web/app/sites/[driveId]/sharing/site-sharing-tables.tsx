@@ -114,7 +114,7 @@ export function SiteExternalPrincipalsTable({ principals }: { principals: Extern
       },
       {
         id: "lastGranted",
-        header: "Last grant seen",
+        header: "Last permission sync seen",
         sortValue: (p: ExternalPrincipalRow) => parseIsoToTs(p.lastGrantedDateTime),
         cell: (p: ExternalPrincipalRow) => <span className="text-muted-foreground">{formatIsoDateTime(p.lastGrantedDateTime)}</span>,
       },
@@ -178,7 +178,7 @@ export function SiteMostSharedItemsTable({ items }: { items: MostSharedItemRow[]
       },
       {
         id: "lastShared",
-        header: "Last link share seen",
+        header: "Last permission sync seen",
         sortValue: (it: MostSharedItemRow) => parseIsoToTs(it.lastSharedDateTime),
         cell: (it: MostSharedItemRow) => <span className="text-muted-foreground">{formatIsoDateTime(it.lastSharedDateTime)}</span>,
       },
