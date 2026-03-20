@@ -143,7 +143,7 @@ export function SharingSitesTable({
       },
       {
         id: "lastShare",
-        header: "Last link share seen",
+        header: "Last permission sync seen",
         sortValue: (s: SiteRow) => parseIsoToTs(s.last_shared_at),
         cell: (s: SiteRow) => <span className="text-muted-foreground">{formatIsoDateTime(s.last_shared_at)}</span>,
       },

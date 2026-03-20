@@ -65,7 +65,7 @@ export function SiteActivityTrendTable({
       },
       {
         id: "shares",
-        header: `Link shares (${windowLabel})`,
+        header: `Link permissions seen (${windowLabel})`,
         sortValue: (p: ActivityPoint) => p.shares,
         cell: (p: ActivityPoint) => (
           <div className="flex items-center gap-3">
