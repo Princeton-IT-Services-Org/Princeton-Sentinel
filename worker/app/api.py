@@ -5,6 +5,7 @@ from flask import Flask, g, jsonify, request
 from app import db
 from app.auth import require_internal_token
 from app.heartbeat import get_heartbeat_status, is_heartbeat_healthy
+from app.license import LicenseFeatureError, get_current_license, get_job_type_license_feature, require_license_feature
 from app.runtime_logger import emit
 from app.scheduler import get_scheduler_status, run_job_once
 from app.utils import log_audit_event
@@ -97,12 +98,14 @@ def create_app():
         except Exception:
             db_ok = False
         heartbeat = get_heartbeat_status()
+        license_summary = get_current_license()
         return jsonify(
             {
                 "ok": db_ok and is_heartbeat_healthy(),
                 "db": db_ok,
                 "scheduler": get_scheduler_status(),
                 "heartbeat": heartbeat,
+                "license": license_summary,
             }
         )
 
@@ -126,7 +129,7 @@ def create_app():
             ORDER BY j.job_type
             """
         )
-        return jsonify({"jobs": rows})
+        return jsonify({"jobs": rows, "license": get_current_license()})
 
     @app.post("/jobs/run-now")
     @require_internal_token
@@ -139,6 +142,14 @@ def create_app():
         job = db.fetch_one("SELECT job_id, job_type FROM jobs WHERE job_id = %s", [job_id])
         if not job:
             return jsonify({"error": "job_not_found"}), 404
+
+        try:
+            require_license_feature("job_control")
+            feature_key = get_job_type_license_feature(job.get("job_type"))
+            if feature_key:
+                require_license_feature(feature_key)
+        except LicenseFeatureError as exc:
+            return jsonify({"error": str(exc), "license": exc.summary}), 403
 
         actor = _actor_from_body(body)
         log_audit_event(
@@ -167,6 +178,11 @@ def create_app():
         if not job:
             return jsonify({"error": "job_not_found"}), 404
 
+        try:
+            require_license_feature("job_control")
+        except LicenseFeatureError as exc:
+            return jsonify({"error": str(exc), "license": exc.summary}), 403
+
         updated = db.execute("UPDATE job_schedules SET enabled = false, next_run_at = NULL WHERE job_id = %s", [job_id])
         if updated <= 0:
             return jsonify({"error": "schedule_not_found"}), 404
@@ -191,6 +207,11 @@ def create_app():
         job = db.fetch_one("SELECT job_id, job_type FROM jobs WHERE job_id = %s", [job_id])
         if not job:
             return jsonify({"error": "job_not_found"}), 404
+
+        try:
+            require_license_feature("job_control")
+        except LicenseFeatureError as exc:
+            return jsonify({"error": str(exc), "license": exc.summary}), 403
 
         updated = db.execute("UPDATE job_schedules SET enabled = true, next_run_at = NULL WHERE job_id = %s", [job_id])
         if updated <= 0:
