@@ -5,7 +5,13 @@ from flask import Flask, g, jsonify, request
 from app import db
 from app.auth import require_internal_token
 from app.heartbeat import get_heartbeat_status, is_heartbeat_healthy
-from app.license import LicenseFeatureError, get_current_license, get_job_type_license_feature, require_license_feature
+from app.license import (
+    LicenseFeatureError,
+    get_current_license,
+    get_job_type_license_feature,
+    get_license_lookup_failure_summary,
+    require_license_feature,
+)
 from app.runtime_logger import emit
 from app.scheduler import get_scheduler_status, run_job_once
 from app.utils import log_audit_event
@@ -98,7 +104,14 @@ def create_app():
         except Exception:
             db_ok = False
         heartbeat = get_heartbeat_status()
-        license_summary = get_current_license()
+        try:
+            license_summary = get_current_license()
+        except Exception as exc:
+            text = str(exc).replace("\n", " ").replace("\r", " ").strip() or "license_lookup_failed"
+            if len(text) > 220:
+                text = text[:217] + "..."
+            emit("ERROR", "FLASK_API", f"Health check license lookup failed: error={text}")
+            license_summary = get_license_lookup_failure_summary(text)
         return jsonify(
             {
                 "ok": db_ok and is_heartbeat_healthy(),

@@ -88,6 +88,10 @@ def _fallback_summary(error: Optional[str], **overrides) -> Dict[str, Any]:
     return summary
 
 
+def get_license_lookup_failure_summary(error: Optional[str] = None) -> Dict[str, Any]:
+    return _fallback_summary(error or "license_lookup_failed")
+
+
 def _non_empty_string(value: Any) -> Optional[str]:
     if not isinstance(value, str):
         return None
