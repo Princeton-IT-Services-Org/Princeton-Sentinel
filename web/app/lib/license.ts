@@ -14,7 +14,7 @@ export const LICENSE_FEATURE_DEFAULTS = {
   job_control: false,
   graph_ingest: false,
   copilot_telemetry: false,
-  agents_dashboard: false,
+  agents_dashboard: true,
 } as const;
 
 export type LicenseFeatureKey = keyof typeof LICENSE_FEATURE_DEFAULTS;

@@ -15,7 +15,7 @@ const FEATURE_DEFAULTS = {
   job_control: false,
   graph_ingest: false,
   copilot_telemetry: false,
-  agents_dashboard: false,
+  agents_dashboard: true,
 };
 const PRESETS = {
   trial: {
