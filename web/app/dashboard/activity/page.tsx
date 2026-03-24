@@ -47,10 +47,8 @@ async function ActivityPage({ searchParams }: { searchParams?: Promise<SearchPar
   };
   const sortColumn = sortMap[sort] || "last_activity_dt";
   const { clause, params } = buildSearchFilter(search);
-  const [countRows, dataRows] = await Promise.all([
-    query<any>("SELECT COUNT(*)::int AS total FROM mv_msgraph_routable_site_drives " + clause, params),
-    query<any>(
-      `
+  const summaryParams = windowStart ? [...params, windowStart] : [...params];
+  const activityBaseCte = `
       WITH base AS (
         SELECT site_key, route_drive_id, title, web_url, is_personal, template, storage_used_bytes, storage_total_bytes, last_activity_dt
         FROM mv_msgraph_routable_site_drives
@@ -66,6 +64,12 @@ async function ActivityPage({ searchParams }: { searchParams?: Promise<SearchPar
         ${windowStart ? `WHERE d.day >= date_trunc('day', $${params.length + 1}::timestamptz)` : ""}
         GROUP BY d.site_key
       )
+    `;
+  const [countRows, dataRows, topSitesByActiveUsersRows, topSitesBySharesModsRows] = await Promise.all([
+    query<any>("SELECT COUNT(*)::int AS total FROM mv_msgraph_routable_site_drives " + clause, params),
+    query<any>(
+      `
+      ${activityBaseCte}
       SELECT
         b.*,
         COALESCE(a.modified_items, 0) AS modified_items,
@@ -74,22 +78,52 @@ async function ActivityPage({ searchParams }: { searchParams?: Promise<SearchPar
       FROM base b
       LEFT JOIN activity a ON a.site_key = b.site_key
       ORDER BY ${sortColumn} ${dir.toUpperCase()} NULLS LAST
-      LIMIT $${params.length + (windowStart ? 2 : 1)} OFFSET $${params.length + (windowStart ? 3 : 2)}
+      LIMIT $${summaryParams.length + 1} OFFSET $${summaryParams.length + 2}
       `,
-      windowStart ? [...params, windowStart, pageSize, offset] : [...params, pageSize, offset]
+      [...summaryParams, pageSize, offset]
+    ),
+    query<any>(
+      `
+      ${activityBaseCte}
+      SELECT
+        b.title,
+        b.route_drive_id,
+        COALESCE(a.active_users, 0) AS active_users
+      FROM base b
+      LEFT JOIN activity a ON a.site_key = b.site_key
+      ORDER BY active_users DESC NULLS LAST, b.title ASC NULLS LAST, b.route_drive_id ASC
+      LIMIT 10
+      `,
+      summaryParams
+    ),
+    query<any>(
+      `
+      ${activityBaseCte}
+      SELECT
+        b.title,
+        b.route_drive_id,
+        COALESCE(a.shares, 0) AS shares,
+        COALESCE(a.modified_items, 0) AS modified_items
+      FROM base b
+      LEFT JOIN activity a ON a.site_key = b.site_key
+      ORDER BY (COALESCE(a.shares, 0) + COALESCE(a.modified_items, 0)) DESC NULLS LAST, b.title ASC NULLS LAST, b.route_drive_id ASC
+      LIMIT 10
+      `,
+      summaryParams
     ),
   ]);
   const total = countRows[0]?.total || 0;
 
-  const topSitesByActiveUsers = [...dataRows]
-    .sort((a, b) => b.active_users - a.active_users)
-    .slice(0, 10)
-    .map((row) => ({ title: row.title || row.route_drive_id, activeUsers: row.active_users }));
+  const topSitesByActiveUsers = topSitesByActiveUsersRows.map((row) => ({
+    title: row.title || row.route_drive_id,
+    activeUsers: row.active_users,
+  }));
 
-  const topSitesBySharesMods = [...dataRows]
-    .sort((a, b) => b.shares + b.modified_items - (a.shares + a.modified_items))
-    .slice(0, 10)
-    .map((row) => ({ title: row.title || row.route_drive_id, shares: row.shares, mods: row.modified_items }));
+  const topSitesBySharesMods = topSitesBySharesModsRows.map((row) => ({
+    title: row.title || row.route_drive_id,
+    shares: row.shares,
+    mods: row.modified_items,
+  }));
 
   return (
     <main className="ps-page">

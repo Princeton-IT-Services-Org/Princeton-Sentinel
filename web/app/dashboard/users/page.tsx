@@ -36,17 +36,16 @@ async function UsersPage({ searchParams }: { searchParams?: Promise<SearchParams
   const dir = getSortDirection(resolvedSearchParams, "desc");
 
   const sortMap: Record<string, string> = {
-    user: "u.display_name",
-    modified: "a.modified_items",
-    sites: "a.sites_touched",
-    lastModified: "a.last_modified_dt",
+    user: "display_name",
+    modified: "modified_items",
+    sites: "sites_touched",
+    lastModified: "last_modified_dt",
   };
-  const sortColumn = sortMap[sort] || "a.modified_items";
+  const sortColumn = sortMap[sort] || "modified_items";
 
   const searchClause = buildSearchClause(search, windowStart ? 2 : 1);
-
-  const rows = await query<any>(
-    `
+  const summaryParams = windowStart ? [windowStart, ...searchClause.params] : [...searchClause.params];
+  const usersActivityCte = `
     WITH activity AS (
       SELECT
         i.last_modified_by_user_id AS user_id,
@@ -60,60 +59,76 @@ async function UsersPage({ searchParams }: { searchParams?: Promise<SearchParams
         AND i.last_modified_by_user_id IS NOT NULL
         ${windowStart ? "AND i.modified_dt >= $1" : ""}
       GROUP BY i.last_modified_by_user_id
-    )
-    SELECT
-      a.user_id,
-      u.display_name,
-      u.mail,
-      u.user_principal_name,
-      a.modified_items,
-      a.sites_touched,
-      a.last_modified_dt,
-      NULL::timestamptz AS last_sign_in_dt
-    FROM activity a
-    LEFT JOIN msgraph_users u ON u.id = a.user_id AND u.deleted_at IS NULL
-    WHERE 1=1
-      ${searchClause.clause}
-    ORDER BY ${sortColumn} ${dir.toUpperCase()} NULLS LAST
-    LIMIT $${windowStart ? 2 + searchClause.params.length : 1 + searchClause.params.length}
-    OFFSET $${windowStart ? 3 + searchClause.params.length : 2 + searchClause.params.length}
-    `,
-    windowStart ? [windowStart, ...searchClause.params, pageSize, offset] : [...searchClause.params, pageSize, offset]
-  );
-
-  const totalRows = await query<any>(
-    `
-    WITH activity AS (
+    ), filtered AS (
       SELECT
-        i.last_modified_by_user_id AS user_id
-      FROM msgraph_drive_items i
-      JOIN msgraph_drives d ON d.id = i.drive_id
-      WHERE i.deleted_at IS NULL AND d.deleted_at IS NULL
-        AND LOWER(COALESCE(d.web_url, '')) NOT LIKE '%cachelibrary%'
-        AND i.last_modified_by_user_id IS NOT NULL
-        ${windowStart ? "AND i.modified_dt >= $1" : ""}
-      GROUP BY i.last_modified_by_user_id
+        a.user_id,
+        u.display_name,
+        u.mail,
+        u.user_principal_name,
+        a.modified_items,
+        a.sites_touched,
+        a.last_modified_dt,
+        NULL::timestamptz AS last_sign_in_dt
+      FROM activity a
+      LEFT JOIN msgraph_users u ON u.id = a.user_id AND u.deleted_at IS NULL
+      WHERE 1=1
+        ${searchClause.clause}
     )
-    SELECT COUNT(*)::int AS total
-    FROM activity a
-    LEFT JOIN msgraph_users u ON u.id = a.user_id AND u.deleted_at IS NULL
-    WHERE 1=1
-      ${searchClause.clause}
-    `,
-    windowStart ? [windowStart, ...searchClause.params] : [...searchClause.params]
-  );
+  `;
+
+  const [rows, totalRows, topByModifiedRows, topBySitesRows] = await Promise.all([
+    query<any>(
+      `
+      ${usersActivityCte}
+      SELECT *
+      FROM filtered
+      ORDER BY ${sortColumn} ${dir.toUpperCase()} NULLS LAST
+      LIMIT $${summaryParams.length + 1}
+      OFFSET $${summaryParams.length + 2}
+      `,
+      [...summaryParams, pageSize, offset]
+    ),
+    query<any>(
+      `
+      ${usersActivityCte}
+      SELECT COUNT(*)::int AS total
+      FROM filtered
+      `,
+      summaryParams
+    ),
+    query<any>(
+      `
+      ${usersActivityCte}
+      SELECT user_id, display_name, modified_items
+      FROM filtered
+      ORDER BY modified_items DESC NULLS LAST, display_name ASC NULLS LAST, user_id ASC
+      LIMIT 10
+      `,
+      summaryParams
+    ),
+    query<any>(
+      `
+      ${usersActivityCte}
+      SELECT user_id, display_name, sites_touched
+      FROM filtered
+      ORDER BY sites_touched DESC NULLS LAST, display_name ASC NULLS LAST, user_id ASC
+      LIMIT 10
+      `,
+      summaryParams
+    ),
+  ]);
 
   const total = totalRows[0]?.total || 0;
 
-  const topByModified = [...rows]
-    .sort((a, b) => b.modified_items - a.modified_items)
-    .slice(0, 10)
-    .map((u) => ({ label: u.display_name ?? u.user_id, value: u.modified_items ?? 0 }));
+  const topByModified = topByModifiedRows.map((u) => ({
+    label: u.display_name ?? u.user_id,
+    value: u.modified_items ?? 0,
+  }));
 
-  const topBySites = [...rows]
-    .sort((a, b) => b.sites_touched - a.sites_touched)
-    .slice(0, 10)
-    .map((u) => ({ label: u.display_name ?? u.user_id, value: u.sites_touched ?? 0 }));
+  const topBySites = topBySitesRows.map((u) => ({
+    label: u.display_name ?? u.user_id,
+    value: u.sites_touched ?? 0,
+  }));
   const activeUsersPct = total > 0 ? (topByModified.reduce((acc, u) => acc + u.value, 0) / total).toFixed(1) : "0.0";
 
   return (

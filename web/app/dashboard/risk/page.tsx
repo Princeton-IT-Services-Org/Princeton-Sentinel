@@ -219,6 +219,7 @@ async function RiskPage({ searchParams }: { searchParams?: Promise<SearchParams>
     "External principals": Number(flagRow.external_principals || 0),
     "Multiple signals": Number(flagRow.multiple_signals || 0),
   };
+  const multiSignalSites = Number(flagRow.multiple_signals || 0);
 
   return (
     <main className="ps-page">
@@ -279,8 +280,8 @@ async function RiskPage({ searchParams }: { searchParams?: Promise<SearchParams>
         </Card>
         <Card className="text-center">
           <CardHeader>
-            <CardTitle className="text-3xl font-bold">{formatNumber(pageItems.length)}</CardTitle>
-            <CardDescription>Sites shown</CardDescription>
+            <CardTitle className="text-3xl font-bold">{formatNumber(multiSignalSites)}</CardTitle>
+            <CardDescription>Multi-signal sites</CardDescription>
           </CardHeader>
         </Card>
       </div>
