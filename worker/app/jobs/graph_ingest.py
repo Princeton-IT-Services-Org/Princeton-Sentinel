@@ -139,6 +139,14 @@ def _execute_values_dedup_merge_drives(
     return len(deduped), dropped
 
 
+def _flush_drive_batch(cur, conn, upsert_sql: str, batch: list[tuple]) -> tuple[int, int]:
+    if not batch:
+        return 0, 0
+    executed, dropped = _execute_values_dedup_merge_drives(cur, upsert_sql, batch)
+    conn.commit()
+    return executed, dropped
+
+
 def _execute_db_mutation_with_retry(
     conn,
     *,
@@ -1407,11 +1415,12 @@ def _ingest_drives(client: GraphClient, *, run_id: str, flush_every: int) -> Dic
             if _is_personal_site(site):
                 site_skipped_personal += 1
                 continue
+            site_batch: list[tuple] = []
             try:
                 for drive in client.iter_paged(f"/sites/{site_id}/drives?$top={GRAPH_PAGE_SIZE}&$select={select}"):
                     if not drive.get("id"):
                         continue
-                    batch.append(
+                    site_batch.append(
                         _drive_row(
                             drive,
                             site_id=site_id,
@@ -1421,13 +1430,13 @@ def _ingest_drives(client: GraphClient, *, run_id: str, flush_every: int) -> Dic
                             users_by_id=users_by_id,
                             users_by_email=users_by_email,
                         )
-                        )
-                    if len(batch) >= flush_every:
-                        executed, dropped = _execute_values_dedup_merge_drives(cur, upsert_sql, batch)
-                        conn.commit()
-                        drive_upserts += executed
-                        dropped_duplicates += dropped
-                        batch = []
+                    )
+                batch.extend(site_batch)
+                if len(batch) >= flush_every:
+                    executed, dropped = _flush_drive_batch(cur, conn, upsert_sql, batch)
+                    drive_upserts += executed
+                    dropped_duplicates += dropped
+                    batch = []
                 _mark_entity_available(cur, table="msgraph_sites", entity_id=site_id, checked_at=synced_at)
                 conn.commit()
             except GraphError as exc:
@@ -1483,13 +1492,14 @@ def _ingest_drives(client: GraphClient, *, run_id: str, flush_every: int) -> Dic
         conn.commit()
         for group_id in group_ids:
             group_count += 1
+            group_batch: list[tuple] = []
             try:
                 has_drive = False
                 for drive in client.iter_paged(f"/groups/{group_id}/drives?$top={GRAPH_PAGE_SIZE}&$select={select}"):
                     if not drive.get("id"):
                         continue
                     has_drive = True
-                    batch.append(
+                    group_batch.append(
                         _drive_row(
                             drive,
                             site_id=None,
@@ -1502,6 +1512,7 @@ def _ingest_drives(client: GraphClient, *, run_id: str, flush_every: int) -> Dic
                     )
                 if not has_drive:
                     group_no_drive += 1
+                batch.extend(group_batch)
             except GraphError as exc:
                 _print_drive_listing_failure(
                     target_kind="group",
@@ -1532,8 +1543,7 @@ def _ingest_drives(client: GraphClient, *, run_id: str, flush_every: int) -> Dic
                 raise
 
             if len(batch) >= flush_every:
-                executed, dropped = _execute_values_dedup_merge_drives(cur, upsert_sql, batch)
-                conn.commit()
+                executed, dropped = _flush_drive_batch(cur, conn, upsert_sql, batch)
                 drive_upserts += executed
                 dropped_duplicates += dropped
                 batch = []
@@ -1543,13 +1553,14 @@ def _ingest_drives(client: GraphClient, *, run_id: str, flush_every: int) -> Dic
         conn.commit()
         for user_id in user_ids:
             user_count += 1
+            user_batch: list[tuple] = []
             try:
                 has_drive = False
                 for drive in client.iter_paged(f"/users/{user_id}/drives?$top={GRAPH_PAGE_SIZE}&$select={select}"):
                     if not drive.get("id"):
                         continue
                     has_drive = True
-                    batch.append(
+                    user_batch.append(
                         _drive_row(
                             drive,
                             site_id=None,
@@ -1562,6 +1573,7 @@ def _ingest_drives(client: GraphClient, *, run_id: str, flush_every: int) -> Dic
                     )
                 if not has_drive:
                     user_no_drive += 1
+                batch.extend(user_batch)
             except GraphError as exc:
                 _print_drive_listing_failure(
                     target_kind="user",
@@ -1608,15 +1620,13 @@ def _ingest_drives(client: GraphClient, *, run_id: str, flush_every: int) -> Dic
                 raise
 
             if len(batch) >= flush_every:
-                executed, dropped = _execute_values_dedup_merge_drives(cur, upsert_sql, batch)
-                conn.commit()
+                executed, dropped = _flush_drive_batch(cur, conn, upsert_sql, batch)
                 drive_upserts += executed
                 dropped_duplicates += dropped
                 batch = []
 
         if batch:
-            executed, dropped = _execute_values_dedup_merge_drives(cur, upsert_sql, batch)
-            conn.commit()
+            executed, dropped = _flush_drive_batch(cur, conn, upsert_sql, batch)
             drive_upserts += executed
             dropped_duplicates += dropped
 

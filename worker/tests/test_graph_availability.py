@@ -119,6 +119,56 @@ class GraphAvailabilityTests(unittest.TestCase):
     @patch("app.jobs.graph_ingest.emit")
     @patch("app.jobs.graph_ingest.db.get_conn")
     @patch("app.jobs.graph_ingest._execute_values_dedup_merge_drives")
+    def test_terminal_listing_error_discards_partially_yielded_drive_upserts(
+        self,
+        mock_merge_drives,
+        mock_get_conn,
+        _mock_emit,
+        _mock_log_job_run_log,
+    ):
+        fake_conn = FakeConnection(
+            responses={
+                "user_maps": [],
+                "sites": [("site-1", "contoso.sharepoint.com", "https://contoso.sharepoint.com/sites/site-1", {})],
+                "groups": [],
+                "users": [],
+            }
+        )
+        mock_get_conn.return_value = fake_conn
+        mock_merge_drives.return_value = (0, 0)
+
+        def iter_paged(url):
+            def gen():
+                yield {
+                    "id": "drive-1",
+                    "name": "Documents",
+                    "driveType": "documentLibrary",
+                    "webUrl": "https://contoso.sharepoint.com/sites/site-1/shared documents",
+                    "quota": {},
+                }
+                raise GraphError(
+                    404,
+                    "Graph error 404: site not found",
+                    url,
+                    '{"error":{"code":"itemNotFound","message":"Requested site could not be found"}}',
+                )
+
+            return gen()
+
+        client = unittest.mock.Mock()
+        client.iter_paged.side_effect = iter_paged
+
+        graph_ingest._ingest_drives(client, run_id="run-1b", flush_every=100)
+
+        mock_merge_drives.assert_not_called()
+        executed_sql = [sql for sql, _params in fake_conn.cursor_obj.executed]
+        self.assertTrue(any("UPDATE msgraph_sites SET is_available = FALSE" in sql for sql in executed_sql))
+        self.assertTrue(any("UPDATE msgraph_drives SET is_available = FALSE" in sql for sql in executed_sql))
+
+    @patch("app.jobs.graph_ingest.log_job_run_log")
+    @patch("app.jobs.graph_ingest.emit")
+    @patch("app.jobs.graph_ingest.db.get_conn")
+    @patch("app.jobs.graph_ingest._execute_values_dedup_merge_drives")
     def test_user_mysite_404_marks_cached_personal_drives_unavailable_only(
         self,
         mock_merge_drives,
