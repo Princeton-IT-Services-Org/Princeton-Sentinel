@@ -43,49 +43,61 @@ async function GroupsPage({ searchParams }: { searchParams?: Promise<SearchParam
   const sortColumn = sortMap[sort] || "member_count";
 
   const { clause, params } = buildSearchFilter(search);
+  const whereClause = clause || "WHERE g.deleted_at IS NULL";
 
-  const rows = await query<any>(
-    `
-    SELECT
-      g.id AS group_id,
-      g.display_name,
-      g.mail,
-      g.visibility,
-      g.created_dt,
-      COALESCE(mc.member_count, 0) AS member_count
-    FROM msgraph_groups g
-    LEFT JOIN mv_msgraph_group_member_counts mc ON mc.group_id = g.id
-    ${clause || "WHERE g.deleted_at IS NULL"}
-    ORDER BY ${sortColumn} ${dir.toUpperCase()} NULLS LAST
-    LIMIT $${params.length + 1} OFFSET $${params.length + 2}
-    `,
-    [...params, pageSize, offset]
-  );
-
-  const countRows = await query<any>(
-    `SELECT COUNT(*)::int AS total FROM msgraph_groups g ${clause || "WHERE g.deleted_at IS NULL"}`,
-    params
-  );
+  const [rows, countRows, topGroupRows, visibilityBreakdown] = await Promise.all([
+    query<any>(
+      `
+      SELECT
+        g.id AS group_id,
+        g.display_name,
+        g.mail,
+        g.visibility,
+        g.created_dt,
+        COALESCE(mc.member_count, 0) AS member_count
+      FROM msgraph_groups g
+      LEFT JOIN mv_msgraph_group_member_counts mc ON mc.group_id = g.id
+      ${whereClause}
+      ORDER BY ${sortColumn} ${dir.toUpperCase()} NULLS LAST
+      LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+      `,
+      [...params, pageSize, offset]
+    ),
+    query<any>(
+      `SELECT COUNT(*)::int AS total FROM msgraph_groups g ${whereClause}`,
+      params
+    ),
+    query<any>(
+      `
+      SELECT
+        g.id AS group_id,
+        g.display_name,
+        COALESCE(mc.member_count, 0) AS member_count
+      FROM msgraph_groups g
+      LEFT JOIN mv_msgraph_group_member_counts mc ON mc.group_id = g.id
+      ${whereClause}
+      ORDER BY member_count DESC NULLS LAST, g.display_name ASC NULLS LAST, g.id ASC
+      LIMIT 10
+      `,
+      params
+    ),
+    query<any>(
+      `
+      SELECT COALESCE(g.visibility, 'unknown') AS visibility, COUNT(*)::int AS count
+      FROM msgraph_groups g
+      ${whereClause}
+      GROUP BY COALESCE(g.visibility, 'unknown')
+      ORDER BY count DESC
+      `,
+      params
+    ),
+  ]);
   const total = countRows[0]?.total || 0;
 
-  const topGroups = [...rows]
-    .sort((a, b) => b.member_count - a.member_count)
-    .slice(0, 10)
-    .map((g) => ({
-      label: g.display_name ?? g.group_id,
-      value: g.member_count ?? 0,
-    }));
-
-  const visibilityBreakdown = await query<any>(
-    `
-    SELECT COALESCE(g.visibility, 'unknown') AS visibility, COUNT(*)::int AS count
-    FROM msgraph_groups g
-    ${clause || "WHERE g.deleted_at IS NULL"}
-    GROUP BY COALESCE(g.visibility, 'unknown')
-    ORDER BY count DESC
-    `,
-    params
-  );
+  const topGroups = topGroupRows.map((g) => ({
+    label: g.display_name ?? g.group_id,
+    value: g.member_count ?? 0,
+  }));
   const visibilityData = visibilityBreakdown.map((row: any) => ({ label: row.visibility, value: row.count }));
 
   return (
