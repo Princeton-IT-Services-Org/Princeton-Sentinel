@@ -11,6 +11,25 @@ type UserMenuProps = {
   canAdmin: boolean;
 };
 
+function readStoredTheme(): ThemeMode | null {
+  try {
+    return normalizeTheme(window.localStorage.getItem(THEME_STORAGE_KEY));
+  } catch {
+    return null;
+  }
+}
+
+function persistTheme(mode: ThemeMode) {
+  document.documentElement.classList.toggle("dark", mode === "dark");
+  document.documentElement.style.colorScheme = mode;
+
+  try {
+    window.localStorage.setItem(THEME_STORAGE_KEY, mode);
+  } catch {}
+
+  document.cookie = buildThemeCookieValue(mode);
+}
+
 export default function UserMenu({ userLabel, canAdmin }: UserMenuProps) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<ThemeMode>("light");
@@ -22,13 +41,9 @@ export default function UserMenu({ userLabel, canAdmin }: UserMenuProps) {
   const signOutUrl = `/signout?callbackUrl=${encodeURIComponent(callbackUrl)}`;
 
   useEffect(() => {
-    const stored = normalizeTheme(window.localStorage.getItem(THEME_STORAGE_KEY));
     const isDark = document.documentElement.classList.contains("dark");
-    const nextMode: ThemeMode = stored ?? (isDark ? "dark" : "light");
-    document.documentElement.classList.toggle("dark", nextMode === "dark");
-    document.documentElement.style.colorScheme = nextMode;
-    window.localStorage.setItem(THEME_STORAGE_KEY, nextMode);
-    document.cookie = buildThemeCookieValue(nextMode);
+    const nextMode: ThemeMode = readStoredTheme() ?? (isDark ? "dark" : "light");
+    persistTheme(nextMode);
     setMode(nextMode);
 
     function handleClick(event: MouseEvent) {
@@ -95,10 +110,7 @@ export default function UserMenu({ userLabel, canAdmin }: UserMenuProps) {
             className="block w-full rounded px-3 py-2 text-left text-muted-foreground hover:bg-accent hover:text-foreground"
             onClick={() => {
               const next: ThemeMode = mode === "dark" ? "light" : "dark";
-              document.documentElement.classList.toggle("dark", next === "dark");
-              document.documentElement.style.colorScheme = next;
-              localStorage.setItem(THEME_STORAGE_KEY, next);
-              document.cookie = buildThemeCookieValue(next);
+              persistTheme(next);
               setMode(next);
               setOpen(false);
             }}
