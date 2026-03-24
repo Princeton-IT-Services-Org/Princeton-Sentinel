@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 
+import { buildThemeCookieValue, normalizeTheme, THEME_STORAGE_KEY, type ThemeMode } from "@/app/lib/theme";
+
 type UserMenuProps = {
   userLabel: string;
   canAdmin: boolean;
@@ -11,7 +13,7 @@ type UserMenuProps = {
 
 export default function UserMenu({ userLabel, canAdmin }: UserMenuProps) {
   const [open, setOpen] = useState(false);
-  const [mode, setMode] = useState<"light" | "dark">("light");
+  const [mode, setMode] = useState<ThemeMode>("light");
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const pathname = usePathname() ?? "/dashboard";
   const searchParams = useSearchParams();
@@ -20,8 +22,14 @@ export default function UserMenu({ userLabel, canAdmin }: UserMenuProps) {
   const signOutUrl = `/signout?callbackUrl=${encodeURIComponent(callbackUrl)}`;
 
   useEffect(() => {
+    const stored = normalizeTheme(window.localStorage.getItem(THEME_STORAGE_KEY));
     const isDark = document.documentElement.classList.contains("dark");
-    setMode(isDark ? "dark" : "light");
+    const nextMode: ThemeMode = stored ?? (isDark ? "dark" : "light");
+    document.documentElement.classList.toggle("dark", nextMode === "dark");
+    document.documentElement.style.colorScheme = nextMode;
+    window.localStorage.setItem(THEME_STORAGE_KEY, nextMode);
+    document.cookie = buildThemeCookieValue(nextMode);
+    setMode(nextMode);
 
     function handleClick(event: MouseEvent) {
       if (!wrapperRef.current) return;
@@ -86,9 +94,11 @@ export default function UserMenu({ userLabel, canAdmin }: UserMenuProps) {
             role="menuitem"
             className="block w-full rounded px-3 py-2 text-left text-muted-foreground hover:bg-accent hover:text-foreground"
             onClick={() => {
-              const next: "light" | "dark" = mode === "dark" ? "light" : "dark";
+              const next: ThemeMode = mode === "dark" ? "light" : "dark";
               document.documentElement.classList.toggle("dark", next === "dark");
-              localStorage.setItem("ps-theme", next);
+              document.documentElement.style.colorScheme = next;
+              localStorage.setItem(THEME_STORAGE_KEY, next);
+              document.cookie = buildThemeCookieValue(next);
               setMode(next);
               setOpen(false);
             }}
