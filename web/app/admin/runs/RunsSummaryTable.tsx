@@ -5,11 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { formatJobTypeLabel } from "@/app/admin/job-status";
 import type { RunRow } from "@/app/admin/runs/run-data";
-
-function formatDate(value?: string | null) {
-  if (!value) return "--";
-  return new Date(value).toLocaleString();
-}
+import { formatDate } from "@/app/lib/format";
 
 function statusBadge(status: string) {
   if (status === "success") return "badge badge-ok";

@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { formatIsoDateTime } from "@/app/lib/format";
 
 type LocalDateTimeProps = {
   value?: string | null;
@@ -8,12 +9,7 @@ type LocalDateTimeProps = {
 };
 
 export default function LocalDateTime({ value, fallback = "--" }: LocalDateTimeProps) {
-  const formatted = useMemo(() => {
-    if (!value) return fallback;
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return fallback;
-    return date.toLocaleString();
-  }, [value, fallback]);
+  const formatted = useMemo(() => formatIsoDateTime(value, undefined, fallback), [value, fallback]);
 
   return <span>{formatted}</span>;
 }

@@ -1,29 +1,34 @@
-export function formatDate(value?: string | null) {
-  if (!value) return "--";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "--";
-  return date.toLocaleString();
+type DateLike = string | Date | null | undefined;
+
+function parseDate(value: DateLike): Date | null {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
-export function formatIsoDate(value?: string | null) {
-  if (!value) return "--";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "--";
-  return date.toLocaleDateString();
+function formatDateValue(
+  value: DateLike,
+  formatter: (date: Date) => string,
+  fallback = "--"
+) {
+  const date = parseDate(value);
+  return date ? formatter(date) : fallback;
 }
 
-export function formatIsoDateTime(value?: string | null) {
-  if (!value) return "--";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "--";
-  return date.toLocaleString();
+export function formatDate(value?: DateLike, options?: Intl.DateTimeFormatOptions, fallback = "--") {
+  return formatDateValue(value, (date) => date.toLocaleString(undefined, options), fallback);
 }
 
-export function formatDateShort(value?: string | null) {
-  if (!value) return "--";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "--";
-  return date.toLocaleDateString();
+export function formatIsoDate(value?: DateLike, options?: Intl.DateTimeFormatOptions, fallback = "--") {
+  return formatDateValue(value, (date) => date.toLocaleDateString(undefined, options), fallback);
+}
+
+export function formatIsoDateTime(value?: DateLike, options?: Intl.DateTimeFormatOptions, fallback = "--") {
+  return formatDate(value, options, fallback);
+}
+
+export function formatDateShort(value?: DateLike, options?: Intl.DateTimeFormatOptions, fallback = "--") {
+  return formatIsoDate(value, options, fallback);
 }
 
 export function formatBytes(value?: number | string | null) {

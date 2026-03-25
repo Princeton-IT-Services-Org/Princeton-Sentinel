@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { formatDate } from "@/app/lib/format";
 
 type RunRow = {
   run_id: string;
@@ -14,11 +15,6 @@ type RunRow = {
   last_log_level?: string | null;
   last_log_message?: string | null;
 };
-
-function formatDate(value?: string | null) {
-  if (!value) return "--";
-  return new Date(value).toLocaleString();
-}
 
 function statusBadge(status: string) {
   if (status === "success") return "badge badge-ok";
