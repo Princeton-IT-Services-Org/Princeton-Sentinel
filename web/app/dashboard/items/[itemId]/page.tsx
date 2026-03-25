@@ -7,8 +7,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { isAdmin, requireUser } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
 import { graphGet } from "@/app/lib/graph";
-import { formatBytes, formatIsoDateTime, safeDecode } from "@/app/lib/format";
+import { formatBytes, safeDecode } from "@/app/lib/format";
 import { getInternalDomainPatterns } from "@/app/lib/internalDomains";
+import LocalDateTime from "@/components/local-date-time";
 
 import { ItemAccessLinksTable, ItemLinkBreakdownTable, ItemPermissionsTable, ItemPrincipalsTable } from "./item-tables";
 
@@ -254,7 +255,7 @@ async function ItemDetailPage({ params }: { params: Promise<{ itemId: string }> 
           <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{path}</p>
           <p className="mt-1 truncate text-xs text-muted-foreground">{item.id}</p>
           <p className="mt-2 text-sm text-muted-foreground">
-            Last modified {formatIsoDateTime(modifiedAt)} • Created {formatIsoDateTime(createdAt)}
+            Last modified <LocalDateTime value={modifiedAt} /> • Created <LocalDateTime value={createdAt} />
           </p>
           <p className="mt-2 text-xs uppercase tracking-[0.3em] text-muted-foreground">Live (Graph)</p>
         </div>
