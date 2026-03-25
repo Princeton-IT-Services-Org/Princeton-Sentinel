@@ -13,6 +13,7 @@ import {
 import { query } from "@/app/lib/db";
 import { requireUser } from "@/app/lib/auth";
 import { redirectIfFeatureDisabled } from "@/app/lib/feature-flags";
+import { formatDate, formatIsoDate } from "@/app/lib/format";
 import { getParam, type SearchParams } from "@/app/lib/params";
 import { Button } from "@/components/ui/button";
 import PageHeader from "@/components/page-header";
@@ -242,11 +243,11 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
 
   const dailySessions = Array.from(dailyMap.entries())
     .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([label, value]) => ({ label, value }));
+    .map(([label, value]) => ({ label: formatIsoDate(label), value }));
 
   const dailyUsers = Array.from(dailyUsersMap.entries())
     .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([label, value]) => ({ label, value }));
+    .map(([label, value]) => ({ label: formatIsoDate(label), value }));
 
   const outcomePie = [
     { label: "Resolved", value: totalResolved },
@@ -279,9 +280,8 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
   // ── Response time data ──
   const responseTimeData = responseTimeRows.map((r: any) => {
     const ts = typeof r.time_bucket === "string" ? r.time_bucket : new Date(r.time_bucket).toISOString();
-    const label = ts.slice(5, 16).replace("T", " "); // "MM-DD HH:mm"
     return {
-      label,
+      label: formatDate(ts, { month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit" }),
       avg: Number(r.avg_response_sec || 0),
       p50: Number(r.p50_response_sec || 0),
       p95: Number(r.p95_response_sec || 0),
@@ -331,7 +331,7 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
 
   // ── Error details ──
   const errorDetails = errorDetailRows.map((e: any) => ({
-    timestamp: typeof e.error_ts === "string" ? e.error_ts : new Date(e.error_ts).toISOString(),
+    timestamp: e.error_ts ?? null,
     agent: e.agent_name ?? "Unknown",
     channel: e.channel ?? "",
     sessionId: e.session_id ?? "",
@@ -613,7 +613,7 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
                 <tbody>
                   {errorDetails.map((row, i) => (
                     <tr key={i} className="border-b last:border-0">
-                      <td className="py-2 pr-4 whitespace-nowrap">{row.timestamp.slice(0, 19).replace("T", " ")}</td>
+                      <td className="py-2 pr-4 whitespace-nowrap">{formatDate(row.timestamp)}</td>
                       <td className="py-2 pr-4 whitespace-nowrap">{row.agent}</td>
                       <td className="py-2 pr-4 whitespace-nowrap">{row.channel || "—"}</td>
                       <td className="py-2 pr-4 font-mono text-xs">{row.sessionId || "—"}</td>

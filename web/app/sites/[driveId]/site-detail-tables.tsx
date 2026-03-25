@@ -3,7 +3,7 @@
 import * as React from "react";
 
 import { SortableTable } from "@/components/sortable-table";
-import { formatIsoDateTime } from "@/app/lib/format";
+import { formatIsoDate, formatIsoDateTime } from "@/app/lib/format";
 
 type ActivityPoint = { date: string; modifiedItems: number; shares: number };
 
@@ -48,7 +48,7 @@ export function SiteActivityTrendTable({
         id: "date",
         header: "Date",
         sortValue: (p: ActivityPoint) => parseIsoToTs(p.date),
-        cell: (p: ActivityPoint) => <span className="text-muted-foreground">{p.date}</span>,
+        cell: (p: ActivityPoint) => <span className="text-muted-foreground">{formatIsoDate(p.date)}</span>,
       },
       {
         id: "modified",
