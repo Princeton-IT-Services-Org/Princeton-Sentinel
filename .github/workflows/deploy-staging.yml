@@ -95,6 +95,14 @@ jobs:
     if: ${{ always() && needs.prepare.outputs.deploy_web == 'true' && (needs.prepare.outputs.db_sql_changed != 'true' || needs.await_db_migration_approval.result == 'success') }}
     runs-on: ubuntu-latest
     environment: staging
+    outputs:
+      app_name: ${{ steps.deployment.outputs.app_name }}
+      latest_revision: ${{ steps.deployment.outputs.latest_revision }}
+      ready_revision: ${{ steps.deployment.outputs.ready_revision }}
+      image: ${{ steps.deployment.outputs.image }}
+      expected_image: ${{ steps.deployment.outputs.expected_image }}
+      fqdn: ${{ steps.deployment.outputs.fqdn }}
+      image_matches_expected: ${{ steps.deployment.outputs.image_matches_expected }}
     env:
       APP_VERSION: ${{ needs.prepare.outputs.app_version }}
       IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
@@ -126,11 +134,12 @@ jobs:
           APP_VERSION="${APP_VERSION}" npm run build
 
       - name: Azure Login (OIDC)
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        shell: bash
+        run: |
+          scripts/ci/azure-oidc-login.sh \
+            "${{ secrets.AZURE_CLIENT_ID }}" \
+            "${{ secrets.AZURE_TENANT_ID }}" \
+            "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
 
       - name: Ensure Azure CLI extensions
         shell: bash
@@ -230,14 +239,23 @@ jobs:
             --image "${{ steps.acr.outputs.login_server }}/sentinel-web:${IMAGE_TAG}"
 
       - name: Show deployed web revision
+        id: deployment
         shell: bash
-        run: scripts/ci/show-containerapp-revision.sh "${AZ_WEB_APP_NAME}"
+        run: scripts/ci/show-containerapp-revision.sh "${AZ_WEB_APP_NAME}" "${{ steps.acr.outputs.login_server }}/sentinel-web:${IMAGE_TAG}"
 
   deploy_worker:
     needs: [prepare, await_db_migration_approval, deploy_web]
     if: ${{ always() && needs.prepare.outputs.deploy_worker == 'true' && needs.deploy_web.result != 'failure' && needs.deploy_web.result != 'cancelled' && (needs.prepare.outputs.db_sql_changed != 'true' || needs.await_db_migration_approval.result == 'success') }}
     runs-on: ubuntu-latest
     environment: staging
+    outputs:
+      app_name: ${{ steps.deployment.outputs.app_name }}
+      latest_revision: ${{ steps.deployment.outputs.latest_revision }}
+      ready_revision: ${{ steps.deployment.outputs.ready_revision }}
+      image: ${{ steps.deployment.outputs.image }}
+      expected_image: ${{ steps.deployment.outputs.expected_image }}
+      fqdn: ${{ steps.deployment.outputs.fqdn }}
+      image_matches_expected: ${{ steps.deployment.outputs.image_matches_expected }}
     env:
       APP_VERSION: ${{ needs.prepare.outputs.app_version }}
       IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
@@ -267,11 +285,12 @@ jobs:
           python -m py_compile worker/app/*.py worker/app/jobs/*.py
 
       - name: Azure Login (OIDC)
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        shell: bash
+        run: |
+          scripts/ci/azure-oidc-login.sh \
+            "${{ secrets.AZURE_CLIENT_ID }}" \
+            "${{ secrets.AZURE_TENANT_ID }}" \
+            "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
 
       - name: Ensure Azure CLI extensions
         shell: bash
@@ -385,25 +404,164 @@ jobs:
             --image "${{ steps.acr.outputs.login_server }}/sentinel-worker:${IMAGE_TAG}"
 
       - name: Show deployed worker revision
+        id: deployment
         shell: bash
-        run: scripts/ci/show-containerapp-revision.sh "${AZ_WORKER_APP_NAME}"
+        run: scripts/ci/show-containerapp-revision.sh "${AZ_WORKER_APP_NAME}" "${{ steps.acr.outputs.login_server }}/sentinel-worker:${IMAGE_TAG}"
 
   report:
     needs: [prepare, await_db_migration_approval, deploy_web, deploy_worker]
-    if: ${{ always() && needs.deploy_web.result != 'failure' && needs.deploy_web.result != 'cancelled' && needs.deploy_worker.result != 'failure' && needs.deploy_worker.result != 'cancelled' && (needs.prepare.outputs.db_sql_changed != 'true' || needs.await_db_migration_approval.result == 'success') }}
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
-      - name: Report successful staging deploy
-        if: needs.prepare.outputs.any == 'true'
+      - name: Write staging deployment report
         shell: bash
+        env:
+          ANY: ${{ needs.prepare.outputs.any }}
+          APP_VERSION: ${{ needs.prepare.outputs.app_version }}
+          IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+          DEPLOY_REASON: ${{ needs.prepare.outputs.reason }}
+          CHANGED_PATHS: ${{ needs.prepare.outputs.changed_paths }}
+          DB_SQL_CHANGED: ${{ needs.prepare.outputs.db_sql_changed }}
+          DB_APPROVAL_RESULT: ${{ needs.await_db_migration_approval.result }}
+          DEPLOY_WEB_REQUESTED: ${{ needs.prepare.outputs.deploy_web }}
+          DEPLOY_WORKER_REQUESTED: ${{ needs.prepare.outputs.deploy_worker }}
+          WEB_RESULT: ${{ needs.deploy_web.result }}
+          WEB_APP_NAME: ${{ needs.deploy_web.outputs.app_name }}
+          WEB_LATEST_REVISION: ${{ needs.deploy_web.outputs.latest_revision }}
+          WEB_READY_REVISION: ${{ needs.deploy_web.outputs.ready_revision }}
+          WEB_IMAGE: ${{ needs.deploy_web.outputs.image }}
+          WEB_EXPECTED_IMAGE: ${{ needs.deploy_web.outputs.expected_image }}
+          WEB_FQDN: ${{ needs.deploy_web.outputs.fqdn }}
+          WEB_IMAGE_MATCHES_EXPECTED: ${{ needs.deploy_web.outputs.image_matches_expected }}
+          WORKER_RESULT: ${{ needs.deploy_worker.result }}
+          WORKER_APP_NAME: ${{ needs.deploy_worker.outputs.app_name }}
+          WORKER_LATEST_REVISION: ${{ needs.deploy_worker.outputs.latest_revision }}
+          WORKER_READY_REVISION: ${{ needs.deploy_worker.outputs.ready_revision }}
+          WORKER_IMAGE: ${{ needs.deploy_worker.outputs.image }}
+          WORKER_EXPECTED_IMAGE: ${{ needs.deploy_worker.outputs.expected_image }}
+          WORKER_FQDN: ${{ needs.deploy_worker.outputs.fqdn }}
+          WORKER_IMAGE_MATCHES_EXPECTED: ${{ needs.deploy_worker.outputs.image_matches_expected }}
         run: |
-          echo "Staging deploy completed successfully."
-          echo "deploy_web=${{ needs.prepare.outputs.deploy_web }}"
-          echo "deploy_worker=${{ needs.prepare.outputs.deploy_worker }}"
-          echo "app_version=${{ needs.prepare.outputs.app_version }}"
-          echo "image_tag=${{ needs.prepare.outputs.image_tag }}"
+          set -euo pipefail
 
-      - name: Skip deploy when no app changes are detected
-        if: needs.prepare.outputs.any != 'true'
-        shell: bash
-        run: echo "Skipping deploy because no app changes were detected."
+          component_note() {
+            local requested="$1"
+            local result="$2"
+            local latest_revision="$3"
+            local ready_revision="$4"
+            local image_matches_expected="$5"
+
+            if [[ "${requested}" != "true" ]]; then
+              echo "Not requested"
+              return
+            fi
+
+            case "${result}" in
+              success)
+                if [[ -n "${latest_revision}" && -n "${ready_revision}" && "${latest_revision}" != "${ready_revision}" ]]; then
+                  echo "Update finished but rollout is still converging"
+                elif [[ "${image_matches_expected}" != "true" ]]; then
+                  echo "Reported image does not match the requested tag"
+                else
+                  echo "Deployed"
+                fi
+                ;;
+              skipped)
+                if [[ "${DB_SQL_CHANGED}" == "true" && "${DB_APPROVAL_RESULT}" != "success" ]]; then
+                  echo "Skipped pending DB migration approval"
+                else
+                  echo "Skipped"
+                fi
+                ;;
+              failure)
+                echo "Failed"
+                ;;
+              cancelled)
+                echo "Cancelled"
+                ;;
+              *)
+                echo "Unknown"
+                ;;
+            esac
+          }
+
+          write_component_row() {
+            local label="$1"
+            local requested="$2"
+            local result="$3"
+            local app_name="$4"
+            local latest_revision="$5"
+            local ready_revision="$6"
+            local image="$7"
+            local expected_image="$8"
+            local fqdn="$9"
+            local image_matches_expected="${10}"
+            local note
+
+            note="$(component_note "${requested}" "${result}" "${latest_revision}" "${ready_revision}" "${image_matches_expected}")"
+
+            printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
+              "${label}" \
+              "${requested}" \
+              "${result:-n/a}" \
+              "${app_name:-n/a}" \
+              "${ready_revision:-n/a}" \
+              "${latest_revision:-n/a}" \
+              "${image:-n/a}" \
+              "${fqdn:-n/a}" \
+              "${note}" >> "${GITHUB_STEP_SUMMARY}"
+
+            if [[ -n "${expected_image}" && "${expected_image}" != "${image}" ]]; then
+              printf 'Expected image for %s: `%s`\n\n' "${label}" "${expected_image}" >> "${GITHUB_STEP_SUMMARY}"
+            fi
+          }
+
+          {
+            echo "## Staging Deployment Report"
+            echo
+            echo "- App version: \`${APP_VERSION}\`"
+            echo "- Image tag: \`${IMAGE_TAG}\`"
+            echo "- Change detection: \`${DEPLOY_REASON}\`"
+            echo "- Changed paths: \`${CHANGED_PATHS}\`"
+            if [[ "${DB_SQL_CHANGED}" == "true" ]]; then
+              echo "- DB migration approval: \`${DB_APPROVAL_RESULT:-n/a}\`"
+            fi
+            echo
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [[ "${ANY}" != "true" ]]; then
+            echo "No deployment was triggered because no app changes were detected." >> "${GITHUB_STEP_SUMMARY}"
+            cat "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          {
+            echo "| Component | Requested | Job result | App | Ready revision | Latest revision | Image | FQDN | Note |"
+            echo "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          write_component_row \
+            "web" \
+            "${DEPLOY_WEB_REQUESTED}" \
+            "${WEB_RESULT}" \
+            "${WEB_APP_NAME}" \
+            "${WEB_LATEST_REVISION}" \
+            "${WEB_READY_REVISION}" \
+            "${WEB_IMAGE}" \
+            "${WEB_EXPECTED_IMAGE}" \
+            "${WEB_FQDN}" \
+            "${WEB_IMAGE_MATCHES_EXPECTED}"
+
+          write_component_row \
+            "worker" \
+            "${DEPLOY_WORKER_REQUESTED}" \
+            "${WORKER_RESULT}" \
+            "${WORKER_APP_NAME}" \
+            "${WORKER_LATEST_REVISION}" \
+            "${WORKER_READY_REVISION}" \
+            "${WORKER_IMAGE}" \
+            "${WORKER_EXPECTED_IMAGE}" \
+            "${WORKER_FQDN}" \
+            "${WORKER_IMAGE_MATCHES_EXPECTED}"
+
+          cat "${GITHUB_STEP_SUMMARY}"
