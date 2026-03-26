@@ -229,6 +229,10 @@ jobs:
             --resource-group "${AZ_RESOURCE_GROUP}" \
             --image "${{ steps.acr.outputs.login_server }}/sentinel-web:${IMAGE_TAG}"
 
+      - name: Show deployed web revision
+        shell: bash
+        run: scripts/ci/show-containerapp-revision.sh "${AZ_WEB_APP_NAME}"
+
   deploy_worker:
     needs: [prepare, await_db_migration_approval, deploy_web]
     if: ${{ always() && needs.prepare.outputs.deploy_worker == 'true' && needs.deploy_web.result != 'failure' && needs.deploy_web.result != 'cancelled' && (needs.prepare.outputs.db_sql_changed != 'true' || needs.await_db_migration_approval.result == 'success') }}
@@ -380,35 +384,24 @@ jobs:
             --resource-group "${AZ_RESOURCE_GROUP}" \
             --image "${{ steps.acr.outputs.login_server }}/sentinel-worker:${IMAGE_TAG}"
 
+      - name: Show deployed worker revision
+        shell: bash
+        run: scripts/ci/show-containerapp-revision.sh "${AZ_WORKER_APP_NAME}"
+
   report:
     needs: [prepare, await_db_migration_approval, deploy_web, deploy_worker]
     if: ${{ always() && needs.deploy_web.result != 'failure' && needs.deploy_web.result != 'cancelled' && needs.deploy_worker.result != 'failure' && needs.deploy_worker.result != 'cancelled' && (needs.prepare.outputs.db_sql_changed != 'true' || needs.await_db_migration_approval.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
-      - name: Azure Login (OIDC)
-        if: needs.prepare.outputs.any == 'true'
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Ensure Azure CLI extensions
+      - name: Report successful staging deploy
         if: needs.prepare.outputs.any == 'true'
         shell: bash
         run: |
-          az config set extension.use_dynamic_install=yes_without_prompt
-          az extension add --name containerapp --upgrade
-
-      - name: Show deployed web revision
-        if: needs.prepare.outputs.deploy_web == 'true'
-        shell: bash
-        run: scripts/ci/show-containerapp-revision.sh "${AZ_WEB_APP_NAME}"
-
-      - name: Show deployed worker revision
-        if: needs.prepare.outputs.deploy_worker == 'true'
-        shell: bash
-        run: scripts/ci/show-containerapp-revision.sh "${AZ_WORKER_APP_NAME}"
+          echo "Staging deploy completed successfully."
+          echo "deploy_web=${{ needs.prepare.outputs.deploy_web }}"
+          echo "deploy_worker=${{ needs.prepare.outputs.deploy_worker }}"
+          echo "app_version=${{ needs.prepare.outputs.app_version }}"
+          echo "image_tag=${{ needs.prepare.outputs.image_tag }}"
 
       - name: Skip deploy when no app changes are detected
         if: needs.prepare.outputs.any != 'true'
