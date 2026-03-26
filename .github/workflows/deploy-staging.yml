@@ -15,16 +15,18 @@ permissions:
   contents: read
 
 env:
-  STAGING_VERSION: 3.2.9
+  STAGING_VERSION: 3.2.10
   AZ_RESOURCE_GROUP: ${{ vars.AZ_RESOURCE_GROUP }}
   AZ_ACR_NAME: ${{ vars.AZ_ACR_NAME }}
   AZ_WEB_APP_NAME: ${{ vars.AZ_WEB_APP_NAME }}
   AZ_WORKER_APP_NAME: ${{ vars.AZ_WORKER_APP_NAME }}
 
 jobs:
-  detect_changes:
+  prepare:
     runs-on: ubuntu-latest
     outputs:
+      app_version: ${{ steps.meta.outputs.app_version }}
+      image_tag: ${{ steps.meta.outputs.image_tag }}
       deploy_web: ${{ steps.changes.outputs.deploy_web }}
       deploy_worker: ${{ steps.changes.outputs.deploy_worker }}
       any: ${{ steps.changes.outputs.any }}
@@ -37,72 +39,32 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Determine deployment targets
-        id: changes
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+
+      - name: Compute staging metadata
+        id: meta
         shell: bash
         run: |
           set -euo pipefail
+          APP_VERSION="$(node scripts/staging-version.cjs from-file .github/workflows/deploy-staging.yml)"
+          IMAGE_TAG="${GITHUB_SHA::12}"
+          echo "app_version=${APP_VERSION}" >> "${GITHUB_OUTPUT}"
+          echo "image_tag=${IMAGE_TAG}" >> "${GITHUB_OUTPUT}"
 
-          deploy_web=false
-          deploy_worker=false
-          any=false
-          db_sql_changed=false
-          reason=""
-          changed_paths=""
+      - name: Determine deployment targets
+        id: changes
+        shell: bash
+        run: scripts/ci/detect-staging-targets.sh "${{ github.event_name }}" "${{ github.event.before }}"
 
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            deploy_web=true
-            deploy_worker=true
-            any=true
-            reason="workflow_dispatch"
-            changed_paths="workflow_dispatch"
-          else
-            before="${{ github.event.before }}"
-            if [[ -z "${before}" || "${before}" == "0000000000000000000000000000000000000000" ]]; then
-              deploy_web=true
-              deploy_worker=true
-              any=true
-              reason="no before SHA available; defaulting to full deploy"
-              changed_paths="unknown"
-            elif ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
-              deploy_web=true
-              deploy_worker=true
-              any=true
-              reason="before SHA missing locally; defaulting to full deploy"
-              changed_paths="unknown"
-            else
-              mapfile -t paths < <(git diff --name-only "${before}" "${GITHUB_SHA}")
-              for path in "${paths[@]}"; do
-                if [[ "${path}" == web/* ]]; then
-                  deploy_web=true
-                fi
-                if [[ "${path}" == worker/* ]]; then
-                  deploy_worker=true
-                fi
-                if [[ "${path}" =~ ^db/.+\.sql$ ]]; then
-                  db_sql_changed=true
-                fi
-              done
-              if [[ "${deploy_web}" == "true" || "${deploy_worker}" == "true" ]]; then
-                any=true
-              fi
-              if [[ ${#paths[@]} -gt 0 ]]; then
-                changed_paths="$(printf '%s\n' "${paths[@]}" | paste -sd ',' -)"
-              fi
-              reason="deploy_web=${deploy_web} deploy_worker=${deploy_worker} for diff ${before}..${GITHUB_SHA}"
-            fi
-          fi
-
-          echo "deploy_web=${deploy_web}" >> "${GITHUB_OUTPUT}"
-          echo "deploy_worker=${deploy_worker}" >> "${GITHUB_OUTPUT}"
-          echo "any=${any}" >> "${GITHUB_OUTPUT}"
-          echo "db_sql_changed=${db_sql_changed}" >> "${GITHUB_OUTPUT}"
-          echo "reason=${reason}" >> "${GITHUB_OUTPUT}"
-          echo "changed_paths=${changed_paths}" >> "${GITHUB_OUTPUT}"
-
-      - name: Show deployment decision
+      - name: Show staging metadata
         shell: bash
         run: |
+          echo "STAGING_VERSION=${STAGING_VERSION}"
+          echo "APP_VERSION=${{ steps.meta.outputs.app_version }}"
+          echo "IMAGE_TAG=${{ steps.meta.outputs.image_tag }}"
           echo "deploy_web=${{ steps.changes.outputs.deploy_web }}"
           echo "deploy_worker=${{ steps.changes.outputs.deploy_worker }}"
           echo "any=${{ steps.changes.outputs.any }}"
@@ -110,9 +72,14 @@ jobs:
           echo "reason=${{ steps.changes.outputs.reason }}"
           echo "changed_paths=${{ steps.changes.outputs.changed_paths }}"
 
+      - name: Validate shared Azure variables
+        if: steps.changes.outputs.any == 'true'
+        shell: bash
+        run: scripts/ci/validate-required-env.sh AZ_RESOURCE_GROUP AZ_ACR_NAME AZ_WEB_APP_NAME AZ_WORKER_APP_NAME
+
   await_db_migration_approval:
-    needs: detect_changes
-    if: needs.detect_changes.outputs.db_sql_changed == 'true'
+    needs: prepare
+    if: needs.prepare.outputs.db_sql_changed == 'true'
     runs-on: ubuntu-latest
     environment: staging-db-migrations
     steps:
@@ -121,29 +88,29 @@ jobs:
         run: |
           echo "DB SQL changes were detected under db/**/*.sql."
           echo "Apply DB migrations externally, then approve this environment to continue deployment."
-          echo "changed_paths=${{ needs.detect_changes.outputs.changed_paths }}"
+          echo "changed_paths=${{ needs.prepare.outputs.changed_paths }}"
 
-  deploy:
-    needs: [detect_changes, await_db_migration_approval]
-    if: ${{ always() && (needs.detect_changes.outputs.db_sql_changed != 'true' || needs.await_db_migration_approval.result == 'success') }}
+  deploy_web:
+    needs: [prepare, await_db_migration_approval]
+    if: ${{ always() && needs.prepare.outputs.deploy_web == 'true' && (needs.prepare.outputs.db_sql_changed != 'true' || needs.await_db_migration_approval.result == 'success') }}
     runs-on: ubuntu-latest
     environment: staging
+    outputs:
+      app_name: ${{ steps.deployment.outputs.app_name }}
+      latest_revision: ${{ steps.deployment.outputs.latest_revision }}
+      ready_revision: ${{ steps.deployment.outputs.ready_revision }}
+      image: ${{ steps.deployment.outputs.image }}
+      expected_image: ${{ steps.deployment.outputs.expected_image }}
+      fqdn: ${{ steps.deployment.outputs.fqdn }}
+      image_matches_expected: ${{ steps.deployment.outputs.image_matches_expected }}
+    env:
+      APP_VERSION: ${{ needs.prepare.outputs.app_version }}
+      IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-
-      - name: Export app version
-        if: needs.detect_changes.outputs.any == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          APP_VERSION="$(node scripts/staging-version.cjs from-file .github/workflows/deploy-staging.yml)"
-          echo "APP_VERSION=${APP_VERSION}" >> "${GITHUB_ENV}"
 
       - name: Setup Node.js
-        if: needs.detect_changes.outputs.deploy_web == 'true'
         uses: actions/setup-node@v5
         with:
           node-version: "24"
@@ -151,14 +118,13 @@ jobs:
           cache-dependency-path: web/package-lock.json
 
       - name: Show app version
-        if: needs.detect_changes.outputs.any == 'true'
         shell: bash
         run: |
           echo "STAGING_VERSION=${STAGING_VERSION}"
           echo "APP_VERSION=${APP_VERSION}"
+          echo "IMAGE_TAG=${IMAGE_TAG}"
 
       - name: Web checks (tests + build)
-        if: needs.detect_changes.outputs.deploy_web == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -167,50 +133,25 @@ jobs:
           APP_VERSION="${APP_VERSION}" npm test
           APP_VERSION="${APP_VERSION}" npm run build
 
-      - name: Setup Python
-        if: needs.detect_changes.outputs.deploy_worker == 'true'
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-
-      - name: Worker checks (tests + compile)
-        if: needs.detect_changes.outputs.deploy_worker == 'true'
+      - name: Package web runtime artifact
         shell: bash
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          pip install -r worker/requirements.txt
-          python -m unittest discover -s worker/tests -p "test_*.py"
-          python -m py_compile worker/app/*.py worker/app/jobs/*.py
+        run: scripts/ci/package-web-runtime.sh
 
       - name: Azure Login (OIDC)
-        if: needs.detect_changes.outputs.any == 'true'
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        shell: bash
+        run: |
+          scripts/ci/azure-oidc-login.sh \
+            "${{ secrets.AZURE_CLIENT_ID }}" \
+            "${{ secrets.AZURE_TENANT_ID }}" \
+            "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
 
       - name: Ensure Azure CLI extensions
-        if: needs.detect_changes.outputs.any == 'true'
+        shell: bash
         run: |
           az config set extension.use_dynamic_install=yes_without_prompt
           az extension add --name containerapp --upgrade
 
-      - name: Validate required variables
-        if: needs.detect_changes.outputs.any == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          for name in AZ_RESOURCE_GROUP AZ_ACR_NAME AZ_WEB_APP_NAME AZ_WORKER_APP_NAME; do
-            if [[ -z "${!name:-}" ]]; then
-              echo "Missing GitHub variable: ${name}" >&2
-              exit 1
-            fi
-          done
-
       - name: Validate web staging runtime config
-        if: needs.detect_changes.outputs.deploy_web == 'true'
         shell: bash
         env:
           STG_DATABASE_URL: ${{ secrets.STG_DATABASE_URL }}
@@ -225,84 +166,20 @@ jobs:
           STG_INTERNAL_EMAIL_DOMAINS: ${{ vars.STG_INTERNAL_EMAIL_DOMAINS }}
           STG_DASHBOARD_DORMANT_LOOKBACK_DAYS: ${{ vars.STG_DASHBOARD_DORMANT_LOOKBACK_DAYS }}
         run: |
-          set -euo pipefail
-          required=(
-            STG_DATABASE_URL
-            STG_ENTRA_CLIENT_SECRET
-            STG_NEXTAUTH_SECRET
-            STG_WORKER_INTERNAL_API_TOKEN
-            STG_WORKER_HEARTBEAT_TOKEN
-            STG_ENTRA_TENANT_ID
-            STG_ENTRA_CLIENT_ID
-            STG_ADMIN_GROUP_ID
-            STG_USER_GROUP_ID
-            STG_INTERNAL_EMAIL_DOMAINS
+          scripts/ci/validate-required-env.sh \
+            STG_DATABASE_URL \
+            STG_ENTRA_CLIENT_SECRET \
+            STG_NEXTAUTH_SECRET \
+            STG_WORKER_INTERNAL_API_TOKEN \
+            STG_WORKER_HEARTBEAT_TOKEN \
+            STG_ENTRA_TENANT_ID \
+            STG_ENTRA_CLIENT_ID \
+            STG_ADMIN_GROUP_ID \
+            STG_USER_GROUP_ID \
+            STG_INTERNAL_EMAIL_DOMAINS \
             STG_DASHBOARD_DORMANT_LOOKBACK_DAYS
-          )
-          for name in "${required[@]}"; do
-            if [[ -z "${!name:-}" ]]; then
-              echo "Missing GitHub staging config: ${name}" >&2
-              exit 1
-            fi
-          done
-
-      - name: Validate worker staging runtime config
-        if: needs.detect_changes.outputs.deploy_worker == 'true'
-        shell: bash
-        env:
-          STG_DATABASE_URL: ${{ secrets.STG_DATABASE_URL }}
-          STG_APPINSIGHTS_API_KEY: ${{ secrets.STG_APPINSIGHTS_API_KEY || secrets.APPINSIGHTS_API_KEY }}
-          STG_ENTRA_CLIENT_SECRET: ${{ secrets.STG_ENTRA_CLIENT_SECRET }}
-          STG_WORKER_INTERNAL_API_TOKEN: ${{ secrets.STG_WORKER_INTERNAL_API_TOKEN }}
-          STG_WORKER_HEARTBEAT_TOKEN: ${{ secrets.STG_WORKER_HEARTBEAT_TOKEN }}
-          STG_APPINSIGHTS_APP_ID: ${{ vars.STG_APPINSIGHTS_APP_ID || vars.APPINSIGHTS_APP_ID }}
-          STG_ENTRA_TENANT_ID: ${{ vars.STG_ENTRA_TENANT_ID }}
-          STG_ENTRA_CLIENT_ID: ${{ vars.STG_ENTRA_CLIENT_ID }}
-          STG_INTERNAL_EMAIL_DOMAINS: ${{ vars.STG_INTERNAL_EMAIL_DOMAINS }}
-          STG_DB_CONNECT_TIMEOUT_SECONDS: ${{ vars.STG_DB_CONNECT_TIMEOUT_SECONDS }}
-          STG_SCHEDULER_POLL_SECONDS: ${{ vars.STG_SCHEDULER_POLL_SECONDS }}
-          STG_GRAPH_BASE: ${{ vars.STG_GRAPH_BASE }}
-          STG_GRAPH_MAX_CONCURRENCY: ${{ vars.STG_GRAPH_MAX_CONCURRENCY }}
-          STG_GRAPH_MAX_RETRIES: ${{ vars.STG_GRAPH_MAX_RETRIES }}
-          STG_GRAPH_CONNECT_TIMEOUT: ${{ vars.STG_GRAPH_CONNECT_TIMEOUT }}
-          STG_GRAPH_READ_TIMEOUT: ${{ vars.STG_GRAPH_READ_TIMEOUT }}
-          STG_GRAPH_PAGE_SIZE: ${{ vars.STG_GRAPH_PAGE_SIZE }}
-          STG_GRAPH_PERMISSIONS_BATCH_SIZE: ${{ vars.STG_GRAPH_PERMISSIONS_BATCH_SIZE }}
-          STG_GRAPH_PERMISSIONS_STALE_AFTER_HOURS: ${{ vars.STG_GRAPH_PERMISSIONS_STALE_AFTER_HOURS }}
-          STG_FLUSH_EVERY: ${{ vars.STG_FLUSH_EVERY }}
-        run: |
-          set -euo pipefail
-          required=(
-            STG_DATABASE_URL
-            STG_APPINSIGHTS_API_KEY
-            STG_ENTRA_CLIENT_SECRET
-            STG_WORKER_INTERNAL_API_TOKEN
-            STG_WORKER_HEARTBEAT_TOKEN
-            STG_APPINSIGHTS_APP_ID
-            STG_ENTRA_TENANT_ID
-            STG_ENTRA_CLIENT_ID
-            STG_INTERNAL_EMAIL_DOMAINS
-            STG_DB_CONNECT_TIMEOUT_SECONDS
-            STG_SCHEDULER_POLL_SECONDS
-            STG_GRAPH_BASE
-            STG_GRAPH_MAX_CONCURRENCY
-            STG_GRAPH_MAX_RETRIES
-            STG_GRAPH_CONNECT_TIMEOUT
-            STG_GRAPH_READ_TIMEOUT
-            STG_GRAPH_PAGE_SIZE
-            STG_GRAPH_PERMISSIONS_BATCH_SIZE
-            STG_GRAPH_PERMISSIONS_STALE_AFTER_HOURS
-            STG_FLUSH_EVERY
-          )
-          for name in "${required[@]}"; do
-            if [[ -z "${!name:-}" ]]; then
-              echo "Missing GitHub staging config: ${name}" >&2
-              exit 1
-            fi
-          done
 
       - name: Sync web staging runtime config
-        if: needs.detect_changes.outputs.deploy_web == 'true'
         shell: bash
         env:
           STG_DATABASE_URL: ${{ secrets.STG_DATABASE_URL }}
@@ -332,51 +209,157 @@ jobs:
           STG_GRAPH_PERMISSIONS_BATCH_SIZE: ${{ vars.STG_GRAPH_PERMISSIONS_BATCH_SIZE }}
           STG_GRAPH_PERMISSIONS_STALE_AFTER_HOURS: ${{ vars.STG_GRAPH_PERMISSIONS_STALE_AFTER_HOURS }}
           STG_FLUSH_EVERY: ${{ vars.STG_FLUSH_EVERY }}
+        run: scripts/ci/sync-staging-web-config.sh
+
+      - name: Build and push web image to ACR
+        shell: bash
         run: |
           set -euo pipefail
-
-          WEB_FQDN="$(az containerapp show \
-            --name "${AZ_WEB_APP_NAME}" \
+          az acr build \
+            --registry "${AZ_ACR_NAME}" \
             --resource-group "${AZ_RESOURCE_GROUP}" \
-            --query "properties.configuration.ingress.fqdn" \
+            --image "sentinel-web:${IMAGE_TAG}" \
+            ./.dist/web-runtime
+
+      - name: Resolve ACR login server
+        id: acr
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACR_LOGIN_SERVER="$(az acr show \
+            --name "${AZ_ACR_NAME}" \
+            --resource-group "${AZ_RESOURCE_GROUP}" \
+            --query "loginServer" \
             --output tsv)"
+          echo "login_server=${ACR_LOGIN_SERVER}" >> "${GITHUB_OUTPUT}"
 
-          NEXTAUTH_URL="${STG_NEXTAUTH_URL:-https://${WEB_FQDN}}"
-          WORKER_API_URL="${STG_WORKER_API_URL:-http://${AZ_WORKER_APP_NAME}}"
-
-          az containerapp secret set \
-            --name "${AZ_WEB_APP_NAME}" \
-            --resource-group "${AZ_RESOURCE_GROUP}" \
-            --secrets \
-              dburl="${STG_DATABASE_URL}" \
-              entrasecret="${STG_ENTRA_CLIENT_SECRET}" \
-              nextauthsecret="${STG_NEXTAUTH_SECRET}" \
-              workerinternaltoken="${STG_WORKER_INTERNAL_API_TOKEN}" \
-              workerheartbeattoken="${STG_WORKER_HEARTBEAT_TOKEN}"
-
+      - name: Update web app to new image
+        shell: bash
+        run: |
+          set -euo pipefail
           az containerapp update \
             --name "${AZ_WEB_APP_NAME}" \
             --resource-group "${AZ_RESOURCE_GROUP}" \
-            --set-env-vars \
-              APP_VERSION="${APP_VERSION}" \
-              DATABASE_URL=secretref:dburl \
-              WORKER_API_URL="${WORKER_API_URL}" \
-              WORKER_INTERNAL_API_TOKEN=secretref:workerinternaltoken \
-              WORKER_HEARTBEAT_TOKEN=secretref:workerheartbeattoken \
-              NEXTAUTH_URL="${NEXTAUTH_URL}" \
-              NEXTAUTH_SECRET=secretref:nextauthsecret \
-              ENTRA_TENANT_ID="${STG_ENTRA_TENANT_ID}" \
-              ENTRA_CLIENT_ID="${STG_ENTRA_CLIENT_ID}" \
-              ENTRA_CLIENT_SECRET=secretref:entrasecret \
-              ADMIN_GROUP_ID="${STG_ADMIN_GROUP_ID}" \
-              USER_GROUP_ID="${STG_USER_GROUP_ID}" \
-              INTERNAL_EMAIL_DOMAINS="${STG_INTERNAL_EMAIL_DOMAINS}" \
-              DASHBOARD_DORMANT_LOOKBACK_DAYS="${STG_DASHBOARD_DORMANT_LOOKBACK_DAYS}" \
-              LICENSE_PUBLIC_KEY_PATH="${STG_LICENSE_PUBLIC_KEY_PATH}" \
-              LICENSE_CACHE_TTL_SECONDS="${STG_LICENSE_CACHE_TTL_SECONDS}"
+            --image "${{ steps.acr.outputs.login_server }}/sentinel-web:${IMAGE_TAG}"
+
+      - name: Show deployed web revision
+        id: deployment
+        shell: bash
+        run: scripts/ci/show-containerapp-revision.sh "${AZ_WEB_APP_NAME}" "${{ steps.acr.outputs.login_server }}/sentinel-web:${IMAGE_TAG}"
+
+      - name: Clean up packaged web runtime
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          rm -rf .dist/web-runtime
+          rmdir .dist 2>/dev/null || true
+
+  deploy_worker:
+    needs: [prepare, await_db_migration_approval, deploy_web]
+    if: ${{ always() && needs.prepare.outputs.deploy_worker == 'true' && needs.deploy_web.result != 'failure' && needs.deploy_web.result != 'cancelled' && (needs.prepare.outputs.db_sql_changed != 'true' || needs.await_db_migration_approval.result == 'success') }}
+    runs-on: ubuntu-latest
+    environment: staging
+    outputs:
+      app_name: ${{ steps.deployment.outputs.app_name }}
+      latest_revision: ${{ steps.deployment.outputs.latest_revision }}
+      ready_revision: ${{ steps.deployment.outputs.ready_revision }}
+      image: ${{ steps.deployment.outputs.image }}
+      expected_image: ${{ steps.deployment.outputs.expected_image }}
+      fqdn: ${{ steps.deployment.outputs.fqdn }}
+      image_matches_expected: ${{ steps.deployment.outputs.image_matches_expected }}
+    env:
+      APP_VERSION: ${{ needs.prepare.outputs.app_version }}
+      IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Show app version
+        shell: bash
+        run: |
+          echo "STAGING_VERSION=${STAGING_VERSION}"
+          echo "APP_VERSION=${APP_VERSION}"
+          echo "IMAGE_TAG=${IMAGE_TAG}"
+
+      - name: Worker checks (tests + compile)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r worker/requirements.txt
+          python -m unittest discover -s worker/tests -p "test_*.py"
+          python -m py_compile worker/app/*.py worker/app/jobs/*.py
+
+      - name: Package worker runtime artifact
+        shell: bash
+        run: scripts/ci/package-worker-runtime.sh
+
+      - name: Azure Login (OIDC)
+        shell: bash
+        run: |
+          scripts/ci/azure-oidc-login.sh \
+            "${{ secrets.AZURE_CLIENT_ID }}" \
+            "${{ secrets.AZURE_TENANT_ID }}" \
+            "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+
+      - name: Ensure Azure CLI extensions
+        shell: bash
+        run: |
+          az config set extension.use_dynamic_install=yes_without_prompt
+          az extension add --name containerapp --upgrade
+
+      - name: Validate worker staging runtime config
+        shell: bash
+        env:
+          STG_DATABASE_URL: ${{ secrets.STG_DATABASE_URL }}
+          STG_APPINSIGHTS_API_KEY: ${{ secrets.STG_APPINSIGHTS_API_KEY || secrets.APPINSIGHTS_API_KEY }}
+          STG_ENTRA_CLIENT_SECRET: ${{ secrets.STG_ENTRA_CLIENT_SECRET }}
+          STG_WORKER_INTERNAL_API_TOKEN: ${{ secrets.STG_WORKER_INTERNAL_API_TOKEN }}
+          STG_WORKER_HEARTBEAT_TOKEN: ${{ secrets.STG_WORKER_HEARTBEAT_TOKEN }}
+          STG_APPINSIGHTS_APP_ID: ${{ vars.STG_APPINSIGHTS_APP_ID || vars.APPINSIGHTS_APP_ID }}
+          STG_ENTRA_TENANT_ID: ${{ vars.STG_ENTRA_TENANT_ID }}
+          STG_ENTRA_CLIENT_ID: ${{ vars.STG_ENTRA_CLIENT_ID }}
+          STG_INTERNAL_EMAIL_DOMAINS: ${{ vars.STG_INTERNAL_EMAIL_DOMAINS }}
+          STG_DB_CONNECT_TIMEOUT_SECONDS: ${{ vars.STG_DB_CONNECT_TIMEOUT_SECONDS }}
+          STG_SCHEDULER_POLL_SECONDS: ${{ vars.STG_SCHEDULER_POLL_SECONDS }}
+          STG_GRAPH_BASE: ${{ vars.STG_GRAPH_BASE }}
+          STG_GRAPH_MAX_CONCURRENCY: ${{ vars.STG_GRAPH_MAX_CONCURRENCY }}
+          STG_GRAPH_MAX_RETRIES: ${{ vars.STG_GRAPH_MAX_RETRIES }}
+          STG_GRAPH_CONNECT_TIMEOUT: ${{ vars.STG_GRAPH_CONNECT_TIMEOUT }}
+          STG_GRAPH_READ_TIMEOUT: ${{ vars.STG_GRAPH_READ_TIMEOUT }}
+          STG_GRAPH_PAGE_SIZE: ${{ vars.STG_GRAPH_PAGE_SIZE }}
+          STG_GRAPH_PERMISSIONS_BATCH_SIZE: ${{ vars.STG_GRAPH_PERMISSIONS_BATCH_SIZE }}
+          STG_GRAPH_PERMISSIONS_STALE_AFTER_HOURS: ${{ vars.STG_GRAPH_PERMISSIONS_STALE_AFTER_HOURS }}
+          STG_FLUSH_EVERY: ${{ vars.STG_FLUSH_EVERY }}
+        run: |
+          scripts/ci/validate-required-env.sh \
+            STG_DATABASE_URL \
+            STG_APPINSIGHTS_API_KEY \
+            STG_ENTRA_CLIENT_SECRET \
+            STG_WORKER_INTERNAL_API_TOKEN \
+            STG_WORKER_HEARTBEAT_TOKEN \
+            STG_APPINSIGHTS_APP_ID \
+            STG_ENTRA_TENANT_ID \
+            STG_ENTRA_CLIENT_ID \
+            STG_INTERNAL_EMAIL_DOMAINS \
+            STG_DB_CONNECT_TIMEOUT_SECONDS \
+            STG_SCHEDULER_POLL_SECONDS \
+            STG_GRAPH_BASE \
+            STG_GRAPH_MAX_CONCURRENCY \
+            STG_GRAPH_MAX_RETRIES \
+            STG_GRAPH_CONNECT_TIMEOUT \
+            STG_GRAPH_READ_TIMEOUT \
+            STG_GRAPH_PAGE_SIZE \
+            STG_GRAPH_PERMISSIONS_BATCH_SIZE \
+            STG_GRAPH_PERMISSIONS_STALE_AFTER_HOURS \
+            STG_FLUSH_EVERY
 
       - name: Sync worker staging runtime config
-        if: needs.detect_changes.outputs.deploy_worker == 'true'
         shell: bash
         env:
           STG_DATABASE_URL: ${{ secrets.STG_DATABASE_URL }}
@@ -402,77 +385,9 @@ jobs:
           STG_GRAPH_PERMISSIONS_BATCH_SIZE: ${{ vars.STG_GRAPH_PERMISSIONS_BATCH_SIZE }}
           STG_GRAPH_PERMISSIONS_STALE_AFTER_HOURS: ${{ vars.STG_GRAPH_PERMISSIONS_STALE_AFTER_HOURS }}
           STG_FLUSH_EVERY: ${{ vars.STG_FLUSH_EVERY }}
-        run: |
-          set -euo pipefail
-
-          WEB_FQDN="$(az containerapp show \
-            --name "${AZ_WEB_APP_NAME}" \
-            --resource-group "${AZ_RESOURCE_GROUP}" \
-            --query "properties.configuration.ingress.fqdn" \
-            --output tsv)"
-
-          WORKER_HEARTBEAT_URL="${STG_WORKER_HEARTBEAT_URL:-https://${WEB_FQDN}/api/internal/worker-heartbeat}"
-
-          az containerapp secret set \
-            --name "${AZ_WORKER_APP_NAME}" \
-            --resource-group "${AZ_RESOURCE_GROUP}" \
-            --secrets \
-              appinsightsapikey="${STG_APPINSIGHTS_API_KEY}" \
-              dburl="${STG_DATABASE_URL}" \
-              entrasecret="${STG_ENTRA_CLIENT_SECRET}" \
-              workerinternaltoken="${STG_WORKER_INTERNAL_API_TOKEN}" \
-              workerheartbeattoken="${STG_WORKER_HEARTBEAT_TOKEN}"
-
-          az containerapp update \
-            --name "${AZ_WORKER_APP_NAME}" \
-            --resource-group "${AZ_RESOURCE_GROUP}" \
-            --set-env-vars \
-              APP_VERSION="${APP_VERSION}" \
-              APPINSIGHTS_APP_ID="${STG_APPINSIGHTS_APP_ID}" \
-              APPINSIGHTS_API_KEY=secretref:appinsightsapikey \
-              DATABASE_URL=secretref:dburl \
-              WORKER_INTERNAL_API_TOKEN=secretref:workerinternaltoken \
-              WORKER_HEARTBEAT_TOKEN=secretref:workerheartbeattoken \
-              DB_CONNECT_TIMEOUT_SECONDS="${STG_DB_CONNECT_TIMEOUT_SECONDS}" \
-              SCHEDULER_POLL_SECONDS="${STG_SCHEDULER_POLL_SECONDS}" \
-              ENTRA_TENANT_ID="${STG_ENTRA_TENANT_ID}" \
-              ENTRA_CLIENT_ID="${STG_ENTRA_CLIENT_ID}" \
-              ENTRA_CLIENT_SECRET=secretref:entrasecret \
-              INTERNAL_EMAIL_DOMAINS="${STG_INTERNAL_EMAIL_DOMAINS}" \
-              GRAPH_BASE="${STG_GRAPH_BASE}" \
-              GRAPH_MAX_CONCURRENCY="${STG_GRAPH_MAX_CONCURRENCY}" \
-              GRAPH_MAX_RETRIES="${STG_GRAPH_MAX_RETRIES}" \
-              GRAPH_CONNECT_TIMEOUT="${STG_GRAPH_CONNECT_TIMEOUT}" \
-              GRAPH_READ_TIMEOUT="${STG_GRAPH_READ_TIMEOUT}" \
-              GRAPH_PAGE_SIZE="${STG_GRAPH_PAGE_SIZE}" \
-              GRAPH_PERMISSIONS_BATCH_SIZE="${STG_GRAPH_PERMISSIONS_BATCH_SIZE}" \
-              GRAPH_PERMISSIONS_STALE_AFTER_HOURS="${STG_GRAPH_PERMISSIONS_STALE_AFTER_HOURS}" \
-              FLUSH_EVERY="${STG_FLUSH_EVERY}" \
-              LICENSE_PUBLIC_KEY_PATH="${STG_LICENSE_PUBLIC_KEY_PATH}" \
-              LICENSE_CACHE_TTL_SECONDS="${STG_LICENSE_CACHE_TTL_SECONDS}" \
-              WORKER_HEARTBEAT_URL="${WORKER_HEARTBEAT_URL}"
-
-      - name: Prepare image tag
-        if: needs.detect_changes.outputs.any == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          IMAGE_TAG="${GITHUB_SHA::12}"
-          echo "IMAGE_TAG=${IMAGE_TAG}" >> "${GITHUB_ENV}"
-
-      - name: Build and push web image to ACR
-        if: needs.detect_changes.outputs.deploy_web == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          az acr build \
-            --registry "${AZ_ACR_NAME}" \
-            --resource-group "${AZ_RESOURCE_GROUP}" \
-            --image "sentinel-web:${IMAGE_TAG}" \
-            ./web
+        run: scripts/ci/sync-staging-worker-config.sh
 
       - name: Build and push worker image to ACR
-        if: needs.detect_changes.outputs.deploy_worker == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -480,10 +395,9 @@ jobs:
             --registry "${AZ_ACR_NAME}" \
             --resource-group "${AZ_RESOURCE_GROUP}" \
             --image "sentinel-worker:${IMAGE_TAG}" \
-            ./worker
+            ./.dist/worker-runtime
 
       - name: Resolve ACR login server
-        if: needs.detect_changes.outputs.any == 'true'
         id: acr
         shell: bash
         run: |
@@ -495,18 +409,7 @@ jobs:
             --output tsv)"
           echo "login_server=${ACR_LOGIN_SERVER}" >> "${GITHUB_OUTPUT}"
 
-      - name: Update web app to new image
-        if: needs.detect_changes.outputs.deploy_web == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          az containerapp update \
-            --name "${AZ_WEB_APP_NAME}" \
-            --resource-group "${AZ_RESOURCE_GROUP}" \
-            --image "${{ steps.acr.outputs.login_server }}/sentinel-web:${IMAGE_TAG}"
-
       - name: Update worker app to new image
-        if: needs.detect_changes.outputs.deploy_worker == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -515,30 +418,169 @@ jobs:
             --resource-group "${AZ_RESOURCE_GROUP}" \
             --image "${{ steps.acr.outputs.login_server }}/sentinel-worker:${IMAGE_TAG}"
 
-      - name: Show deployed revisions
-        if: needs.detect_changes.outputs.any == 'true'
+      - name: Show deployed worker revision
+        id: deployment
+        shell: bash
+        run: scripts/ci/show-containerapp-revision.sh "${AZ_WORKER_APP_NAME}" "${{ steps.acr.outputs.login_server }}/sentinel-worker:${IMAGE_TAG}"
+
+      - name: Clean up packaged worker runtime
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          rm -rf .dist/worker-runtime
+          rmdir .dist 2>/dev/null || true
+
+  report:
+    needs: [prepare, await_db_migration_approval, deploy_web, deploy_worker]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write staging deployment report
         shell: bash
         env:
-          DEPLOY_WEB: ${{ needs.detect_changes.outputs.deploy_web }}
-          DEPLOY_WORKER: ${{ needs.detect_changes.outputs.deploy_worker }}
+          ANY: ${{ needs.prepare.outputs.any }}
+          APP_VERSION: ${{ needs.prepare.outputs.app_version }}
+          IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+          DEPLOY_REASON: ${{ needs.prepare.outputs.reason }}
+          CHANGED_PATHS: ${{ needs.prepare.outputs.changed_paths }}
+          DB_SQL_CHANGED: ${{ needs.prepare.outputs.db_sql_changed }}
+          DB_APPROVAL_RESULT: ${{ needs.await_db_migration_approval.result }}
+          DEPLOY_WEB_REQUESTED: ${{ needs.prepare.outputs.deploy_web }}
+          DEPLOY_WORKER_REQUESTED: ${{ needs.prepare.outputs.deploy_worker }}
+          WEB_RESULT: ${{ needs.deploy_web.result }}
+          WEB_APP_NAME: ${{ needs.deploy_web.outputs.app_name }}
+          WEB_LATEST_REVISION: ${{ needs.deploy_web.outputs.latest_revision }}
+          WEB_READY_REVISION: ${{ needs.deploy_web.outputs.ready_revision }}
+          WEB_IMAGE: ${{ needs.deploy_web.outputs.image }}
+          WEB_EXPECTED_IMAGE: ${{ needs.deploy_web.outputs.expected_image }}
+          WEB_FQDN: ${{ needs.deploy_web.outputs.fqdn }}
+          WEB_IMAGE_MATCHES_EXPECTED: ${{ needs.deploy_web.outputs.image_matches_expected }}
+          WORKER_RESULT: ${{ needs.deploy_worker.result }}
+          WORKER_APP_NAME: ${{ needs.deploy_worker.outputs.app_name }}
+          WORKER_LATEST_REVISION: ${{ needs.deploy_worker.outputs.latest_revision }}
+          WORKER_READY_REVISION: ${{ needs.deploy_worker.outputs.ready_revision }}
+          WORKER_IMAGE: ${{ needs.deploy_worker.outputs.image }}
+          WORKER_EXPECTED_IMAGE: ${{ needs.deploy_worker.outputs.expected_image }}
+          WORKER_FQDN: ${{ needs.deploy_worker.outputs.fqdn }}
+          WORKER_IMAGE_MATCHES_EXPECTED: ${{ needs.deploy_worker.outputs.image_matches_expected }}
         run: |
-          if [[ "${DEPLOY_WEB}" == "true" ]]; then
-            az containerapp show \
-              --name "${AZ_WEB_APP_NAME}" \
-              --resource-group "${AZ_RESOURCE_GROUP}" \
-              --query "{app:name,latestRevision:properties.latestRevisionName}" \
-              --output table
+          set -euo pipefail
+
+          component_note() {
+            local requested="$1"
+            local result="$2"
+            local latest_revision="$3"
+            local ready_revision="$4"
+            local image_matches_expected="$5"
+
+            if [[ "${requested}" != "true" ]]; then
+              echo "Not requested"
+              return
+            fi
+
+            case "${result}" in
+              success)
+                if [[ -n "${latest_revision}" && -n "${ready_revision}" && "${latest_revision}" != "${ready_revision}" ]]; then
+                  echo "Update finished but rollout is still converging"
+                elif [[ "${image_matches_expected}" != "true" ]]; then
+                  echo "Reported image does not match the requested tag"
+                else
+                  echo "Deployed"
+                fi
+                ;;
+              skipped)
+                if [[ "${DB_SQL_CHANGED}" == "true" && "${DB_APPROVAL_RESULT}" != "success" ]]; then
+                  echo "Skipped pending DB migration approval"
+                else
+                  echo "Skipped"
+                fi
+                ;;
+              failure)
+                echo "Failed"
+                ;;
+              cancelled)
+                echo "Cancelled"
+                ;;
+              *)
+                echo "Unknown"
+                ;;
+            esac
+          }
+
+          write_component_row() {
+            local label="$1"
+            local requested="$2"
+            local result="$3"
+            local app_name="$4"
+            local latest_revision="$5"
+            local ready_revision="$6"
+            local image="$7"
+            local expected_image="$8"
+            local fqdn="$9"
+            local image_matches_expected="${10}"
+            local note
+
+            note="$(component_note "${requested}" "${result}" "${latest_revision}" "${ready_revision}" "${image_matches_expected}")"
+
+            printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
+              "${label}" \
+              "${requested}" \
+              "${result:-n/a}" \
+              "${app_name:-n/a}" \
+              "${ready_revision:-n/a}" \
+              "${latest_revision:-n/a}" \
+              "${image:-n/a}" \
+              "${expected_image:-n/a}" \
+              "${fqdn:-n/a}" \
+              "${note}" >> "${GITHUB_STEP_SUMMARY}"
+          }
+
+          {
+            echo "## Staging Deployment Report"
+            echo
+            echo "- App version: \`${APP_VERSION}\`"
+            echo "- Image tag: \`${IMAGE_TAG}\`"
+            echo "- Change detection: \`${DEPLOY_REASON}\`"
+            echo "- Changed paths: \`${CHANGED_PATHS}\`"
+            if [[ "${DB_SQL_CHANGED}" == "true" ]]; then
+              echo "- DB migration approval: \`${DB_APPROVAL_RESULT:-n/a}\`"
+            fi
+            echo
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [[ "${ANY}" != "true" ]]; then
+            echo "No deployment was triggered because no app changes were detected." >> "${GITHUB_STEP_SUMMARY}"
+            cat "${GITHUB_STEP_SUMMARY}"
+            exit 0
           fi
 
-          if [[ "${DEPLOY_WORKER}" == "true" ]]; then
-            az containerapp show \
-              --name "${AZ_WORKER_APP_NAME}" \
-              --resource-group "${AZ_RESOURCE_GROUP}" \
-              --query "{app:name,latestRevision:properties.latestRevisionName}" \
-              --output table
-          fi
+          {
+            echo "| Component | Requested | Job result | App | Ready revision | Latest revision | Image | Expected image | FQDN | Note |"
+            echo "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Skip deploy when no app changes are detected
-        if: needs.detect_changes.outputs.any != 'true'
-        shell: bash
-        run: echo "Skipping deploy because no app changes were detected."
+          write_component_row \
+            "web" \
+            "${DEPLOY_WEB_REQUESTED}" \
+            "${WEB_RESULT}" \
+            "${WEB_APP_NAME}" \
+            "${WEB_LATEST_REVISION}" \
+            "${WEB_READY_REVISION}" \
+            "${WEB_IMAGE}" \
+            "${WEB_EXPECTED_IMAGE}" \
+            "${WEB_FQDN}" \
+            "${WEB_IMAGE_MATCHES_EXPECTED}"
+
+          write_component_row \
+            "worker" \
+            "${DEPLOY_WORKER_REQUESTED}" \
+            "${WORKER_RESULT}" \
+            "${WORKER_APP_NAME}" \
+            "${WORKER_LATEST_REVISION}" \
+            "${WORKER_READY_REVISION}" \
+            "${WORKER_IMAGE}" \
+            "${WORKER_EXPECTED_IMAGE}" \
+            "${WORKER_FQDN}" \
+            "${WORKER_IMAGE_MATCHES_EXPECTED}"
+
+          cat "${GITHUB_STEP_SUMMARY}"
