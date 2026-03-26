@@ -12,5 +12,5 @@ fi
 az containerapp show \
   --name "${app_name}" \
   --resource-group "${AZ_RESOURCE_GROUP}" \
-  --query "{app:name,latestRevision:properties.latestRevisionName}" \
+  --query "{app:name,latestRevision:properties.latestRevisionName,fqdn:properties.configuration.ingress.fqdn,image:properties.template.containers[0].image}" \
   --output table
