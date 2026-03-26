@@ -500,7 +500,7 @@ jobs:
 
             note="$(component_note "${requested}" "${result}" "${latest_revision}" "${ready_revision}" "${image_matches_expected}")"
 
-            printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
+            printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' \
               "${label}" \
               "${requested}" \
               "${result:-n/a}" \
@@ -508,12 +508,9 @@ jobs:
               "${ready_revision:-n/a}" \
               "${latest_revision:-n/a}" \
               "${image:-n/a}" \
+              "${expected_image:-n/a}" \
               "${fqdn:-n/a}" \
               "${note}" >> "${GITHUB_STEP_SUMMARY}"
-
-            if [[ -n "${expected_image}" && "${expected_image}" != "${image}" ]]; then
-              printf 'Expected image for %s: `%s`\n\n' "${label}" "${expected_image}" >> "${GITHUB_STEP_SUMMARY}"
-            fi
           }
 
           {
@@ -536,8 +533,8 @@ jobs:
           fi
 
           {
-            echo "| Component | Requested | Job result | App | Ready revision | Latest revision | Image | FQDN | Note |"
-            echo "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+            echo "| Component | Requested | Job result | App | Ready revision | Latest revision | Image | Expected image | FQDN | Note |"
+            echo "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
           } >> "${GITHUB_STEP_SUMMARY}"
 
           write_component_row \
