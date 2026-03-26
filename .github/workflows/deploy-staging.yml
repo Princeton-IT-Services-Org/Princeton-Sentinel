@@ -133,6 +133,10 @@ jobs:
           APP_VERSION="${APP_VERSION}" npm test
           APP_VERSION="${APP_VERSION}" npm run build
 
+      - name: Package web runtime artifact
+        shell: bash
+        run: scripts/ci/package-web-runtime.sh
+
       - name: Azure Login (OIDC)
         shell: bash
         run: |
@@ -215,7 +219,7 @@ jobs:
             --registry "${AZ_ACR_NAME}" \
             --resource-group "${AZ_RESOURCE_GROUP}" \
             --image "sentinel-web:${IMAGE_TAG}" \
-            ./web
+            ./.dist/web-runtime
 
       - name: Resolve ACR login server
         id: acr
@@ -242,6 +246,13 @@ jobs:
         id: deployment
         shell: bash
         run: scripts/ci/show-containerapp-revision.sh "${AZ_WEB_APP_NAME}" "${{ steps.acr.outputs.login_server }}/sentinel-web:${IMAGE_TAG}"
+
+      - name: Clean up packaged web runtime
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          rm -rf .dist/web-runtime
+          rmdir .dist 2>/dev/null || true
 
   deploy_worker:
     needs: [prepare, await_db_migration_approval, deploy_web]
@@ -283,6 +294,10 @@ jobs:
           pip install -r worker/requirements.txt
           python -m unittest discover -s worker/tests -p "test_*.py"
           python -m py_compile worker/app/*.py worker/app/jobs/*.py
+
+      - name: Package worker runtime artifact
+        shell: bash
+        run: scripts/ci/package-worker-runtime.sh
 
       - name: Azure Login (OIDC)
         shell: bash
@@ -380,7 +395,7 @@ jobs:
             --registry "${AZ_ACR_NAME}" \
             --resource-group "${AZ_RESOURCE_GROUP}" \
             --image "sentinel-worker:${IMAGE_TAG}" \
-            ./worker
+            ./.dist/worker-runtime
 
       - name: Resolve ACR login server
         id: acr
@@ -407,6 +422,13 @@ jobs:
         id: deployment
         shell: bash
         run: scripts/ci/show-containerapp-revision.sh "${AZ_WORKER_APP_NAME}" "${{ steps.acr.outputs.login_server }}/sentinel-worker:${IMAGE_TAG}"
+
+      - name: Clean up packaged worker runtime
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          rm -rf .dist/worker-runtime
+          rmdir .dist 2>/dev/null || true
 
   report:
     needs: [prepare, await_db_migration_approval, deploy_web, deploy_worker]
