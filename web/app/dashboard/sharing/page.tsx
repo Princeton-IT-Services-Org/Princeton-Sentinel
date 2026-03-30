@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { requireUser } from "@/app/lib/auth";
 import { query } from "@/app/lib/db";
 import { formatNumber } from "@/app/lib/format";
+import { getInternalDomainPatterns } from "@/app/lib/internalDomains";
 import { getPagination, getParam, getSortDirection, SearchParams } from "@/app/lib/params";
 import { SharingSummaryBarChartClient, SharingSummaryPieChartClient } from "@/components/sharing-summary-graphs-client";
 import { SharingLinkBreakdownTable, SharingSitesTable } from "./sharing-tables";
@@ -29,6 +30,7 @@ async function SharingPage({ searchParams }: { searchParams?: Promise<SearchPara
   await requireUser();
 
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
+  const internalDomainPatterns = getInternalDomainPatterns();
 
   const search = getParam(resolvedSearchParams, "q");
   const { page, pageSize, offset } = getPagination(resolvedSearchParams, { page: 1, pageSize: 50 });
@@ -36,18 +38,20 @@ async function SharingPage({ searchParams }: { searchParams?: Promise<SearchPara
   const lbPageSize = Number(getParam(resolvedSearchParams, "lbPageSize") || 10);
   const sort = getParam(resolvedSearchParams, "sort") || "links";
   const dir = getSortDirection(resolvedSearchParams, "desc");
-  const externalThreshold = Number(getParam(resolvedSearchParams, "externalThreshold") || 10);
 
   const sortMap: Record<string, string> = {
     site: "i.title",
-    links: "COALESCE(s.sharing_links, 0)",
-    anonymous: "COALESCE(s.anonymous_links, 0)",
-    guests: "COALESCE(e.guest_users, 0)",
-    external: "COALESCE(e.external_users, 0)",
-    lastShare: "s.last_shared_at",
+    links: "COALESCE(ps.sharing_links, 0)",
+    anonymous: "COALESCE(ps.anonymous_links, 0)",
+    guests: "COALESCE(ep.guest_users, 0)",
+    external: "COALESCE(ep.external_users, 0)",
+    lastShare: "ps.last_shared_at",
   };
-  const sortColumn = sortMap[sort] || "COALESCE(s.sharing_links, 0)";
+  const sortColumn = sortMap[sort] || "COALESCE(ps.sharing_links, 0)";
   const { clause, params } = buildSearchFilter(search);
+  const internalDomainParamIndex = params.length + 1;
+  const limitParamIndex = params.length + 2;
+  const offsetParamIndex = params.length + 3;
   const [breakdownAllRows, topSites, countRows, siteRows] = await Promise.all([
     query<any>(
       `
@@ -68,26 +72,56 @@ async function SharingPage({ searchParams }: { searchParams?: Promise<SearchPara
     query<any>("SELECT COUNT(*)::int AS total FROM mv_msgraph_routable_site_drives i " + clause, params),
     query<any>(
       `
+      WITH permission_summary AS (
+        SELECT
+          p.drive_id,
+          COUNT(*) FILTER (WHERE p.link_scope IS NOT NULL)::int AS sharing_links,
+          COUNT(*) FILTER (WHERE p.link_scope = 'anonymous')::int AS anonymous_links,
+          MAX(p.synced_at) AS last_shared_at
+        FROM msgraph_drive_item_permissions p
+        WHERE p.deleted_at IS NULL
+        GROUP BY p.drive_id
+      ),
+      grants AS (
+        SELECT
+          g.drive_id,
+          LOWER(COALESCE(g.principal_email, g.principal_user_principal_name)) AS email
+        FROM msgraph_drive_item_permission_grants g
+        JOIN msgraph_drive_item_permissions p
+          ON p.drive_id = g.drive_id AND p.item_id = g.item_id AND p.permission_id = g.permission_id
+        WHERE g.deleted_at IS NULL
+          AND p.deleted_at IS NULL
+          AND COALESCE(g.principal_email, g.principal_user_principal_name) IS NOT NULL
+      ),
+      external_principals AS (
+        SELECT
+          drive_id,
+          COUNT(DISTINCT email) FILTER (WHERE email LIKE '%#ext#%')::int AS guest_users,
+          COUNT(DISTINCT email) FILTER (
+            WHERE email NOT LIKE '%#ext#%'
+              AND COALESCE(array_length($${internalDomainParamIndex}::text[], 1), 0) > 0
+              AND NOT (split_part(email, '@', 2) LIKE ANY($${internalDomainParamIndex}::text[]))
+          )::int AS external_users
+        FROM grants
+        GROUP BY drive_id
+      )
       SELECT
-        i.site_key,
         i.route_drive_id,
         i.title,
         i.web_url,
-        i.is_personal,
-        COALESCE(s.sharing_links, 0) AS sharing_links,
-        COALESCE(s.anonymous_links, 0) AS anonymous_links,
-        COALESCE(s.organization_links, 0) AS organization_links,
-        s.last_shared_at,
-        COALESCE(e.guest_users, 0) AS "distinctGuests",
-        COALESCE(e.external_users, 0) AS "distinctExternalUsers"
+        COALESCE(ps.sharing_links, 0) AS sharing_links,
+        COALESCE(ps.anonymous_links, 0) AS anonymous_links,
+        ps.last_shared_at,
+        COALESCE(ep.guest_users, 0) AS "guestUsers",
+        COALESCE(ep.external_users, 0) AS "externalUsers"
       FROM mv_msgraph_routable_site_drives i
-      LEFT JOIN mv_msgraph_site_sharing_summary s ON s.site_key = i.site_key
-      LEFT JOIN mv_msgraph_site_external_principals e ON e.site_key = i.site_key
+      LEFT JOIN permission_summary ps ON ps.drive_id = i.route_drive_id
+      LEFT JOIN external_principals ep ON ep.drive_id = i.route_drive_id
       ${clause}
       ORDER BY ${sortColumn} ${dir.toUpperCase()} NULLS LAST
-      LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+      LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}
       `,
-      [...params, pageSize, offset]
+      [...params, internalDomainPatterns, pageSize, offset]
     ),
   ]);
 
@@ -105,8 +139,8 @@ async function SharingPage({ searchParams }: { searchParams?: Promise<SearchPara
 
   const siteRowsEnriched = siteRows.map((row: any) => ({
     ...row,
-    distinctGuests: Number(row.distinctGuests || 0),
-    distinctExternalUsers: Number(row.distinctExternalUsers || 0),
+    guestUsers: Number(row.guestUsers || 0),
+    externalUsers: Number(row.externalUsers || 0),
   }));
 
   return (
@@ -115,15 +149,6 @@ async function SharingPage({ searchParams }: { searchParams?: Promise<SearchPara
       <form action="/dashboard/sharing" method="get">
         <FilterBar>
           <Input name="q" placeholder="Search sites…" defaultValue={search || ""} className="w-64" />
-          <Input
-            name="externalThreshold"
-            type="number"
-            min={0}
-            max={10000}
-            defaultValue={String(externalThreshold)}
-            className="w-28"
-            title="Oversharing threshold"
-          />
           <Input
             name="pageSize"
             type="number"
@@ -184,18 +209,18 @@ async function SharingPage({ searchParams }: { searchParams?: Promise<SearchPara
         totalItems={lbTotal}
         pageParam="lbPage"
         pageSizeParam="lbPageSize"
-        extraParams={{ q: search || undefined, externalThreshold, page, pageSize, sort, dir }}
+        extraParams={{ q: search || undefined, page, pageSize, sort, dir }}
       />
 
       <Card>
         <CardHeader>
           <CardTitle>Sites</CardTitle>
           <CardDescription>
-            {formatNumber(total)} sites • showing {formatNumber(siteRowsEnriched.length)} • external threshold {externalThreshold}
+            {formatNumber(total)} sites • showing {formatNumber(siteRowsEnriched.length)}
           </CardDescription>
         </CardHeader>
         <CardContent className="overflow-x-auto">
-          <SharingSitesTable sites={siteRowsEnriched} externalThreshold={externalThreshold} />
+          <SharingSitesTable sites={siteRowsEnriched} />
         </CardContent>
       </Card>
 
@@ -204,7 +229,7 @@ async function SharingPage({ searchParams }: { searchParams?: Promise<SearchPara
         page={page}
         pageSize={pageSize}
         totalItems={total}
-        extraParams={{ q: search || undefined, externalThreshold, pageSize, sort, dir, lbPage, lbPageSize }}
+        extraParams={{ q: search || undefined, pageSize, sort, dir, lbPage, lbPageSize }}
       />
     </main>
   );

@@ -4,7 +4,7 @@ import Link from "next/link";
 import * as React from "react";
 
 import { SortableTable } from "@/components/sortable-table";
-import { Badge } from "@/components/ui/badge";
+import { InfoTooltip } from "@/components/info-tooltip";
 import { formatIsoDateTime } from "@/app/lib/format";
 
 type LinkBreakdownRow = {
@@ -18,14 +18,14 @@ function toBreakdownParam(v: string | null): string {
 }
 
 type SiteRow = {
-  site_key: string;
   route_drive_id: string;
   title: string;
+  web_url: string | null;
   last_shared_at: string | null;
   sharing_links: number;
   anonymous_links: number;
-  distinctGuests: number;
-  distinctExternalUsers: number;
+  guestUsers: number;
+  externalUsers: number;
 };
 
 function parseIsoToTs(value: string | null | undefined): number | null {
@@ -90,65 +90,71 @@ export function SharingLinkBreakdownTable({ breakdown }: { breakdown: LinkBreakd
 
 export function SharingSitesTable({
   sites,
-  externalThreshold,
 }: {
   sites: SiteRow[];
-  externalThreshold: number;
 }) {
   const columns = React.useMemo(
     () => [
       {
         id: "site",
         header: "Site",
+        headerInfo: <InfoTooltip label="The specific routable drive row that opens the linked site sharing page." />,
         sortValue: (s: SiteRow) => s.title,
-        cell: (s: SiteRow) => {
-          const oversharing = externalThreshold > 0 && s.distinctExternalUsers >= externalThreshold;
-          return (
-            <div className="flex flex-col gap-1">
-              <Link className="font-medium hover:underline" href={`/sites/${encodeURIComponent(s.route_drive_id)}/sharing`}>
-                {s.title}
-              </Link>
-              <div className="flex flex-wrap items-center gap-1">
-                {oversharing ? <Badge variant="outline">Oversharing</Badge> : null}
-                {s.anonymous_links > 0 ? <Badge variant="outline">Anonymous</Badge> : null}
-              </div>
-            </div>
-          );
-        },
+        cell: (s: SiteRow) => (
+          <div className="flex flex-col gap-1">
+            <Link className="font-medium hover:underline" href={`/sites/${encodeURIComponent(s.route_drive_id)}/sharing`}>
+              {s.title || s.route_drive_id}
+            </Link>
+            {s.web_url ? (
+              <a className="truncate text-xs text-muted-foreground hover:underline" href={s.web_url} target="_blank" rel="noreferrer">
+                {s.web_url}
+              </a>
+            ) : (
+              <span className="truncate text-xs text-muted-foreground">{s.route_drive_id}</span>
+            )}
+          </div>
+        ),
         cellClassName: "max-w-[420px]",
       },
       {
         id: "links",
-        header: "Links",
+        header: "Sharing links",
+        headerInfo: <InfoTooltip label="Permission records on this route drive where link_scope is present." />,
         sortValue: (s: SiteRow) => s.sharing_links,
         cell: (s: SiteRow) => <span className="text-muted-foreground">{s.sharing_links.toLocaleString()}</span>,
       },
       {
         id: "anonymous",
-        header: "Anonymous",
+        header: "Anonymous links",
+        headerInfo: <InfoTooltip label="Sharing-link permissions on this route drive where link_scope is anonymous." />,
         sortValue: (s: SiteRow) => s.anonymous_links,
         cell: (s: SiteRow) => <span className="text-muted-foreground">{s.anonymous_links.toLocaleString()}</span>,
       },
       {
         id: "guests",
-        header: "Guests",
-        sortValue: (s: SiteRow) => s.distinctGuests,
-        cell: (s: SiteRow) => <span className="text-muted-foreground">{s.distinctGuests.toLocaleString()}</span>,
+        header: "Guest users",
+        headerInfo: <InfoTooltip label="Distinct granted email identities on this route drive containing #EXT#." />,
+        sortValue: (s: SiteRow) => s.guestUsers,
+        cell: (s: SiteRow) => <span className="text-muted-foreground">{s.guestUsers.toLocaleString()}</span>,
       },
       {
         id: "external",
-        header: "External",
-        sortValue: (s: SiteRow) => s.distinctExternalUsers,
-        cell: (s: SiteRow) => <span className="text-muted-foreground">{s.distinctExternalUsers.toLocaleString()}</span>,
+        header: "External users",
+        headerInfo: (
+          <InfoTooltip label="Distinct granted email identities on this route drive outside configured internal domains, excluding guest-style identities." />
+        ),
+        sortValue: (s: SiteRow) => s.externalUsers,
+        cell: (s: SiteRow) => <span className="text-muted-foreground">{s.externalUsers.toLocaleString()}</span>,
       },
       {
         id: "lastShare",
         header: "Last permission sync seen",
+        headerInfo: <InfoTooltip label="Latest cached permission sync timestamp found for this route drive." />,
         sortValue: (s: SiteRow) => parseIsoToTs(s.last_shared_at),
         cell: (s: SiteRow) => <span className="text-muted-foreground">{formatIsoDateTime(s.last_shared_at)}</span>,
       },
     ],
-    [externalThreshold]
+    []
   );
 
   return (
@@ -156,7 +162,7 @@ export function SharingSitesTable({
       mode="server"
       items={sites}
       columns={columns}
-      getRowKey={(s) => s.site_key}
+      getRowKey={(s) => s.route_drive_id}
       emptyMessage="No sites matched your search."
     />
   );

@@ -55,13 +55,13 @@ test("pagination model preserves custom pagination params for sharing breakdown 
     page: 2,
     pageSize: 10,
     totalItems: 100,
-    extraParams: { q: "project", externalThreshold: 10, page: 4, pageSize: 50, sort: "links", dir: "desc" },
+    extraParams: { q: "project", page: 4, pageSize: 50, sort: "links", dir: "desc" },
     pageParam: "lbPage",
     pageSizeParam: "lbPageSize",
   });
 
-  assert.equal(model.prevHref, "/dashboard/sharing?q=project&externalThreshold=10&page=4&pageSize=50&sort=links&dir=desc&lbPage=1&lbPageSize=10");
-  assert.equal(model.nextHref, "/dashboard/sharing?q=project&externalThreshold=10&page=4&pageSize=50&sort=links&dir=desc&lbPage=3&lbPageSize=10");
+  assert.equal(model.prevHref, "/dashboard/sharing?q=project&page=4&pageSize=50&sort=links&dir=desc&lbPage=1&lbPageSize=10");
+  assert.equal(model.nextHref, "/dashboard/sharing?q=project&page=4&pageSize=50&sort=links&dir=desc&lbPage=3&lbPageSize=10");
   assert.equal(model.showCompactJump, true);
   assert.deepEqual(
     model.compactTokens.map((token) => (token.type === "page" ? token.page : "…")),
