@@ -18,6 +18,7 @@ export type SortValue = string | number | boolean | Date | null | undefined;
 export type SortableTableColumn<T> = {
   id: string;
   header: React.ReactNode;
+  headerInfo?: React.ReactNode;
   sortValue: (row: T) => SortValue;
   cell: (row: T) => React.ReactNode;
   headerClassName?: string;
@@ -131,36 +132,40 @@ export function SortableTable<T>({
             const ariaSort = active ? (activeSort!.direction === "asc" ? "ascending" : "descending") : "none";
             return (
               <TableHead key={col.id} className={col.headerClassName} aria-sort={ariaSort}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const next: SortState = active
-                      ? { columnId: col.id, direction: activeSort!.direction === "asc" ? "desc" : "asc" }
-                      : { columnId: col.id, direction: "asc" };
+                <div className={cn("flex items-center gap-1.5", col.headerInfo ? "justify-between" : undefined)}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next: SortState = active
+                        ? { columnId: col.id, direction: activeSort!.direction === "asc" ? "desc" : "asc" }
+                        : { columnId: col.id, direction: "asc" };
 
-                    if (mode === "server") {
-                      setServerSort(next);
-                      return;
-                    }
+                      if (mode === "server") {
+                        setServerSort(next);
+                        return;
+                      }
 
-                    setClientSort(next);
-                  }}
-                  className={cn(
-                    "group inline-flex w-full items-center gap-1.5 text-left",
-                    "select-none hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
-                  )}
-                >
-                  <span>{col.header}</span>
-                  <span
+                      setClientSort(next);
+                    }}
                     className={cn(
-                      "text-[10px] leading-none text-muted-foreground",
-                      active ? "opacity-100" : "opacity-0 group-hover:opacity-60"
+                      "group inline-flex items-center gap-1.5 text-left",
+                      col.headerInfo ? "min-w-0 flex-1" : "w-full",
+                      "select-none hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
                     )}
-                    aria-hidden="true"
                   >
-                    {active ? arrowForDirection(activeSort!.direction) : "↕"}
-                  </span>
-                </button>
+                    <span>{col.header}</span>
+                    <span
+                      className={cn(
+                        "text-[10px] leading-none text-muted-foreground",
+                        active ? "opacity-100" : "opacity-0 group-hover:opacity-60"
+                      )}
+                      aria-hidden="true"
+                    >
+                      {active ? arrowForDirection(activeSort!.direction) : "↕"}
+                    </span>
+                  </button>
+                  {col.headerInfo ? <span className="shrink-0">{col.headerInfo}</span> : null}
+                </div>
               </TableHead>
             );
           })}
