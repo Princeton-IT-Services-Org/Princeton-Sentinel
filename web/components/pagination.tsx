@@ -49,7 +49,8 @@ export function PaginationControls({
       }),
     [extraParams, page, pageParam, pageSize, pageSizeParam, pathname, totalItems]
   );
-  const jumpId = React.useId();
+  const desktopJumpId = React.useId();
+  const mobileJumpId = React.useId();
   const showCompactJump = compact && model.showCompactJump;
 
   const renderPageButton = (targetPage: number, size: "default" | "sm" = "sm") =>
@@ -107,9 +108,9 @@ export function PaginationControls({
 
         {model.showCompactJump ? (
           <div className="ml-auto flex items-center gap-2 text-sm text-muted-foreground">
-            <label htmlFor={jumpId}>Jump to page</label>
+            <label htmlFor={desktopJumpId}>Jump to page</label>
             <select
-              id={jumpId}
+              id={desktopJumpId}
               aria-label="Jump to page"
               value={String(model.clampedPage)}
               onChange={(event) => onJumpPage?.(Number(event.target.value))}
@@ -157,9 +158,9 @@ export function PaginationControls({
 
         {showCompactJump ? (
           <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
-            <label htmlFor={jumpId}>Jump to page</label>
+            <label htmlFor={mobileJumpId}>Jump to page</label>
             <select
-              id={jumpId}
+              id={mobileJumpId}
               aria-label="Jump to page"
               value={String(model.clampedPage)}
               onChange={(event) => onJumpPage?.(Number(event.target.value))}
