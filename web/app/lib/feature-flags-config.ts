@@ -1,5 +1,6 @@
 export const FEATURE_FLAG_DEFAULTS = {
   agents_dashboard: true,
+  test_mode: false,
 } as const;
 
 export type FeatureKey = keyof typeof FEATURE_FLAG_DEFAULTS;
@@ -16,6 +17,7 @@ type FeatureFlagRow = {
 
 const FEATURE_ROUTE_PREFIXES: Record<FeatureKey, string[]> = {
   agents_dashboard: ["/dashboard/agents", "/dashboard/copilot", "/api/agents", "/api/copilot"],
+  test_mode: [],
 };
 
 export function getDefaultFeatureFlags(): FeatureFlags {

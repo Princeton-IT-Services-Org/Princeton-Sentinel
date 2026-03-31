@@ -52,6 +52,7 @@ test("mergeFeatureFlags applies defaults when rows are missing", () => {
 
   assert.deepEqual(flags, getDefaultFeatureFlags());
   assert.equal(isFeatureEnabled("agents_dashboard", flags), true);
+  assert.equal(isFeatureEnabled("test_mode", flags), false);
 });
 
 test("getFeatureFlags ignores unknown feature rows", async () => {
@@ -64,6 +65,7 @@ test("getFeatureFlags ignores unknown feature rows", async () => {
 
   const flags = await getFeatureFlags();
   assert.equal(flags.agents_dashboard, false);
+  assert.equal(flags.test_mode, false);
 
   clearMockQuery();
 });
@@ -86,7 +88,7 @@ test("getFeatureFlagsPayload returns both flags and version", async () => {
 
   const payload = await getFeatureFlagsPayload();
   assert.deepEqual(payload, {
-    flags: { agents_dashboard: false },
+    flags: { agents_dashboard: false, test_mode: false },
     version: "2026-03-20T16:00:00.000Z",
   });
 
@@ -129,6 +131,7 @@ test("getFeatureFlags disables agents dashboard when the license disables it", a
 
   const flags = await getFeatureFlags();
   assert.equal(flags.agents_dashboard, false);
+  assert.equal(flags.test_mode, false);
 
   clearMockQuery();
 });
