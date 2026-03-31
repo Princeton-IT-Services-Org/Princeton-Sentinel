@@ -2,12 +2,14 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app.jobs import graph_ingest
 from app.jobs.graph_ingest import TEST_MODE_GROUP_ENV, _resolve_test_mode_scope
 
 
@@ -76,6 +78,69 @@ class GraphTestModeScopeTests(unittest.TestCase):
             ],
         )
         self.assertTrue(scope["scope_hash"])
+
+    @patch("app.jobs.graph_ingest.enqueue_impacted_mvs_for_tables", return_value={"tables": [], "queued": 0, "queued_mvs": []})
+    @patch("app.jobs.graph_ingest._save_graph_sync_scope_state")
+    @patch("app.jobs.graph_ingest._prune_test_mode_data")
+    @patch("app.jobs.graph_ingest._ingest_users", return_value={"mode": "test", "upserted": 1})
+    @patch(
+        "app.jobs.graph_ingest.get_graph_sync_runtime_config",
+        return_value={
+            "flush_every": 100,
+            "pull_permissions": False,
+            "sync_group_memberships": False,
+            "group_memberships_users_only": True,
+            "stages": ["users"],
+            "skip_stages": [],
+            "permissions_batch_size": 50,
+            "permissions_stale_after_hours": 24,
+        },
+    )
+    @patch("app.jobs.graph_ingest._apply_graph_sync_transition", return_value={"sites_delta_cleared": 0, "drive_item_deltas_cleared": 0})
+    @patch(
+        "app.jobs.graph_ingest._prepare_graph_sync_scope",
+        return_value=(
+            {
+                "mode": "test",
+                "group_id": "test-group",
+                "scope_hash": "scope-hash",
+                "group_ids": ["group-1"],
+                "user_ids": ["user-1"],
+                "group_rows": {},
+                "user_rows": {},
+                "group_memberships": [],
+                "site_ids": [],
+                "drive_ids": [],
+            },
+            {
+                "scope_changed": False,
+                "previous_mode": "test",
+                "current_mode": "test",
+            },
+        ),
+    )
+    @patch("app.jobs.graph_ingest.GraphClient")
+    @patch("app.jobs.graph_ingest.log_audit_event")
+    @patch("app.jobs.graph_ingest.log_job_run_log")
+    @patch("app.jobs.graph_ingest.emit")
+    def test_run_graph_ingest_skips_test_mode_prune_when_drives_stage_not_run(
+        self,
+        _mock_emit,
+        _mock_log_job_run_log,
+        _mock_log_audit_event,
+        _mock_graph_client,
+        _mock_prepare_scope,
+        _mock_apply_transition,
+        _mock_runtime_config,
+        mock_ingest_users,
+        mock_prune,
+        _mock_save_scope_state,
+        _mock_enqueue_mvs,
+    ):
+        graph_ingest.run_graph_ingest(run_id="run-1", job_id="job-1")
+
+        mock_ingest_users.assert_called_once()
+        mock_prune.assert_not_called()
 
 
 if __name__ == "__main__":

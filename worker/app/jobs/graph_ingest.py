@@ -317,6 +317,11 @@ def _save_graph_sync_scope_state(scope: dict[str, Any]):
         conn.close()
 
 
+def _should_prune_test_mode_data(stages: dict[str, Any]) -> bool:
+    drives_stage = stages.get("drives")
+    return isinstance(drives_stage, dict) and not drives_stage.get("skipped")
+
+
 def _get_scoped_site_ids_from_db(cur, scope: dict[str, Any]) -> list[str]:
     site_ids = _normalize_id_list(scope.get("site_ids") or [])
     if site_ids:
@@ -967,7 +972,10 @@ def run_graph_ingest(*, run_id: str, job_id: str, actor: Optional[Dict[str, Any]
         emit("INFO", "GRAPH", f"Stage completed: {stage} summary={_compact_json(stage_result)}")
 
     if scope.get("mode") == "test":
-        prune_summary = _prune_test_mode_data(scope, run_id=run_id)
+        if _should_prune_test_mode_data(stages):
+            prune_summary = _prune_test_mode_data(scope, run_id=run_id)
+        else:
+            prune_summary = {"skipped": True, "reason": "drives_stage_not_run"}
         stages["test_mode_prune"] = prune_summary
         emit("INFO", "GRAPH", f"Test mode prune completed: summary={_compact_json(prune_summary)}")
 
