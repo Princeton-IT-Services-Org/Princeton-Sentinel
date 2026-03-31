@@ -1,9 +1,11 @@
+import hashlib
 import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, Hashable, Iterable, Optional, Tuple
+from urllib.parse import quote, unquote, urlparse
 
 from app import db
 from app.graph_client import GraphClient, GraphError
@@ -18,6 +20,10 @@ GRAPH_MAX_CONCURRENCY = int(os.getenv("GRAPH_MAX_CONCURRENCY", "4"))
 
 DEFAULT_PERMISSIONS_BATCH_SIZE = int(os.getenv("GRAPH_PERMISSIONS_BATCH_SIZE", "50"))
 DEFAULT_PERMISSIONS_STALE_AFTER_HOURS = int(os.getenv("GRAPH_PERMISSIONS_STALE_AFTER_HOURS", "24"))
+
+TEST_MODE_FEATURE_KEY = "test_mode"
+TEST_MODE_GROUP_ENV = "GRAPH_SYNC_TEST_MODE_GROUP_ID"
+GRAPH_SYNC_MODE_STATE_KEY = "graph_ingest"
 
 STAGE_IMPACTED_TABLES: Dict[str, Tuple[str, ...]] = {
     "users": ("msgraph_users",),
@@ -60,6 +66,410 @@ def get_graph_sync_runtime_config() -> Dict[str, Any]:
         "permissions_batch_size": DEFAULT_PERMISSIONS_BATCH_SIZE,
         "permissions_stale_after_hours": DEFAULT_PERMISSIONS_STALE_AFTER_HOURS,
     }
+
+
+def _normalize_id_list(values: Iterable[Any]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    out.sort()
+    return out
+
+
+def _compute_scope_hash(parts: dict[str, list[str]]) -> str:
+    payload = json.dumps({key: _normalize_id_list(value) for key, value in sorted(parts.items())}, sort_keys=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _load_feature_flag_enabled(cur, feature_key: str) -> bool:
+    cur.execute(
+        """
+        SELECT enabled
+        FROM feature_flags
+        WHERE feature_key = %s
+        LIMIT 1
+        """,
+        [feature_key],
+    )
+    row = cur.fetchone()
+    if not row:
+        return False
+    return bool(row[0])
+
+
+def _load_graph_sync_mode_state(cur) -> dict[str, Any]:
+    cur.execute(
+        """
+        SELECT mode, group_id, scope_hash
+        FROM graph_sync_mode_state
+        WHERE sync_key = %s
+        LIMIT 1
+        """,
+        [GRAPH_SYNC_MODE_STATE_KEY],
+    )
+    row = cur.fetchone()
+    if not row:
+        return {"mode": "full", "group_id": None, "scope_hash": None}
+    return {
+        "mode": row[0] or "full",
+        "group_id": row[1],
+        "scope_hash": row[2],
+    }
+
+
+def _save_graph_sync_mode_state(cur, *, mode: str, group_id: Optional[str], scope_hash: Optional[str]):
+    cur.execute(
+        """
+        INSERT INTO graph_sync_mode_state (sync_key, mode, group_id, scope_hash, updated_at)
+        VALUES (%s, %s, %s, %s, now())
+        ON CONFLICT (sync_key) DO UPDATE SET
+          mode = EXCLUDED.mode,
+          group_id = EXCLUDED.group_id,
+          scope_hash = EXCLUDED.scope_hash,
+          updated_at = EXCLUDED.updated_at
+        """,
+        [GRAPH_SYNC_MODE_STATE_KEY, mode, group_id, scope_hash],
+    )
+
+
+def _clear_global_sites_delta_cursor(cur) -> int:
+    cur.execute(
+        """
+        DELETE FROM msgraph_delta_state
+        WHERE resource_type = 'sites'
+          AND partition_key = 'global'
+        """
+    )
+    return cur.rowcount
+
+
+def _clear_all_drive_item_delta_cursors(cur) -> int:
+    cur.execute(
+        """
+        DELETE FROM msgraph_delta_state
+        WHERE resource_type = 'drive_items'
+        """
+    )
+    return cur.rowcount
+
+
+def _reset_graph_sync_cursors_for_mode_change(cur) -> dict[str, int]:
+    return {
+        "sites_delta_cleared": _clear_global_sites_delta_cursor(cur),
+        "drive_item_deltas_cleared": _clear_all_drive_item_delta_cursors(cur),
+    }
+
+
+def _resolve_test_mode_scope(client: GraphClient) -> dict[str, Any]:
+    group_id = str(os.getenv(TEST_MODE_GROUP_ENV) or "").strip()
+    if not group_id:
+        raise RuntimeError(f"{TEST_MODE_GROUP_ENV} must be set when {TEST_MODE_FEATURE_KEY} is enabled")
+
+    user_select = ",".join(
+        [
+            "id",
+            "displayName",
+            "userPrincipalName",
+            "mail",
+            "accountEnabled",
+            "userType",
+            "jobTitle",
+            "department",
+            "officeLocation",
+            "usageLocation",
+            "createdDateTime",
+        ]
+    )
+    group_select = ",".join(
+        [
+            "id",
+            "displayName",
+            "mail",
+            "mailEnabled",
+            "securityEnabled",
+            "groupTypes",
+            "visibility",
+            "isAssignableToRole",
+            "createdDateTime",
+        ]
+    )
+
+    group_rows: dict[str, Dict[str, Any]] = {}
+    user_rows: dict[str, Dict[str, Any]] = {}
+    group_membership_rows: list[tuple[str, str, str]] = []
+    scoped_group_ids: set[str] = {group_id}
+
+    group_rows[group_id] = client.get_json(f"/groups/{group_id}?$select={group_select}")
+
+    member_ids = _normalize_id_list(
+        member.get("id")
+        for member in client.iter_paged(f"/groups/{group_id}/members/microsoft.graph.user?$select=id&$top=999")
+    )
+
+    for user_id in member_ids:
+        user_rows[user_id] = client.get_json(f"/users/{user_id}?$select={user_select}")
+        group_membership_rows.append((group_id, user_id, "user"))
+
+        for group in client.iter_paged(f"/users/{user_id}/memberOf/microsoft.graph.group?$select={group_select}&$top=999"):
+            related_group_id = str(group.get("id") or "").strip()
+            if not related_group_id:
+                continue
+            scoped_group_ids.add(related_group_id)
+            group_rows[related_group_id] = group
+            group_membership_rows.append((related_group_id, user_id, "user"))
+
+    normalized_group_ids = _normalize_id_list(scoped_group_ids)
+    normalized_user_ids = _normalize_id_list(user_rows.keys())
+    normalized_memberships = sorted(set(group_membership_rows), key=lambda row: (row[0], row[1], row[2]))
+
+    return {
+        "mode": "test",
+        "group_id": group_id,
+        "scope_hash": _compute_scope_hash(
+            {
+                "groups": normalized_group_ids,
+                "users": normalized_user_ids,
+                "group_memberships": [f"{group_id}:{user_id}:{member_type}" for group_id, user_id, member_type in normalized_memberships],
+            }
+        ),
+        "group_ids": normalized_group_ids,
+        "user_ids": normalized_user_ids,
+        "group_rows": group_rows,
+        "user_rows": user_rows,
+        "group_memberships": normalized_memberships,
+        "site_ids": [],
+        "drive_ids": [],
+    }
+
+
+def _prepare_graph_sync_scope(client: GraphClient) -> tuple[dict[str, Any], dict[str, Any]]:
+    conn = db.get_conn()
+    try:
+        cur = conn.cursor()
+        test_mode_enabled = _load_feature_flag_enabled(cur, TEST_MODE_FEATURE_KEY)
+        previous_state = _load_graph_sync_mode_state(cur)
+        conn.commit()
+    finally:
+        conn.close()
+
+    if test_mode_enabled:
+        scope = _resolve_test_mode_scope(client)
+    else:
+        scope = {
+            "mode": "full",
+            "group_id": None,
+            "scope_hash": None,
+            "group_ids": [],
+            "user_ids": [],
+            "group_rows": {},
+            "user_rows": {},
+            "group_memberships": [],
+            "site_ids": [],
+            "drive_ids": [],
+        }
+
+    transition = {
+        "previous_mode": previous_state.get("mode") or "full",
+        "previous_group_id": previous_state.get("group_id"),
+        "previous_scope_hash": previous_state.get("scope_hash"),
+        "current_mode": scope["mode"],
+        "current_group_id": scope.get("group_id"),
+        "current_scope_hash": scope.get("scope_hash"),
+    }
+    transition["scope_changed"] = bool(
+        transition["previous_mode"] != transition["current_mode"]
+        or transition["previous_group_id"] != transition["current_group_id"]
+        or transition["previous_scope_hash"] != transition["current_scope_hash"]
+    )
+    return scope, transition
+
+
+def _apply_graph_sync_transition(transition: dict[str, Any]) -> dict[str, Any]:
+    if not transition.get("scope_changed"):
+        return {"sites_delta_cleared": 0, "drive_item_deltas_cleared": 0}
+
+    conn = db.get_conn()
+    try:
+        cur = conn.cursor()
+        summary = _reset_graph_sync_cursors_for_mode_change(cur)
+        conn.commit()
+        return summary
+    finally:
+        conn.close()
+
+
+def _save_graph_sync_scope_state(scope: dict[str, Any]):
+    mode = "test" if scope.get("mode") == "test" else "full"
+    group_id = scope.get("group_id") if mode == "test" else None
+    scope_hash = scope.get("scope_hash") if mode == "test" else None
+
+    conn = db.get_conn()
+    try:
+        cur = conn.cursor()
+        _save_graph_sync_mode_state(cur, mode=mode, group_id=group_id, scope_hash=scope_hash)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _get_scoped_site_ids_from_db(cur, scope: dict[str, Any]) -> list[str]:
+    site_ids = _normalize_id_list(scope.get("site_ids") or [])
+    if site_ids:
+        return site_ids
+
+    owner_ids = _normalize_id_list([*(scope.get("group_ids") or []), *(scope.get("user_ids") or [])])
+    if not owner_ids:
+        return []
+
+    cur.execute(
+        """
+        SELECT DISTINCT site_id
+        FROM msgraph_drives
+        WHERE deleted_at IS NULL
+          AND site_id IS NOT NULL
+          AND owner_id = ANY(%s)
+        """,
+        [owner_ids],
+    )
+    return _normalize_id_list(row[0] for row in cur.fetchall())
+
+
+def _get_scoped_drive_ids_from_db(cur, scope: dict[str, Any], *, require_available: bool) -> list[str]:
+    drive_ids = _normalize_id_list(scope.get("drive_ids") or [])
+    if drive_ids:
+        return drive_ids
+
+    owner_ids = _normalize_id_list([*(scope.get("group_ids") or []), *(scope.get("user_ids") or [])])
+    if not owner_ids:
+        return []
+
+    available_clause = "AND is_available = TRUE" if require_available else ""
+    cur.execute(
+        f"""
+        SELECT id
+        FROM msgraph_drives
+        WHERE deleted_at IS NULL
+          {available_clause}
+          AND owner_id = ANY(%s)
+        """,
+        [owner_ids],
+    )
+    return _normalize_id_list(row[0] for row in cur.fetchall())
+
+
+def _prune_test_mode_data(scope: dict[str, Any], *, run_id: str) -> dict[str, int]:
+    drive_ids = _normalize_id_list(scope.get("drive_ids") or [])
+    site_ids = _normalize_id_list(scope.get("site_ids") or [])
+    group_ids = _normalize_id_list(scope.get("group_ids") or [])
+    user_ids = _normalize_id_list(scope.get("user_ids") or [])
+
+    conn = db.get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            DELETE FROM msgraph_delta_state
+            WHERE resource_type = 'drive_items'
+              AND NOT (partition_key = ANY(%s))
+            """,
+            [drive_ids],
+        )
+        drive_item_deltas_deleted = cur.rowcount
+
+        cur.execute(
+            """
+            DELETE FROM msgraph_drive_item_permission_grants
+            WHERE NOT (drive_id = ANY(%s))
+            """,
+            [drive_ids],
+        )
+        permission_grants_deleted = cur.rowcount
+
+        cur.execute(
+            """
+            DELETE FROM msgraph_drive_item_permissions
+            WHERE NOT (drive_id = ANY(%s))
+            """,
+            [drive_ids],
+        )
+        permissions_deleted = cur.rowcount
+
+        cur.execute(
+            """
+            DELETE FROM msgraph_drive_items
+            WHERE NOT (drive_id = ANY(%s))
+            """,
+            [drive_ids],
+        )
+        drive_items_deleted = cur.rowcount
+
+        cur.execute(
+            """
+            DELETE FROM msgraph_drives
+            WHERE NOT (id = ANY(%s))
+            """,
+            [drive_ids],
+        )
+        drives_deleted = cur.rowcount
+
+        cur.execute(
+            """
+            DELETE FROM msgraph_sites
+            WHERE NOT (id = ANY(%s))
+            """,
+            [site_ids],
+        )
+        sites_deleted = cur.rowcount
+
+        cur.execute(
+            """
+            DELETE FROM msgraph_group_memberships
+            WHERE member_type <> 'user'
+               OR NOT (group_id = ANY(%s) AND member_id = ANY(%s))
+            """,
+            [group_ids, user_ids],
+        )
+        group_memberships_deleted = cur.rowcount
+
+        cur.execute(
+            """
+            DELETE FROM msgraph_groups
+            WHERE NOT (id = ANY(%s))
+            """,
+            [group_ids],
+        )
+        groups_deleted = cur.rowcount
+
+        cur.execute(
+            """
+            DELETE FROM msgraph_users
+            WHERE NOT (id = ANY(%s))
+            """,
+            [user_ids],
+        )
+        users_deleted = cur.rowcount
+
+        conn.commit()
+        summary = {
+            "drive_item_deltas_deleted": drive_item_deltas_deleted,
+            "permission_grants_deleted": permission_grants_deleted,
+            "permissions_deleted": permissions_deleted,
+            "drive_items_deleted": drive_items_deleted,
+            "drives_deleted": drives_deleted,
+            "sites_deleted": sites_deleted,
+            "group_memberships_deleted": group_memberships_deleted,
+            "groups_deleted": groups_deleted,
+            "users_deleted": users_deleted,
+        }
+        log_job_run_log(run_id=run_id, level="INFO", message="test_mode_pruned", context=summary)
+        return summary
+    finally:
+        conn.close()
 
 
 def _compact_json(value: Any, *, max_len: int = 300) -> str:
@@ -432,6 +842,9 @@ def _compute_path_level(normalized_path: Optional[str]) -> Optional[int]:
 
 
 def run_graph_ingest(*, run_id: str, job_id: str, actor: Optional[Dict[str, Any]] = None):
+    client = GraphClient()
+    scope, transition = _prepare_graph_sync_scope(client)
+    transition_summary = _apply_graph_sync_transition(transition)
     config = get_graph_sync_runtime_config()
     started_at = datetime.now(timezone.utc)
     flush_every = int(config.get("flush_every", FLUSH_EVERY_DEFAULT))
@@ -440,8 +853,6 @@ def run_graph_ingest(*, run_id: str, job_id: str, actor: Optional[Dict[str, Any]
     group_memberships_users_only = bool(config.get("group_memberships_users_only", True))
     requested_stages = config.get("stages")
     skip_stages = set(config.get("skip_stages") or [])
-
-    client = GraphClient()
     emit(
         "INFO",
         "GRAPH",
@@ -449,7 +860,8 @@ def run_graph_ingest(*, run_id: str, job_id: str, actor: Optional[Dict[str, Any]
             f"Job started: run_id={run_id} job_id={job_id} "
             f"flush_every={flush_every} pull_permissions={pull_permissions} "
             f"sync_group_memberships={sync_group_memberships} users_only={group_memberships_users_only} "
-            f"requested_stages={_compact_json(requested_stages)} skip_stages={_compact_json(sorted(skip_stages))}"
+            f"requested_stages={_compact_json(requested_stages)} skip_stages={_compact_json(sorted(skip_stages))} "
+            f"mode={scope.get('mode')} transition={_compact_json(transition_summary)}"
         ),
     )
 
@@ -478,8 +890,26 @@ def run_graph_ingest(*, run_id: str, job_id: str, actor: Optional[Dict[str, Any]
     ]
     if isinstance(requested_stages, list) and requested_stages:
         stage_order = [str(s) for s in requested_stages]
+    elif scope.get("mode") == "test":
+        stage_order = [
+            "users",
+            "groups",
+            "group_memberships",
+            "drives",
+            "sites",
+            "drive_items",
+            "permissions",
+        ]
 
     stages: Dict[str, Any] = {}
+    stages["scope"] = {
+        "mode": scope.get("mode"),
+        "group_id": scope.get("group_id"),
+        "user_count": len(scope.get("user_ids") or []),
+        "group_count": len(scope.get("group_ids") or []),
+        "scope_changed": bool(transition.get("scope_changed")),
+        "transition": transition_summary,
+    }
     for stage in stage_order:
         if stage in skip_stages:
             stages[stage] = {"skipped": True}
@@ -496,10 +926,10 @@ def run_graph_ingest(*, run_id: str, job_id: str, actor: Optional[Dict[str, Any]
 
         stage_result: Dict[str, Any]
         if stage == "users":
-            stage_result = _ingest_users(client, run_id=run_id, flush_every=flush_every)
+            stage_result = _ingest_users(client, run_id=run_id, flush_every=flush_every, scope=scope)
             stages["users"] = stage_result
         elif stage == "groups":
-            stage_result = _ingest_groups(client, run_id=run_id, flush_every=flush_every)
+            stage_result = _ingest_groups(client, run_id=run_id, flush_every=flush_every, scope=scope)
             stages["groups"] = stage_result
         elif stage == "group_memberships":
             if not sync_group_memberships:
@@ -511,29 +941,37 @@ def run_graph_ingest(*, run_id: str, job_id: str, actor: Optional[Dict[str, Any]
                     run_id=run_id,
                     flush_every=flush_every,
                     users_only=group_memberships_users_only,
+                    scope=scope,
                 )
                 stages["group_memberships"] = stage_result
         elif stage == "sites":
-            stage_result = _ingest_sites(client, run_id=run_id, flush_every=flush_every)
+            stage_result = _ingest_sites(client, run_id=run_id, flush_every=flush_every, scope=scope)
             stages["sites"] = stage_result
         elif stage == "drives":
-            stage_result = _ingest_drives(client, run_id=run_id, flush_every=flush_every)
+            stage_result = _ingest_drives(client, run_id=run_id, flush_every=flush_every, scope=scope)
             stages["drives"] = stage_result
         elif stage == "drive_items":
-            stage_result = _ingest_drive_items(client, run_id=run_id, flush_every=flush_every)
+            stage_result = _ingest_drive_items(client, run_id=run_id, flush_every=flush_every, scope=scope)
             stages["drive_items"] = stage_result
         elif stage == "permissions":
             if not pull_permissions:
                 stage_result = {"skipped": True, "reason": "pull_permissions_disabled"}
                 stages["permissions"] = stage_result
             else:
-                stage_result = _scan_permissions(client, config, run_id=run_id)
+                stage_result = _scan_permissions(client, config, run_id=run_id, scope=scope)
                 stages["permissions"] = stage_result
         else:
             stage_result = {"skipped": True, "reason": "unknown_stage"}
             stages[stage] = stage_result
 
         emit("INFO", "GRAPH", f"Stage completed: {stage} summary={_compact_json(stage_result)}")
+
+    if scope.get("mode") == "test":
+        prune_summary = _prune_test_mode_data(scope, run_id=run_id)
+        stages["test_mode_prune"] = prune_summary
+        emit("INFO", "GRAPH", f"Test mode prune completed: summary={_compact_json(prune_summary)}")
+
+    _save_graph_sync_scope_state(scope)
 
     queued_mvs_summary: Dict[str, Any] = {"tables": [], "queued": 0, "queued_mvs": []}
     try:
@@ -596,7 +1034,105 @@ def _set_delta_link(cur, resource_type: str, partition_key: str, delta_link: str
     )
 
 
-def _ingest_users(client: GraphClient, *, run_id: str, flush_every: int) -> Dict[str, Any]:
+def _ingest_users(
+    client: GraphClient,
+    *,
+    run_id: str,
+    flush_every: int,
+    scope: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if scope and scope.get("mode") == "test":
+        synced_at = datetime.now(timezone.utc)
+        upsert_sql = """
+            INSERT INTO msgraph_users
+              (id, display_name, user_principal_name, mail, account_enabled, user_type, job_title,
+               department, office_location, usage_location, created_dt, synced_at, is_available,
+               last_available_at, availability_checked_at, availability_reason, availability_error,
+               deleted_at, raw_json)
+            VALUES %s
+            ON CONFLICT (id) DO UPDATE SET
+              display_name = EXCLUDED.display_name,
+              user_principal_name = EXCLUDED.user_principal_name,
+              mail = EXCLUDED.mail,
+              account_enabled = EXCLUDED.account_enabled,
+              user_type = EXCLUDED.user_type,
+              job_title = EXCLUDED.job_title,
+              department = EXCLUDED.department,
+              office_location = EXCLUDED.office_location,
+              usage_location = EXCLUDED.usage_location,
+              created_dt = EXCLUDED.created_dt,
+              synced_at = EXCLUDED.synced_at,
+              is_available = EXCLUDED.is_available,
+              last_available_at = EXCLUDED.last_available_at,
+              availability_checked_at = EXCLUDED.availability_checked_at,
+              availability_reason = EXCLUDED.availability_reason,
+              availability_error = EXCLUDED.availability_error,
+              deleted_at = NULL,
+              raw_json = EXCLUDED.raw_json
+        """
+
+        batch = []
+        for user_id in scope.get("user_ids") or []:
+            user = (scope.get("user_rows") or {}).get(user_id) or {}
+            batch.append(
+                (
+                    user_id,
+                    user.get("displayName"),
+                    user.get("userPrincipalName"),
+                    user.get("mail"),
+                    user.get("accountEnabled"),
+                    user.get("userType"),
+                    user.get("jobTitle"),
+                    user.get("department"),
+                    user.get("officeLocation"),
+                    user.get("usageLocation"),
+                    user.get("createdDateTime"),
+                    synced_at,
+                    True,
+                    synced_at,
+                    synced_at,
+                    None,
+                    None,
+                    None,
+                    db.jsonb(user),
+                )
+            )
+
+        conn = db.get_conn()
+        try:
+            cur = conn.cursor()
+            flushed = 0
+            dropped_duplicates = 0
+            for idx in range(0, len(batch), flush_every):
+                chunk = batch[idx : idx + flush_every]
+                executed, dropped = _execute_values_dedup_keep_last(cur, upsert_sql, chunk, key_fn=lambda r: r[0])
+                conn.commit()
+                flushed += executed
+                dropped_duplicates += dropped
+
+            log_job_run_log(
+                run_id=run_id,
+                level="INFO",
+                message="users_ingested",
+                context={
+                    "mode": "test",
+                    "synced_at": synced_at.isoformat(),
+                    "total_seen": len(batch),
+                    "upserted": flushed,
+                    "dropped_duplicates": dropped_duplicates,
+                    "marked_deleted": 0,
+                },
+            )
+            return {
+                "mode": "test",
+                "total_seen": len(batch),
+                "upserted": flushed,
+                "dropped_duplicates": dropped_duplicates,
+                "marked_deleted": 0,
+            }
+        finally:
+            conn.close()
+
     synced_at = datetime.now(timezone.utc)
     select = ",".join(
         [
@@ -724,7 +1260,89 @@ def _ingest_users(client: GraphClient, *, run_id: str, flush_every: int) -> Dict
         conn.close()
 
 
-def _ingest_groups(client: GraphClient, *, run_id: str, flush_every: int) -> Dict[str, Any]:
+def _ingest_groups(
+    client: GraphClient,
+    *,
+    run_id: str,
+    flush_every: int,
+    scope: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if scope and scope.get("mode") == "test":
+        synced_at = datetime.now(timezone.utc)
+        upsert_sql = """
+            INSERT INTO msgraph_groups
+              (id, display_name, mail, mail_enabled, security_enabled, group_types,
+               visibility, is_assignable_to_role, created_dt, synced_at, deleted_at, raw_json)
+            VALUES %s
+            ON CONFLICT (id) DO UPDATE SET
+              display_name = EXCLUDED.display_name,
+              mail = EXCLUDED.mail,
+              mail_enabled = EXCLUDED.mail_enabled,
+              security_enabled = EXCLUDED.security_enabled,
+              group_types = EXCLUDED.group_types,
+              visibility = EXCLUDED.visibility,
+              is_assignable_to_role = EXCLUDED.is_assignable_to_role,
+              created_dt = EXCLUDED.created_dt,
+              synced_at = EXCLUDED.synced_at,
+              deleted_at = NULL,
+              raw_json = EXCLUDED.raw_json
+        """
+
+        batch = []
+        for group_id in scope.get("group_ids") or []:
+            group = (scope.get("group_rows") or {}).get(group_id) or {}
+            batch.append(
+                (
+                    group_id,
+                    group.get("displayName"),
+                    group.get("mail"),
+                    group.get("mailEnabled"),
+                    group.get("securityEnabled"),
+                    group.get("groupTypes"),
+                    group.get("visibility"),
+                    group.get("isAssignableToRole"),
+                    group.get("createdDateTime"),
+                    synced_at,
+                    None,
+                    db.jsonb(group),
+                )
+            )
+
+        conn = db.get_conn()
+        try:
+            cur = conn.cursor()
+            flushed = 0
+            dropped_duplicates = 0
+            for idx in range(0, len(batch), flush_every):
+                chunk = batch[idx : idx + flush_every]
+                executed, dropped = _execute_values_dedup_keep_last(cur, upsert_sql, chunk, key_fn=lambda r: r[0])
+                conn.commit()
+                flushed += executed
+                dropped_duplicates += dropped
+
+            log_job_run_log(
+                run_id=run_id,
+                level="INFO",
+                message="groups_ingested",
+                context={
+                    "mode": "test",
+                    "synced_at": synced_at.isoformat(),
+                    "total_seen": len(batch),
+                    "upserted": flushed,
+                    "dropped_duplicates": dropped_duplicates,
+                    "marked_deleted": 0,
+                },
+            )
+            return {
+                "mode": "test",
+                "total_seen": len(batch),
+                "upserted": flushed,
+                "dropped_duplicates": dropped_duplicates,
+                "marked_deleted": 0,
+            }
+        finally:
+            conn.close()
+
     synced_at = datetime.now(timezone.utc)
     select = ",".join(
         [
@@ -844,7 +1462,70 @@ def _ingest_group_memberships(
     run_id: str,
     flush_every: int,
     users_only: bool,
+    scope: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    if scope and scope.get("mode") == "test":
+        synced_at = datetime.now(timezone.utc)
+        upsert_sql = """
+            INSERT INTO msgraph_group_memberships
+              (group_id, member_id, member_type, synced_at, deleted_at, raw_json)
+            VALUES %s
+            ON CONFLICT (group_id, member_id, member_type) DO UPDATE SET
+              synced_at = EXCLUDED.synced_at,
+              deleted_at = NULL,
+              raw_json = EXCLUDED.raw_json
+        """
+        membership_rows = list(scope.get("group_memberships") or [])
+        payload_rows = [
+            (group_id, member_id, member_type, synced_at, None, db.jsonb({"id": member_id, "@odata.type": f"#microsoft.graph.{member_type}"}))
+            for group_id, member_id, member_type in membership_rows
+        ]
+
+        conn = db.get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM msgraph_group_memberships")
+            conn.commit()
+
+            edge_upserts = 0
+            dropped_duplicates = 0
+            for idx in range(0, len(payload_rows), flush_every):
+                chunk = payload_rows[idx : idx + flush_every]
+                executed, dropped = _execute_values_dedup_keep_last(
+                    cur,
+                    upsert_sql,
+                    chunk,
+                    key_fn=lambda r: (r[0], r[1], r[2]),
+                )
+                conn.commit()
+                edge_upserts += executed
+                dropped_duplicates += dropped
+
+            log_job_run_log(
+                run_id=run_id,
+                level="INFO",
+                message="group_memberships_ingested",
+                context={
+                    "mode": "test",
+                    "synced_at": synced_at.isoformat(),
+                    "groups_processed": len(scope.get("group_ids") or []),
+                    "edges_upserted": edge_upserts,
+                    "dropped_duplicates": dropped_duplicates,
+                    "skipped_groups": 0,
+                    "users_only": True,
+                },
+            )
+            return {
+                "mode": "test",
+                "groups_processed": len(scope.get("group_ids") or []),
+                "edges_upserted": edge_upserts,
+                "dropped_duplicates": dropped_duplicates,
+                "skipped_groups": 0,
+                "users_only": True,
+            }
+        finally:
+            conn.close()
+
     synced_at = datetime.now(timezone.utc)
     upsert_sql = """
         INSERT INTO msgraph_group_memberships
@@ -973,7 +1654,147 @@ def _normalize_site(
     return site_id, name, web_url, hostname, site_collection_id, created_dt
 
 
-def _ingest_sites(client: GraphClient, *, run_id: str, flush_every: int) -> Dict[str, Any]:
+def _ingest_sites(
+    client: GraphClient,
+    *,
+    run_id: str,
+    flush_every: int,
+    scope: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if scope and scope.get("mode") == "test":
+        synced_at = datetime.now(timezone.utc)
+        select = ",".join(
+            [
+                "id",
+                "name",
+                "displayName",
+                "webUrl",
+                "createdDateTime",
+                "siteCollection",
+                "sharepointIds",
+                "isPersonalSite",
+            ]
+        )
+
+        upsert_active_sql = """
+            INSERT INTO msgraph_sites
+              (id, name, web_url, hostname, site_collection_id, created_dt, synced_at, is_available,
+               last_available_at, availability_checked_at, availability_reason, availability_error,
+               deleted_at, raw_json)
+            VALUES %s
+            ON CONFLICT (id) DO UPDATE SET
+              name = EXCLUDED.name,
+              web_url = EXCLUDED.web_url,
+              hostname = EXCLUDED.hostname,
+              site_collection_id = EXCLUDED.site_collection_id,
+              created_dt = EXCLUDED.created_dt,
+              synced_at = EXCLUDED.synced_at,
+              is_available = EXCLUDED.is_available,
+              last_available_at = EXCLUDED.last_available_at,
+              availability_checked_at = EXCLUDED.availability_checked_at,
+              availability_reason = EXCLUDED.availability_reason,
+              availability_error = EXCLUDED.availability_error,
+              deleted_at = NULL,
+              raw_json = EXCLUDED.raw_json
+        """
+
+        total = 0
+        flushed_active = 0
+        dropped_active_duplicates = 0
+        skipped_error = 0
+
+        conn = db.get_conn()
+        try:
+            cur = conn.cursor()
+            scope["site_ids"] = _get_scoped_site_ids_from_db(cur, scope)
+            conn.commit()
+
+            active_batch: list[tuple] = []
+            for site_id in scope.get("site_ids") or []:
+                try:
+                    site = client.get_json(f"/sites/{site_id}?$select={select}")
+                    total += 1
+                    site_id, name, web_url, hostname, site_collection_id, created_dt = _normalize_site(site)
+                    active_batch.append(
+                        (
+                            site_id,
+                            name,
+                            web_url,
+                            hostname,
+                            site_collection_id,
+                            created_dt,
+                            synced_at,
+                            True,
+                            synced_at,
+                            synced_at,
+                            None,
+                            None,
+                            None,
+                            db.jsonb(site),
+                        )
+                    )
+                    if len(active_batch) >= flush_every:
+                        executed, dropped = _execute_values_dedup_keep_last(cur, upsert_active_sql, active_batch, key_fn=lambda r: r[0])
+                        conn.commit()
+                        flushed_active += executed
+                        dropped_active_duplicates += dropped
+                        active_batch = []
+                except GraphError as exc:
+                    skipped_error += 1
+                    if _is_terminal_drive_listing_error(exc):
+                        reason = _availability_reason_from_graph_error(exc, fallback="site_unavailable")
+                        error_payload = _availability_error_payload(
+                            exc,
+                            target_kind="site",
+                            target_id=site_id,
+                            reason=reason,
+                        )
+                        _mark_entity_unavailable(
+                            cur,
+                            table="msgraph_sites",
+                            entity_id=site_id,
+                            checked_at=synced_at,
+                            reason=reason,
+                            error_payload=error_payload,
+                        )
+                        conn.commit()
+                        continue
+                    raise
+
+            if active_batch:
+                executed, dropped = _execute_values_dedup_keep_last(cur, upsert_active_sql, active_batch, key_fn=lambda r: r[0])
+                conn.commit()
+                flushed_active += executed
+                dropped_active_duplicates += dropped
+
+            log_job_run_log(
+                run_id=run_id,
+                level="INFO",
+                message="sites_ingested",
+                context={
+                    "mode": "test",
+                    "total_seen": total,
+                    "removed_seen": 0,
+                    "upserted_active": flushed_active,
+                    "upserted_removed": 0,
+                    "dropped_active_duplicates": dropped_active_duplicates,
+                    "dropped_removed_duplicates": 0,
+                    "sites_skipped_error": skipped_error,
+                },
+            )
+            return {
+                "mode": "test",
+                "total_seen": total,
+                "removed_seen": 0,
+                "upserted_active": flushed_active,
+                "upserted_removed": 0,
+                "dropped_active_duplicates": dropped_active_duplicates,
+                "dropped_removed_duplicates": 0,
+                "sites_skipped_error": skipped_error,
+            }
+        finally:
+            conn.close()
+
     synced_at = datetime.now(timezone.utc)
     select = ",".join(
         [
@@ -1252,6 +2073,212 @@ def _print_drive_listing_failure(
     print(f"[graph_ingest] drive listing failure {json.dumps(details, sort_keys=True)}", flush=True)
 
 
+def _candidate_site_paths_from_url(site_url: str) -> list[tuple[str, str]]:
+    parsed = urlparse(str(site_url or "").strip())
+    hostname = (parsed.hostname or "").strip()
+    raw_path = unquote((parsed.path or "").strip())
+    if not hostname or not raw_path:
+        return []
+
+    segments = [segment for segment in raw_path.split("/") if segment]
+    if len(segments) < 2:
+        return []
+
+    first_segment = segments[0].lower()
+    if first_segment == "personal":
+        return []
+    if first_segment not in {"sites", "teams"}:
+        return []
+
+    return [
+        (hostname, "/" + "/".join(segments[:idx]))
+        for idx in range(len(segments), 1, -1)
+    ]
+
+
+def _resolve_graph_site_id_from_url(
+    client: GraphClient,
+    site_url: str,
+    *,
+    cache: dict[tuple[str, str], Optional[str]],
+) -> Optional[str]:
+    for hostname, site_path in _candidate_site_paths_from_url(site_url):
+        cache_key = (hostname.lower(), site_path.lower())
+        if cache_key in cache:
+            cached_site_id = cache[cache_key]
+            if cached_site_id:
+                return cached_site_id
+            continue
+
+        encoded_path = quote(site_path, safe="/")
+        try:
+            site = client.get_json(f"/sites/{hostname}:{encoded_path}?$select=id,webUrl")
+        except GraphError as exc:
+            if exc.status_code in (403, 404, 410):
+                cache[cache_key] = None
+                continue
+            emit(
+                "WARN",
+                "GRAPH",
+                f"Drive site lookup failed: hostname={hostname} site_path={site_path} status_code={exc.status_code}",
+            )
+            cache[cache_key] = None
+            continue
+        except Exception as exc:
+            emit("WARN", "GRAPH", f"Drive site lookup failed: hostname={hostname} site_path={site_path} error={exc}")
+            cache[cache_key] = None
+            continue
+
+        site_id = str(site.get("id") or "").strip() or None
+        cache[cache_key] = site_id
+        if site_id:
+            return site_id
+
+    return None
+
+
+def _compose_graph_site_id_from_sharepoint_ids(
+    sharepoint_ids: Dict[str, Any],
+    *,
+    primary_url: Optional[str] = None,
+    fallback_url: Optional[str] = None,
+) -> Optional[str]:
+    site_id = str(sharepoint_ids.get("siteId") or "").strip()
+    if not site_id:
+        return None
+    if site_id.count(",") >= 2:
+        return site_id
+
+    web_id = str(sharepoint_ids.get("webId") or "").strip()
+    if not web_id:
+        return None
+
+    candidate_urls = [
+        str(primary_url or "").strip(),
+        str(sharepoint_ids.get("siteUrl") or "").strip(),
+        str(fallback_url or "").strip(),
+    ]
+    for candidate_url in candidate_urls:
+        if not candidate_url:
+            continue
+        parsed = urlparse(candidate_url)
+        hostname = str(parsed.hostname or "").strip().lower()
+        path = unquote(str(parsed.path or "").strip()).lower()
+        if not hostname or not path:
+            continue
+        if hostname.endswith("my.sharepoint.com") or "/personal/" in path:
+            return None
+        return f"{hostname},{site_id},{web_id}"
+
+    return None
+
+
+def _resolve_group_root_site_id(
+    client: GraphClient,
+    *,
+    group_id: str,
+    site_url_cache: dict[tuple[str, str], Optional[str]],
+) -> Optional[str]:
+    try:
+        group_root_site = client.get_json(f"/groups/{group_id}/sites/root?$select=id,webUrl")
+    except GraphError as exc:
+        if exc.status_code not in (403, 404, 410):
+            emit(
+                "WARN",
+                "GRAPH",
+                f"Group root site lookup failed: group_id={group_id} status_code={exc.status_code}",
+            )
+        return None
+    except Exception as exc:
+        emit("WARN", "GRAPH", f"Group root site lookup failed: group_id={group_id} error={exc}")
+        return None
+
+    group_root_site_id = str(group_root_site.get("id") or "").strip()
+    if group_root_site_id:
+        return group_root_site_id
+
+    group_root_site_url = str(group_root_site.get("webUrl") or "").strip()
+    if group_root_site_url:
+        return _resolve_graph_site_id_from_url(client, group_root_site_url, cache=site_url_cache)
+
+    return None
+
+
+def _resolve_test_mode_drive_site_id(
+    client: GraphClient,
+    drive: Dict[str, Any],
+    *,
+    owner_hint_id: Optional[str],
+    owner_hint_type: Optional[str],
+    site_url_cache: dict[tuple[str, str], Optional[str]],
+) -> Optional[str]:
+    sharepoint_ids = drive.get("sharepointIds") or {}
+    drive_web_url = str(drive.get("webUrl") or "").strip()
+    site_id = _compose_graph_site_id_from_sharepoint_ids(
+        sharepoint_ids,
+        primary_url=sharepoint_ids.get("siteUrl"),
+        fallback_url=drive_web_url,
+    )
+    if site_id:
+        return site_id
+
+    drive_type = str(drive.get("driveType") or "").strip()
+    drive_id = str(drive.get("id") or "").strip()
+    is_likely_sharepoint = drive_type == "documentLibrary" or "/sites/" in drive_web_url.lower() or "/teams/" in drive_web_url.lower()
+    if not is_likely_sharepoint or not drive_id:
+        return None
+
+    try:
+        root_item = client.get_json(f"/drives/{drive_id}/root?$select=webUrl,sharepointIds")
+    except GraphError as exc:
+        emit(
+            "WARN",
+            "GRAPH",
+            f"Drive root lookup failed for site resolution: drive_id={drive_id} status_code={exc.status_code}",
+        )
+        root_item = {}
+    except Exception as exc:
+        emit("WARN", "GRAPH", f"Drive root lookup failed for site resolution: drive_id={drive_id} error={exc}")
+        root_item = {}
+
+    root_sharepoint_ids = root_item.get("sharepointIds") or {}
+    root_site_id = _compose_graph_site_id_from_sharepoint_ids(
+        root_sharepoint_ids,
+        primary_url=root_sharepoint_ids.get("siteUrl"),
+        fallback_url=root_item.get("webUrl") or drive_web_url,
+    )
+    if root_site_id:
+        return root_site_id
+
+    root_site_url = str(root_sharepoint_ids.get("siteUrl") or "").strip()
+    if root_site_url:
+        resolved_site_id = _resolve_graph_site_id_from_url(client, root_site_url, cache=site_url_cache)
+        if resolved_site_id:
+            return resolved_site_id
+
+    root_web_url = str(root_item.get("webUrl") or "").strip()
+    if root_web_url:
+        resolved_site_id = _resolve_graph_site_id_from_url(client, root_web_url, cache=site_url_cache)
+        if resolved_site_id:
+            return resolved_site_id
+
+    if drive_web_url:
+        resolved_site_id = _resolve_graph_site_id_from_url(client, drive_web_url, cache=site_url_cache)
+        if resolved_site_id:
+            return resolved_site_id
+
+    if owner_hint_type == "group" and owner_hint_id:
+        resolved_site_id = _resolve_group_root_site_id(
+            client,
+            group_id=owner_hint_id,
+            site_url_cache=site_url_cache,
+        )
+        if resolved_site_id:
+            return resolved_site_id
+
+    return None
+
+
 def _drive_row(
     drive: Dict[str, Any],
     *,
@@ -1263,6 +2290,12 @@ def _drive_row(
     users_by_email: dict[str, str],
 ) -> tuple:
     quota = drive.get("quota") or {}
+    sharepoint_ids = drive.get("sharepointIds") or {}
+    derived_site_id = site_id or _compose_graph_site_id_from_sharepoint_ids(
+        sharepoint_ids,
+        primary_url=sharepoint_ids.get("siteUrl"),
+        fallback_url=drive.get("webUrl"),
+    )
 
     owner_user_id, owner_type, owner_display_name, owner_email, owner_graph_id = _resolve_identity(
         drive.get("owner"), users_by_id, users_by_email
@@ -1283,7 +2316,7 @@ def _drive_row(
 
     return (
         drive.get("id"),
-        site_id,
+        derived_site_id,
         drive.get("name"),
         drive.get("description"),
         drive.get("driveType"),
@@ -1321,7 +2354,13 @@ def _drive_row(
     )
 
 
-def _ingest_drives(client: GraphClient, *, run_id: str, flush_every: int) -> Dict[str, Any]:
+def _ingest_drives(
+    client: GraphClient,
+    *,
+    run_id: str,
+    flush_every: int,
+    scope: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     synced_at = datetime.now(timezone.utc)
     select = ",".join(
         [
@@ -1336,6 +2375,7 @@ def _ingest_drives(client: GraphClient, *, run_id: str, flush_every: int) -> Dic
             "createdBy",
             "lastModifiedBy",
             "quota",
+            "sharepointIds",
         ]
     )
     upsert_sql = """
@@ -1395,6 +2435,181 @@ def _ingest_drives(client: GraphClient, *, run_id: str, flush_every: int) -> Dic
     user_no_drive = 0
     drive_upserts = 0
     dropped_duplicates = 0
+
+    if scope and scope.get("mode") == "test":
+        conn = db.get_conn()
+        try:
+            cur = conn.cursor()
+            users_by_id, users_by_email = _load_user_maps(cur)
+
+            batch: list[tuple] = []
+            scoped_drive_ids: set[str] = set()
+            scoped_site_ids: set[str] = set()
+            site_url_cache: dict[tuple[str, str], Optional[str]] = {}
+
+            for group_id in scope.get("group_ids") or []:
+                group_count += 1
+                try:
+                    has_drive = False
+                    for drive in client.iter_paged(f"/groups/{group_id}/drives?$top={GRAPH_PAGE_SIZE}&$select={select}"):
+                        drive_id = drive.get("id")
+                        if not drive_id:
+                            continue
+                        has_drive = True
+                        resolved_site_id = _resolve_test_mode_drive_site_id(
+                            client,
+                            drive,
+                            owner_hint_id=group_id,
+                            owner_hint_type="group",
+                            site_url_cache=site_url_cache,
+                        )
+                        row = _drive_row(
+                            drive,
+                            site_id=resolved_site_id,
+                            owner_hint_id=group_id,
+                            owner_hint_type="group",
+                            synced_at=synced_at,
+                            users_by_id=users_by_id,
+                            users_by_email=users_by_email,
+                        )
+                        batch.append(row)
+                        scoped_drive_ids.add(drive_id)
+                        if row[1]:
+                            scoped_site_ids.add(row[1])
+                    if not has_drive:
+                        group_no_drive += 1
+                except GraphError as exc:
+                    _print_drive_listing_failure(target_kind="group", target_id=group_id, graph_error=exc)
+                    if _is_terminal_drive_listing_error(exc):
+                        reason = _availability_reason_from_graph_error(exc, fallback="group_drives_unavailable")
+                        error_payload = _availability_error_payload(
+                            exc,
+                            target_kind="group",
+                            target_id=group_id,
+                            reason=reason,
+                        )
+                        _mark_drives_unavailable(
+                            cur,
+                            checked_at=synced_at,
+                            reason=reason,
+                            error_payload=error_payload,
+                            where_sql="site_id IS NULL AND owner_id = %s",
+                            where_params=[group_id],
+                        )
+                        conn.commit()
+                        group_no_drive += 1
+                        continue
+                    raise
+
+                if len(batch) >= flush_every:
+                    executed, dropped = _flush_drive_batch(cur, conn, upsert_sql, batch)
+                    drive_upserts += executed
+                    dropped_duplicates += dropped
+                    batch = []
+
+            for user_id in scope.get("user_ids") or []:
+                user_count += 1
+                try:
+                    has_drive = False
+                    for drive in client.iter_paged(f"/users/{user_id}/drives?$top={GRAPH_PAGE_SIZE}&$select={select}"):
+                        drive_id = drive.get("id")
+                        if not drive_id:
+                            continue
+                        has_drive = True
+                        resolved_site_id = _resolve_test_mode_drive_site_id(
+                            client,
+                            drive,
+                            owner_hint_id=user_id,
+                            owner_hint_type="user",
+                            site_url_cache=site_url_cache,
+                        )
+                        row = _drive_row(
+                            drive,
+                            site_id=resolved_site_id,
+                            owner_hint_id=user_id,
+                            owner_hint_type="user",
+                            synced_at=synced_at,
+                            users_by_id=users_by_id,
+                            users_by_email=users_by_email,
+                        )
+                        batch.append(row)
+                        scoped_drive_ids.add(drive_id)
+                        if row[1]:
+                            scoped_site_ids.add(row[1])
+                    if not has_drive:
+                        user_no_drive += 1
+                except GraphError as exc:
+                    _print_drive_listing_failure(target_kind="user", target_id=user_id, graph_error=exc)
+                    is_blocked_site = _is_blocked_site_graph_error(exc)
+                    if exc.status_code in (403, 404, 410) or is_blocked_site:
+                        user_no_drive += 1
+                        reason = "blocked_site" if is_blocked_site else _availability_reason_from_graph_error(exc, fallback="no_accessible_drives")
+                        error_payload = _availability_error_payload(
+                            exc,
+                            target_kind="user",
+                            target_id=user_id,
+                            reason=reason,
+                        )
+                        _mark_drives_unavailable(
+                            cur,
+                            checked_at=synced_at,
+                            reason=reason,
+                            error_payload=error_payload,
+                            where_sql="site_id IS NULL AND owner_id = %s",
+                            where_params=[user_id],
+                        )
+                        conn.commit()
+                        continue
+                    raise
+
+                if len(batch) >= flush_every:
+                    executed, dropped = _flush_drive_batch(cur, conn, upsert_sql, batch)
+                    drive_upserts += executed
+                    dropped_duplicates += dropped
+                    batch = []
+
+            if batch:
+                executed, dropped = _flush_drive_batch(cur, conn, upsert_sql, batch)
+                drive_upserts += executed
+                dropped_duplicates += dropped
+
+            scope["drive_ids"] = _normalize_id_list(scoped_drive_ids)
+            scope["site_ids"] = _normalize_id_list(scoped_site_ids)
+
+            log_job_run_log(
+                run_id=run_id,
+                level="INFO",
+                message="drives_ingested",
+                context={
+                    "mode": "test",
+                    "synced_at": synced_at.isoformat(),
+                    "sites_processed": 0,
+                    "sites_skipped_personal": 0,
+                    "sites_skipped_error": 0,
+                    "groups_processed": group_count,
+                    "groups_no_drive": group_no_drive,
+                    "users_processed": user_count,
+                    "users_no_drive": user_no_drive,
+                    "drive_upserts": drive_upserts,
+                    "dropped_duplicates": dropped_duplicates,
+                    "scoped_site_count": len(scope["site_ids"]),
+                },
+            )
+            return {
+                "mode": "test",
+                "sites_processed": 0,
+                "sites_skipped_personal": 0,
+                "sites_skipped_error": 0,
+                "groups_processed": group_count,
+                "groups_no_drive": group_no_drive,
+                "users_processed": user_count,
+                "users_no_drive": user_no_drive,
+                "drive_upserts": drive_upserts,
+                "dropped_duplicates": dropped_duplicates,
+                "scoped_site_count": len(scope["site_ids"]),
+            }
+        finally:
+            conn.close()
 
     conn = db.get_conn()
     try:
@@ -1687,7 +2902,13 @@ def _item_file_hash_sha1(item: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _ingest_drive_items(client: GraphClient, *, run_id: str, flush_every: int) -> Dict[str, Any]:
+def _ingest_drive_items(
+    client: GraphClient,
+    *,
+    run_id: str,
+    flush_every: int,
+    scope: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     synced_at = datetime.now(timezone.utc)
     select = ",".join(
         [
@@ -1788,8 +3009,12 @@ def _ingest_drive_items(client: GraphClient, *, run_id: str, flush_every: int) -
     conn = db.get_conn()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id FROM msgraph_drives WHERE deleted_at IS NULL AND is_available = TRUE")
-        drive_ids = [row[0] for row in cur.fetchall()]
+        if scope and scope.get("mode") == "test":
+            drive_ids = _get_scoped_drive_ids_from_db(cur, scope, require_available=True)
+            scope["drive_ids"] = drive_ids
+        else:
+            cur.execute("SELECT id FROM msgraph_drives WHERE deleted_at IS NULL AND is_available = TRUE")
+            drive_ids = [row[0] for row in cur.fetchall()]
         conn.commit()
         users_by_id, users_by_email = _load_user_maps(cur)
 
@@ -2298,7 +3523,13 @@ def _build_permission_error_state(
     return {"summary": summary, "details": details}
 
 
-def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: str) -> Dict[str, Any]:
+def _scan_permissions(
+    client: GraphClient,
+    config: Dict[str, Any],
+    *,
+    run_id: str,
+    scope: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     permissions_batch_size = int(config.get("permissions_batch_size", DEFAULT_PERMISSIONS_BATCH_SIZE))
     stale_after_hours = int(config.get("permissions_stale_after_hours", DEFAULT_PERMISSIONS_STALE_AFTER_HOURS))
     if stale_after_hours < 0:
@@ -2393,6 +3624,29 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
     conn = db.get_conn()
     try:
         cur = conn.cursor()
+        scoped_drive_ids = _normalize_id_list(scope.get("drive_ids") or []) if scope and scope.get("mode") == "test" else []
+        if scope and scope.get("mode") == "test" and not scoped_drive_ids:
+            scoped_drive_ids = _get_scoped_drive_ids_from_db(cur, scope, require_available=True)
+            scope["drive_ids"] = scoped_drive_ids
+        if scope and scope.get("mode") == "test" and not scoped_drive_ids:
+            conn.commit()
+            return {
+                "mode": "test",
+                "batches": 0,
+                "items_processed": 0,
+                "items_ok": 0,
+                "items_err": 0,
+                "dropped_permission_duplicates": 0,
+                "dropped_grant_duplicates": 0,
+                "db_retry_attempts": 0,
+                "db_retry_exhausted_batches": 0,
+                "successful_db_batches": 0,
+                "terminal_skip_batches": 0,
+                "terminal_retry_requeues": 0,
+                "end_retry_candidates": 0,
+                "end_retry_ok": 0,
+                "end_retry_err": 0,
+            }
 
         def _iter_key_batches(key_rows: list[Tuple[str, str]]) -> Iterable[list[Tuple[str, str]]]:
             for idx in range(0, len(key_rows), permissions_batch_size):
@@ -2622,8 +3876,15 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
             return updates
 
         while True:
+            query_params: list[Any] = []
+            scoped_filter_sql = ""
+            if scoped_drive_ids:
+                scoped_filter_sql = "AND i.drive_id = ANY(%s)"
+                query_params.append(scoped_drive_ids)
+            query_params.extend([cutoff, synced_at, cutoff, synced_at])
+            query_params.append(candidate_limit)
             cur.execute(
-                """
+                f"""
                 SELECT i.drive_id, i.id
                 FROM msgraph_drive_items i
                 JOIN msgraph_drives d ON d.id = i.drive_id
@@ -2631,6 +3892,7 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
                   AND i.is_folder = false
                   AND d.deleted_at IS NULL
                   AND d.is_available = TRUE
+                  {scoped_filter_sql}
                   AND (
                     i.permissions_last_synced_at IS NULL
                     OR i.permissions_last_synced_at < %s
@@ -2649,7 +3911,7 @@ def _scan_permissions(client: GraphClient, config: Dict[str, Any], *, run_id: st
                   i.permissions_last_synced_at NULLS FIRST
                 LIMIT %s
                 """,
-                [cutoff, synced_at, cutoff, synced_at, candidate_limit],
+                query_params,
             )
             candidate_rows = cur.fetchall()
             if not candidate_rows:

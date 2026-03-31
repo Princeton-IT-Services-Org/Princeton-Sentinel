@@ -301,6 +301,51 @@ class GraphAvailabilityTests(unittest.TestCase):
         )
         self.assertFalse(any("UPDATE msgraph_drives SET is_available = FALSE" in sql for sql in executed_sql))
 
+    @patch("app.jobs.graph_ingest.GRAPH_MAX_CONCURRENCY", 1)
+    @patch("app.jobs.graph_ingest.log_job_run_log")
+    @patch("app.jobs.graph_ingest.emit")
+    @patch("app.jobs.graph_ingest.db.execute_values")
+    @patch("app.jobs.graph_ingest.db.get_conn")
+    @patch("app.jobs.graph_ingest._execute_db_mutation_with_retry")
+    @patch("app.jobs.graph_ingest._fetch_permissions", return_value=[])
+    def test_permissions_scope_filters_candidates_by_drive_ids(
+        self,
+        _mock_fetch_permissions,
+        mock_db_retry,
+        mock_get_conn,
+        _mock_execute_values,
+        _mock_emit,
+        _mock_log_job_run_log,
+    ):
+        fake_conn = FakeConnection(
+            responses={
+                "permission_candidates": [[("drive-1", "item-1")], []],
+                "permission_error_details": [],
+            }
+        )
+        mock_get_conn.return_value = fake_conn
+
+        def run_mutation(conn, **kwargs):
+            kwargs["mutation_fn"]()
+            return True, 0, None, None
+
+        mock_db_retry.side_effect = run_mutation
+
+        graph_ingest._scan_permissions(
+            unittest.mock.Mock(),
+            {},
+            run_id="run-6",
+            scope={"mode": "test", "drive_ids": ["drive-1"]},
+        )
+
+        candidate_query = next(
+            (entry for entry in fake_conn.cursor_obj.executed if "FROM msgraph_drive_items i JOIN msgraph_drives d ON d.id = i.drive_id" in entry[0]),
+            None,
+        )
+        self.assertIsNotNone(candidate_query)
+        self.assertIn("i.drive_id = ANY(%s)", candidate_query[0])
+        self.assertEqual(candidate_query[1][0], ["drive-1"])
+
 
 if __name__ == "__main__":
     unittest.main()

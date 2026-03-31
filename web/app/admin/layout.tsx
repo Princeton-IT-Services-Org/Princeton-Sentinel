@@ -1,5 +1,6 @@
 import AdminTabs from "@/app/admin/AdminTabs";
 import AdminVersionBadge from "@/app/admin/AdminVersionBadge";
+import { getAdminSubtitle } from "@/app/admin/copy";
 import { isAdmin, requireAdmin } from "@/app/lib/auth";
 import { getFeatureFlagsPayload } from "@/app/lib/feature-flags";
 import { getAppVersion } from "@/app/lib/version";
@@ -14,6 +15,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
   const canAdmin = isAdmin(groups);
   const appVersion = getAppVersion();
   const featureFlagsPayload = await getFeatureFlagsPayload();
+  const subtitle = getAdminSubtitle(featureFlagsPayload.flags.test_mode);
 
   return (
     <AppShell
@@ -25,7 +27,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
       <main className="ps-page">
         <PageHeader
           title="Admin"
-          subtitle="Operations and controls for ingestion, schedules, and worker health."
+          subtitle={subtitle}
           actions={<AdminVersionBadge version={appVersion} />}
         />
         <AdminTabs />

@@ -260,6 +260,15 @@ CREATE TABLE IF NOT EXISTS feature_flags (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS graph_sync_mode_state (
+  sync_key text PRIMARY KEY,
+  mode text NOT NULL,
+  group_id text,
+  scope_hash text,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (mode IN ('full', 'test'))
+);
+
 CREATE OR REPLACE FUNCTION set_feature_flags_updated_at() RETURNS trigger AS $$
 BEGIN
   NEW.updated_at = now();
@@ -273,6 +282,10 @@ FOR EACH ROW EXECUTE FUNCTION set_feature_flags_updated_at();
 
 INSERT INTO feature_flags (feature_key, enabled, description)
 VALUES ('agents_dashboard', true, 'Enable the dashboard agents and copilot experience.')
+ON CONFLICT (feature_key) DO NOTHING;
+
+INSERT INTO feature_flags (feature_key, enabled, description)
+VALUES ('test_mode', false, 'Scope Graph sync to the configured test group instead of the full tenant.')
 ON CONFLICT (feature_key) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS license_artifacts (
