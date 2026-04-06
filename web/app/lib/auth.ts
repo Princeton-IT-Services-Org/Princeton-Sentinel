@@ -40,6 +40,7 @@ export function getAuthOptions(): NextAuthOptions {
         tenantId,
         clientId,
         clientSecret,
+        checks: ["pkce", "state"],
         authorization: {
           params: {
             scope: ["openid", "profile", "email"].join(" "),
@@ -71,7 +72,6 @@ export function getAuthOptions(): NextAuthOptions {
           token.groups = (profile as any).groups || [];
         }
         if (account?.id_token) {
-          token.idToken = account.id_token;
           const payload = decodeJwtPayload(account.id_token);
           if (payload?.groups && Array.isArray(payload.groups)) {
             token.groups = payload.groups;
@@ -83,13 +83,9 @@ export function getAuthOptions(): NextAuthOptions {
             token.upn = payload.preferred_username;
           }
         }
-        if (account?.access_token) {
-          token.accessToken = account.access_token;
-        }
         return token;
       },
       async session({ session, token }) {
-        (session as any).accessToken = token.accessToken;
         (session as any).groups = token.groups || [];
         if (session.user) {
           (session.user as any).oid = token.oid;
