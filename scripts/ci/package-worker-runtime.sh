@@ -5,6 +5,12 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${script_dir}/../.." && pwd)"
 python_bin="${PYTHON_BIN:-python3}"
+python_version="$("${python_bin}" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"
+
+if [[ "${python_version}" != "3.11" ]]; then
+  echo "Worker packaging requires Python 3.11; got ${python_version} from ${python_bin}" >&2
+  exit 1
+fi
 
 runtime_dir="${repo_root}/.dist/worker-runtime"
 app_dir="${runtime_dir}/app"

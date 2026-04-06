@@ -419,8 +419,7 @@ class DeployClientEnvironmentTests(unittest.TestCase):
         io = MagicMock()
 
         with (
-            patch.object(deploy_client_environment.sys, "executable", "/custom/python"),
-            patch.dict(deploy_client_environment.os.environ, {}, clear=True),
+            patch.dict(deploy_client_environment.os.environ, {"PYTHON_BIN": "/custom/python3.11"}, clear=True),
             patch.object(
                 deploy_client_environment,
                 "compute_source_metadata",
@@ -432,6 +431,7 @@ class DeployClientEnvironmentTests(unittest.TestCase):
                     "image_tag": "fedcba098765-dirty-12345678",
                 },
             ),
+            patch.object(deploy_client_environment, "run_and_capture", return_value="3.11"),
             patch.object(deploy_client_environment, "run_command") as run_command_mock,
             patch.object(deploy_client_environment, "cleanup_runtime_dir"),
             patch.object(deploy_client_environment, "persist"),
@@ -439,18 +439,18 @@ class DeployClientEnvironmentTests(unittest.TestCase):
             deploy_client_environment.phase_build_worker(state, dry_run=True, io=io)
 
         commands = [call.args[0] for call in run_command_mock.call_args_list]
-        self.assertIn(["/custom/python", "-m", "pip", "install", "--upgrade", "pip"], commands)
-        self.assertIn(["/custom/python", "-m", "pip", "install", "-r", "worker/requirements.txt"], commands)
+        self.assertIn(["/custom/python3.11", "-m", "pip", "install", "--upgrade", "pip"], commands)
+        self.assertIn(["/custom/python3.11", "-m", "pip", "install", "-r", "worker/requirements.txt"], commands)
         self.assertIn(
-            ["/custom/python", "-m", "unittest", "discover", "-s", "worker/tests", "-p", "test_*.py"],
+            ["/custom/python3.11", "-m", "unittest", "discover", "-s", "worker/tests", "-p", "test_*.py"],
             commands,
         )
-        self.assertFalse(any(command[:3] == ["/custom/python", "-m", "compileall"] for command in commands))
+        self.assertFalse(any(command[:3] == ["/custom/python3.11", "-m", "compileall"] for command in commands))
 
         package_call = next(
             call for call in run_command_mock.call_args_list if call.args[0] == ["scripts/ci/package-worker-runtime.sh"]
         )
-        self.assertEqual(package_call.kwargs["env"], {"PYTHON_BIN": "/custom/python"})
+        self.assertEqual(package_call.kwargs["env"], {"PYTHON_BIN": "/custom/python3.11"})
         self.assertEqual(state["source"]["image_tag"], "fedcba098765-dirty-12345678")
         self.assertTrue(
             any(
@@ -459,6 +459,28 @@ class DeployClientEnvironmentTests(unittest.TestCase):
                 for command in commands
             )
         )
+
+    def test_phase_build_worker_requires_python_311(self):
+        source = {
+            "app_version": "3.3.0",
+            "staging_version_source": ".github/workflows/deploy-staging.yml",
+            "git_branch": "main",
+            "git_commit_sha": "abcdef1234567890",
+            "image_tag": "abcdef123456",
+        }
+        state = deployment_lib.build_default_state("Acme District", source, "sub-123", "eastus", "sharedacr")
+        io = MagicMock()
+
+        with (
+            patch.dict(deploy_client_environment.os.environ, {"PYTHON_BIN": "/custom/python3.10"}, clear=True),
+            patch.object(deploy_client_environment, "compute_source_metadata", return_value=source),
+            patch.object(deploy_client_environment, "run_and_capture", return_value="3.10"),
+            patch.object(deploy_client_environment, "run_command") as run_command_mock,
+        ):
+            with self.assertRaisesRegex(deploy_client_environment.DeploymentError, "requires Python 3.11"):
+                deploy_client_environment.phase_build_worker(state, dry_run=True, io=io)
+
+        run_command_mock.assert_not_called()
 
     def test_update_containerapp_image_uses_plain_update_without_startup_override(self):
         source = {
@@ -552,6 +574,44 @@ class DeployClientEnvironmentTests(unittest.TestCase):
         self.assertIn("--command", update_command)
         self.assertIn("--args", update_command)
         self.assertNotIn("--yaml", update_command)
+
+    def test_phase_deploy_worker_fails_when_expected_image_is_not_active(self):
+        source = {
+            "app_version": "3.3.0",
+            "staging_version_source": ".github/workflows/deploy-staging.yml",
+            "git_branch": "main",
+            "git_commit_sha": "abcdef1234567890",
+            "image_tag": "abcdef123456",
+        }
+        state = deployment_lib.build_default_state("Acme District", source, "sub-123", "eastus", "sharedacr")
+        state.setdefault("results", {}).setdefault("worker", {})["expected_image"] = "sharedacr.azurecr.io/sentinel-worker:new"
+        io = MagicMock()
+
+        with (
+            patch.object(deploy_client_environment, "configure_registry"),
+            patch.object(deploy_client_environment, "sync_worker_config"),
+            patch.object(deploy_client_environment, "mount_license_public_key"),
+            patch.object(deploy_client_environment, "run_command"),
+            patch.object(deploy_client_environment, "update_containerapp_image"),
+            patch.object(
+                deploy_client_environment,
+                "show_containerapp_details",
+                return_value={
+                    "app_name": state["azure"]["worker_app_name"],
+                    "latest_revision": "worker--rev07",
+                    "ready_revision": "worker--rev01",
+                    "image": "sharedacr.azurecr.io/sentinel-worker:old",
+                    "expected_image": "sharedacr.azurecr.io/sentinel-worker:new",
+                    "fqdn": "worker.example.com",
+                    "image_matches_expected": "false",
+                },
+            ),
+            patch.object(deploy_client_environment, "persist") as persist_mock,
+        ):
+            with self.assertRaisesRegex(deploy_client_environment.DeploymentError, "not ready|still serving image"):
+                deploy_client_environment.phase_deploy_worker(state, dry_run=False, io=io)
+
+        persist_mock.assert_not_called()
 
     def test_suggest_postgres_location_override_prefers_alternate_region(self):
         self.assertEqual(
