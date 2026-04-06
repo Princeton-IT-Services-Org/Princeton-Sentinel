@@ -63,6 +63,22 @@ class DeployClientEnvironmentTests(unittest.TestCase):
         version = deployment_lib.compute_source_metadata()["app_version"]
         self.assertRegex(version, r"^\d+\.\d+\.\d+$")
 
+    def test_compute_source_metadata_marks_dirty_worktrees_in_image_tag(self):
+        with patch.object(
+            deployment_lib,
+            "run_and_capture",
+            side_effect=[
+                "3.3.0",
+                "main",
+                "abcdef1234567890",
+                " M scripts/ci/package-worker-runtime.sh\n",
+            ],
+        ):
+            metadata = deployment_lib.compute_source_metadata()
+
+        self.assertEqual(metadata["git_commit_sha"], "abcdef1234567890")
+        self.assertEqual(metadata["image_tag"], "abcdef123456-dirty-fd69d991")
+
     def test_resource_name_normalization_matches_azure_constraints(self):
         self.assertEqual(deployment_lib.normalize_resource_name("Client ACR!!", max_length=16), "client-acr")
         self.assertEqual(deployment_lib.normalize_resource_name("123 Princeton Sentinel", max_length=14), "s123-princeton")
@@ -389,6 +405,59 @@ class DeployClientEnvironmentTests(unittest.TestCase):
         commands = [call.args[0] for call in run_command_mock.call_args_list]
         self.assertTrue(
             any(command[:4] == ["az", "rest", "--method", "PUT"] for command in commands)
+        )
+
+    def test_phase_build_worker_uses_shared_python_bin_for_runtime_packaging(self):
+        source = {
+            "app_version": "3.3.0",
+            "staging_version_source": ".github/workflows/deploy-staging.yml",
+            "git_branch": "main",
+            "git_commit_sha": "abcdef1234567890",
+            "image_tag": "abcdef123456",
+        }
+        state = deployment_lib.build_default_state("Acme District", source, "sub-123", "eastus", "sharedacr")
+        io = MagicMock()
+
+        with (
+            patch.object(deploy_client_environment.sys, "executable", "/custom/python"),
+            patch.dict(deploy_client_environment.os.environ, {}, clear=True),
+            patch.object(
+                deploy_client_environment,
+                "compute_source_metadata",
+                return_value={
+                    "app_version": "3.3.1",
+                    "staging_version_source": ".github/workflows/deploy-staging.yml",
+                    "git_branch": "main",
+                    "git_commit_sha": "fedcba0987654321",
+                    "image_tag": "fedcba098765-dirty-12345678",
+                },
+            ),
+            patch.object(deploy_client_environment, "run_command") as run_command_mock,
+            patch.object(deploy_client_environment, "cleanup_runtime_dir"),
+            patch.object(deploy_client_environment, "persist"),
+        ):
+            deploy_client_environment.phase_build_worker(state, dry_run=True, io=io)
+
+        commands = [call.args[0] for call in run_command_mock.call_args_list]
+        self.assertIn(["/custom/python", "-m", "pip", "install", "--upgrade", "pip"], commands)
+        self.assertIn(["/custom/python", "-m", "pip", "install", "-r", "worker/requirements.txt"], commands)
+        self.assertIn(
+            ["/custom/python", "-m", "unittest", "discover", "-s", "worker/tests", "-p", "test_*.py"],
+            commands,
+        )
+        self.assertFalse(any(command[:3] == ["/custom/python", "-m", "compileall"] for command in commands))
+
+        package_call = next(
+            call for call in run_command_mock.call_args_list if call.args[0] == ["scripts/ci/package-worker-runtime.sh"]
+        )
+        self.assertEqual(package_call.kwargs["env"], {"PYTHON_BIN": "/custom/python"})
+        self.assertEqual(state["source"]["image_tag"], "fedcba098765-dirty-12345678")
+        self.assertTrue(
+            any(
+                command[:4] == ["az", "acr", "build", "--registry"]
+                and "sentinel-worker:fedcba098765-dirty-12345678" in command
+                for command in commands
+            )
         )
 
     def test_update_containerapp_image_uses_plain_update_without_startup_override(self):

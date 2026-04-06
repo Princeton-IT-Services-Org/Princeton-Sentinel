@@ -407,12 +407,17 @@ def compute_source_metadata(io: "BaseIO | None" = None) -> dict[str, str]:
     branch = run_and_capture(["git", "branch", "--show-current"], io=io)
     commit_sha = run_and_capture(["git", "rev-parse", "HEAD"], io=io)
     short_sha = commit_sha[:12]
+    worktree_status = run_and_capture(["git", "status", "--porcelain"], io=io)
+    image_tag = short_sha
+    if worktree_status:
+        dirty_suffix = hashlib.sha256(worktree_status.encode("utf-8")).hexdigest()[:8]
+        image_tag = f"{short_sha}-dirty-{dirty_suffix}"
     return {
         "app_version": app_version,
         "staging_version_source": ".github/workflows/deploy-staging.yml",
         "git_branch": branch,
         "git_commit_sha": commit_sha,
-        "image_tag": short_sha,
+        "image_tag": image_tag,
     }
 
 

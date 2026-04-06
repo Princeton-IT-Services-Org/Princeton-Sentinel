@@ -7,13 +7,21 @@ repo_root="$(cd "${script_dir}/../.." && pwd)"
 python_bin="${PYTHON_BIN:-python3}"
 
 runtime_dir="${repo_root}/.dist/worker-runtime"
-vendor_dir="${runtime_dir}/python"
 app_dir="${runtime_dir}/app"
+requirements_file="${runtime_dir}/requirements.txt"
+validation_dir="$(mktemp -d)"
+validation_vendor_dir="${validation_dir}/python"
+
+cleanup() {
+  rm -rf "${validation_dir}"
+}
+trap cleanup EXIT
 
 rm -rf "${runtime_dir}"
-mkdir -p "${vendor_dir}" "${app_dir}"
+mkdir -p "${app_dir}" "${validation_vendor_dir}"
 
-"${python_bin}" -m pip install --no-compile --target "${vendor_dir}" -r "${repo_root}/worker/requirements.txt"
+cp "${repo_root}/worker/requirements.txt" "${requirements_file}"
+"${python_bin}" -m pip install --no-compile --target "${validation_vendor_dir}" -r "${repo_root}/worker/requirements.txt"
 cp -R "${repo_root}/worker/app/." "${app_dir}/"
 
 "${python_bin}" -m compileall -b "${app_dir}"
@@ -27,9 +35,10 @@ WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV PYTHONPATH=/app/python:/app
 
-COPY python ./python
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --no-compile -r requirements.txt
+
 COPY app ./app
 
 EXPOSE 5000
@@ -47,12 +56,17 @@ if [[ ! -f "${app_dir}/main.pyc" ]]; then
   exit 1
 fi
 
+if [[ ! -f "${requirements_file}" ]]; then
+  echo "Packaged worker runtime is missing requirements.txt" >&2
+  exit 1
+fi
+
 WORKER_ENABLE_BACKGROUND_THREADS=false \
-PYTHONPATH="${vendor_dir}:${runtime_dir}" \
+PYTHONPATH="${validation_vendor_dir}:${runtime_dir}" \
 "${python_bin}" -c 'from app.main import app; print(app.name)'
 
 WORKER_ENABLE_BACKGROUND_THREADS=false \
-PYTHONPATH="${vendor_dir}:${runtime_dir}" \
+PYTHONPATH="${validation_vendor_dir}:${runtime_dir}" \
 "${python_bin}" -m gunicorn \
   --check-config \
   --bind 0.0.0.0:5000 \

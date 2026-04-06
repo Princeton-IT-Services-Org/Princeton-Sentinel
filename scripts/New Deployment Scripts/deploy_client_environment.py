@@ -102,6 +102,12 @@ def persist(state: dict[str, Any], key: str) -> None:
     save_state(state)
 
 
+def refresh_source_metadata(state: dict[str, Any], *, io: BaseIO) -> dict[str, str]:
+    source = compute_source_metadata(io=io)
+    state["source"] = source
+    return source
+
+
 def prompt_or_default(
     io: BaseIO,
     state: dict[str, Any],
@@ -1693,7 +1699,7 @@ def phase_capture_runtime(state: dict[str, Any], *, io: BaseIO) -> dict[str, Any
 
 
 def phase_build_web(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> dict[str, Any]:
-    source = state["source"]
+    source = refresh_source_metadata(state, io=io)
     registry_server = state["azure"].get("acr_login_server") or f"{state['azure']['acr_name']}.azurecr.io"
     run_command(["npm", "ci"], cwd=ROOT / "web", dry_run=dry_run, io=io)
     run_command(["npm", "test"], cwd=ROOT / "web", env={"APP_VERSION": source["app_version"]}, dry_run=dry_run, io=io)
@@ -1779,13 +1785,13 @@ def phase_deploy_web(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> dic
 
 
 def phase_build_worker(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> dict[str, Any]:
-    source = state["source"]
+    source = refresh_source_metadata(state, io=io)
     registry_server = state["azure"].get("acr_login_server") or f"{state['azure']['acr_name']}.azurecr.io"
-    run_command(["python3", "-m", "pip", "install", "--upgrade", "pip"], dry_run=dry_run, io=io)
-    run_command(["python3", "-m", "pip", "install", "-r", "worker/requirements.txt"], dry_run=dry_run, io=io)
-    run_command(["python3", "-m", "unittest", "discover", "-s", "worker/tests", "-p", "test_*.py"], dry_run=dry_run, io=io)
-    run_command(["python3", "-m", "compileall", "worker/app"], dry_run=dry_run, io=io)
-    run_command(["scripts/ci/package-worker-runtime.sh"], dry_run=dry_run, io=io, env={"PYTHON_BIN": "python3"})
+    python_bin = os.environ.get("PYTHON_BIN") or sys.executable or "python3"
+    run_command([python_bin, "-m", "pip", "install", "--upgrade", "pip"], dry_run=dry_run, io=io)
+    run_command([python_bin, "-m", "pip", "install", "-r", "worker/requirements.txt"], dry_run=dry_run, io=io)
+    run_command([python_bin, "-m", "unittest", "discover", "-s", "worker/tests", "-p", "test_*.py"], dry_run=dry_run, io=io)
+    run_command(["scripts/ci/package-worker-runtime.sh"], dry_run=dry_run, io=io, env={"PYTHON_BIN": python_bin})
     if acr_uses_registry_credentials(state):
         expected_image = build_and_push_runtime_with_docker(
             state,
