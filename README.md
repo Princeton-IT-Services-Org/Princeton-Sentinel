@@ -31,17 +31,11 @@ docker compose up --build
 
 The worker + web Graph calls expect the following permissions (as provided):
 
-- AuditActivity.Read
-- AuditLog.Read.All
 - Directory.Read.All
-- Directory.ReadWrite.All
 - Files.Read.All
 - Files.ReadWrite.All
 - Group.Read.All
-- Reports.Read.All
-- SensitivityLabels.Read.All
 - Sites.Read.All
-- Sites.ReadWrite.All
 - User.Read.All
 
 ## Scheduling
