@@ -251,28 +251,9 @@ Expected output:
 
 - updated worker revision metadata in state
 
-### 10. Generate and install the client license
+Manual license generation and installation are no longer part of the numbered deployment suite.
 
-Run:
-
-```bash
-./scripts/New\ Deployment\ Scripts/10-generate-install-license.sh --state-dir /absolute/path/to/state-dir
-```
-
-Prompts for:
-
-- license type
-- expiry timestamp, or blank/`none` for no expiry
-
-Behavior:
-
-- generates a signed license via `scripts/generate-license.mjs`
-- inserts it directly into the client database
-- activates it in `active_license_artifact`
-
-Expected output:
-
-- license path, license id, and install timestamp saved in state
+If you need a client license, generate and activate it separately after deployment using the existing license tooling.
 
 ### 11. Bootstrap the tenant
 
@@ -337,7 +318,7 @@ If a step fails after Azure resources already exist:
 3. If the issue is a bad image deploy, rebuild and rerun the matching deploy step.
 4. If the issue is runtime config, rerun `05-capture-runtime-config.sh` and then the relevant deploy step.
 5. If the issue is database bootstrap, fix the SQL or database access and rerun `03-bootstrap-database.sh`.
-6. If the issue is license activation, rerun `10-generate-install-license.sh`.
+6. If the issue is license activation, generate and activate the license manually after fixing the underlying problem.
 
 Manual clean-up, if you intentionally abandon a deployment:
 

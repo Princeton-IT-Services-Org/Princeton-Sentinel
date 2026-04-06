@@ -9,8 +9,8 @@ import shlex
 import subprocess
 import sys
 import time
-from urllib.parse import urlparse
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -59,9 +59,6 @@ from deployment_lib import (  # noqa: E402
     validate_non_empty,
     write_temp_sql,
 )
-import install_client_license  # noqa: E402
-
-
 PHASES = {
     "init": "01-init-deployment",
     "provision": "02-provision-azure-foundation",
@@ -72,7 +69,6 @@ PHASES = {
     "deploy-web": "07-deploy-web",
     "build-worker": "08-build-push-worker",
     "deploy-worker": "09-deploy-worker",
-    "license": "10-generate-install-license",
     "bootstrap-tenant": "11-bootstrap-tenant",
     "report": "12-deployment-report",
 }
@@ -1891,58 +1887,6 @@ def phase_deploy_worker(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> 
     return state
 
 
-def phase_license(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> dict[str, Any]:
-    runtime = state["runtime"]
-    license_type = state.setdefault("license", {}).get("license_type") or io.prompt("License type", default="enterprise", validator=validate_non_empty)
-    expires_at = state["license"].get("expires_at") or io.prompt("License expiry timestamp (ISO-8601) or 'none'", default="", validator=None, allow_empty=True)
-    no_expiry = expires_at.strip().lower() in {"", "none", "no-expiry"}
-    issued_at = utc_now_iso()
-    command = [
-        "node",
-        "scripts/generate-license.mjs",
-        "--license-type",
-        license_type,
-        "--tenant-id",
-        runtime["ENTRA_TENANT_ID"],
-        "--issued-at",
-        issued_at,
-        "--private-key",
-        runtime["LOCAL_LICENSE_PRIVATE_KEY_PATH"],
-    ]
-    if no_expiry:
-        command.append("--no-expiry")
-    else:
-        command.extend(["--expires-at", expires_at])
-    if dry_run:
-        license_path = str(ROOT / ".local" / "licenses" / f"{state['deployment_id']}.license")
-        run_command(command + ["--output", license_path], dry_run=True, io=io)
-        state["license"].update(
-            {
-                "license_id": f"dry-run-{state['client_slug']}",
-                "license_type": license_type,
-                "license_file_path": license_path,
-                "installed_at_utc": utc_now_iso(),
-                "expires_at": None if no_expiry else expires_at,
-            }
-        )
-        persist(state, "license")
-        return state
-    completed = run_and_capture(command, io=io)
-    license_path = completed.splitlines()[-1].strip()
-    state["license"]["license_type"] = license_type
-    state["license"]["license_file_path"] = license_path
-    installed = install_client_license.install_license(
-        database_url=state["database"]["database_url"],
-        license_path=Path(license_path),
-        actor_name="Local deployment script",
-    )
-    state["license"]["license_id"] = installed["license_id"]
-    state["license"]["installed_at_utc"] = installed["installed_at_utc"]
-    state["license"]["expires_at"] = None if no_expiry else expires_at
-    persist(state, "license")
-    return state
-
-
 def ensure_graph_ingest_schedule(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> None:
     database_url = state["database"]["database_url"]
     cron_expr = state.setdefault("runtime", {}).get("GRAPH_INGEST_CRON") or io.prompt(
@@ -2120,8 +2064,6 @@ def main(argv: list[str] | None = None, *, io: BaseIO | None = None) -> int:
         phase_build_worker(state, dry_run=args.dry_run, io=io)
     elif args.phase == "deploy-worker":
         phase_deploy_worker(state, dry_run=args.dry_run, io=io)
-    elif args.phase == "license":
-        phase_license(state, dry_run=args.dry_run, io=io)
     elif args.phase == "bootstrap-tenant":
         phase_bootstrap_tenant(state, dry_run=args.dry_run, io=io)
     elif args.phase == "report":
