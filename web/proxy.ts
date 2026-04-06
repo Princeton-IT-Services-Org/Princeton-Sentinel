@@ -12,6 +12,7 @@ import {
   LAST_ACCOUNT_HINT_MAX_AGE_SECONDS,
   sanitizeAccountHint,
 } from "@/app/lib/account-hint";
+import { applySecurityHeaders } from "./app/lib/security-headers";
 
 const ADMIN_PREFIXES = [
   "/admin",
@@ -49,7 +50,7 @@ function forbiddenRedirect(req: NextRequest) {
   url.pathname = "/forbidden";
   url.search = "";
   url.searchParams.set("callbackUrl", req.nextUrl.pathname + req.nextUrl.search);
-  return NextResponse.redirect(url);
+  return applySecurityHeaders(NextResponse.redirect(url));
 }
 
 function createTimingMeta(req: NextRequest): TimingMeta {
@@ -67,11 +68,13 @@ function nextWithTiming(req: NextRequest, timing: TimingMeta) {
   headers.set(PS_REQ_START_MS_HEADER, String(timing.startMs));
   headers.set(PS_REQ_METHOD_HEADER, timing.method);
   headers.set(PS_REQ_PATH_HEADER, timing.path);
-  return NextResponse.next({
-    request: {
-      headers,
-    },
-  });
+  return applySecurityHeaders(
+    NextResponse.next({
+      request: {
+        headers,
+      },
+    }),
+  );
 }
 
 function logPerfDoneFromMiddleware(timing: TimingMeta, status: number) {
@@ -106,10 +109,10 @@ export async function proxy(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
 
   if (pathname.startsWith("/api/auth") || pathname.startsWith("/_next") || pathname === "/favicon.ico" || isPublicAsset(pathname)) {
-    return NextResponse.next();
+    return applySecurityHeaders(NextResponse.next());
   }
   if (pathname.startsWith("/api/internal/worker-heartbeat")) {
-    return NextResponse.next();
+    return applySecurityHeaders(NextResponse.next());
   }
   const timing = createTimingMeta(req);
 
@@ -142,13 +145,13 @@ export async function proxy(req: NextRequest) {
   const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
   if (!token) {
     if (isApiRequest(pathname)) {
-      const response = NextResponse.json({ error: "unauthorized" }, { status: 401 });
+      const response = applySecurityHeaders(NextResponse.json({ error: "unauthorized" }, { status: 401 }));
       logPerfDoneFromMiddleware(timing, response.status);
       return response;
     }
     const signInUrl = new URL("/signin/account", req.nextUrl.origin);
     signInUrl.searchParams.set("callbackUrl", pathname + search);
-    const response = NextResponse.redirect(signInUrl);
+    const response = applySecurityHeaders(NextResponse.redirect(signInUrl));
     logPerfDoneFromMiddleware(timing, response.status);
     return response;
   }
@@ -162,7 +165,7 @@ export async function proxy(req: NextRequest) {
   if (ADMIN_PREFIXES.some((p) => pathname.startsWith(p))) {
     if (!isAdmin) {
       if (isApiRequest(pathname)) {
-        const response = NextResponse.json({ error: "forbidden" }, { status: 403 });
+        const response = applySecurityHeaders(NextResponse.json({ error: "forbidden" }, { status: 403 }));
         logPerfDoneFromMiddleware(timing, response.status);
         return response;
       }
@@ -175,7 +178,7 @@ export async function proxy(req: NextRequest) {
   if (USER_PREFIXES.some((p) => pathname.startsWith(p))) {
     if (!isUser) {
       if (isApiRequest(pathname)) {
-        const response = NextResponse.json({ error: "forbidden" }, { status: 403 });
+        const response = applySecurityHeaders(NextResponse.json({ error: "forbidden" }, { status: 403 }));
         logPerfDoneFromMiddleware(timing, response.status);
         return response;
       }
