@@ -1,5 +1,26 @@
 # Scripts
 
+## `New Deployment Scripts/`
+
+Interactive local deployment suite for provisioning a client Azure environment, bootstrapping the database, deploying web and worker images, installing a license, and writing a plaintext deployment record under `.local/deployments/`.
+
+The suite uses a client-tenant ACR wired with Container App managed identity plus `AcrPull`.
+
+During init, you can either:
+
+- reuse an existing client-tenant ACR
+- create a new Basic ACR and let provisioning wire it up
+
+Start with:
+
+```bash
+./scripts/New\ Deployment\ Scripts/01-init-deployment.sh
+```
+
+Runbook:
+
+- [`scripts/New Deployment Scripts/DEPLOYMENT_RUNBOOK.md`](/Users/garrick-mac/Documents/GitHub/Princeton-Sentinel/scripts/New%20Deployment%20Scripts/DEPLOYMENT_RUNBOOK.md)
+
 ## `db_migrations.py`
 
 Run one SQL migration file from `db/migrations` against a target Postgres database.

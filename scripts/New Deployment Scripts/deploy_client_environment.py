@@ -1,0 +1,2099 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+import time
+from urllib.parse import urlparse
+from pathlib import Path
+from typing import Any
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from deployment_lib import (  # noqa: E402
+    AZURE_CONFIG_DIR,
+    DEFAULT_GRAPH_INGEST_CRON,
+    DEFAULT_LICENSE_PUBLIC_KEY_MOUNT_PATH,
+    DEFAULT_RUNTIME_VALUES,
+    DEPLOYMENT_SUITE_ROOT,
+    PLACEHOLDER_IMAGE,
+    REQUIRED_RUNTIME_FIELDS,
+    BaseIO,
+    ConsoleIO,
+    DEPLOYMENTS_ROOT,
+    DeploymentError,
+    MASTER_CSV_PATH,
+    ROOT,
+    append_master_csv_row,
+    build_database_url,
+    build_default_state,
+    build_runtime_env_snapshot,
+    build_summary_markdown,
+    command_exists,
+    compute_source_metadata,
+    discover_init_sql_files,
+    generate_secret,
+    load_state_from_dir,
+    normalize_acr_name,
+    mark_phase_completed,
+    normalize_resource_name,
+    parse_args,
+    psycopg2_available,
+    repo_relative,
+    resolve_state_path,
+    run_and_capture,
+    run_and_capture_or_default,
+    run_command,
+    safe_get,
+    save_state,
+    stable_delimiter,
+    utc_now_iso,
+    validate_ipv4,
+    validate_non_empty,
+    write_temp_sql,
+)
+import install_client_license  # noqa: E402
+
+
+PHASES = {
+    "init": "01-init-deployment",
+    "provision": "02-provision-azure-foundation",
+    "bootstrap-db": "03-bootstrap-database",
+    "entra-checkpoint": "04-manual-entra-checkpoint",
+    "capture-runtime": "05-capture-runtime-config",
+    "build-web": "06-build-push-web",
+    "deploy-web": "07-deploy-web",
+    "build-worker": "08-build-push-worker",
+    "deploy-worker": "09-deploy-worker",
+    "license": "10-generate-install-license",
+    "bootstrap-tenant": "11-bootstrap-tenant",
+    "report": "12-deployment-report",
+}
+
+PLACEHOLDER_CONFIG = {
+    "web": {"port": "3000", "cpu": "1.0", "memory": "2.0Gi"},
+    "worker": {"port": "5000", "cpu": "1.0", "memory": "2.0Gi"},
+}
+
+APP_INSIGHTS_PROACTIVE_DETECTIONS_API_VERSION = "2015-05-01"
+SMART_DETECTOR_ALERT_RULES_API_VERSION = "2021-04-01"
+POSTGRES_CREATE_RETRY_ATTEMPTS = 3
+POSTGRES_CREATE_RETRY_BACKOFF_SECONDS = 10
+
+
+def phase_name(key: str) -> str:
+    return PHASES[key]
+
+
+def require_state(args) -> dict[str, Any]:
+    state_dir = resolve_state_path(args.state_dir, resume=args.resume, client_slug=args.client_slug)
+    return load_state_from_dir(state_dir)
+
+
+def persist(state: dict[str, Any], key: str) -> None:
+    mark_phase_completed(state, phase_name(key))
+    save_state(state)
+
+
+def prompt_or_default(
+    io: BaseIO,
+    state: dict[str, Any],
+    section: str,
+    key: str,
+    label: str,
+    *,
+    default: str | None = None,
+    secret: bool = False,
+    validator=validate_non_empty,
+    allow_empty: bool = False,
+) -> str:
+    section_data = state.setdefault(section, {})
+    existing = section_data.get(key)
+    chosen_default = existing if existing not in (None, "") else default
+    value = io.prompt(
+        label,
+        default=chosen_default,
+        secret=secret,
+        validator=validator,
+        allow_empty=allow_empty,
+    )
+    section_data[key] = value
+    return value
+
+
+def ensure_az_login(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> None:
+    subscription = state["azure"]["subscription"]
+    try:
+        run_command(["az", "account", "show"], dry_run=dry_run, io=io)
+    except subprocess.CalledProcessError:
+        run_command(["az", "login"], dry_run=dry_run, io=io)
+    run_command(["az", "account", "set", "--subscription", subscription], dry_run=dry_run, io=io)
+    if dry_run:
+        return
+    resolved = run_and_capture(["az", "account", "show", "--query", "id", "-o", "tsv"], io=io)
+    state["azure"]["subscription"] = resolved or subscription
+
+
+def ensure_containerapp_extension(*, dry_run: bool, io: BaseIO) -> None:
+    run_command(["az", "config", "set", "extension.use_dynamic_install=yes_without_prompt"], dry_run=dry_run, io=io)
+    run_command(["az", "extension", "add", "--name", "containerapp", "--upgrade"], dry_run=dry_run, io=io)
+
+
+def ensure_provider_registered(namespace: str, *, dry_run: bool, io: BaseIO) -> None:
+    if dry_run:
+        run_command(["az", "provider", "show", "--namespace", namespace, "--query", "registrationState", "-o", "tsv"], dry_run=True, io=io)
+        run_command(["az", "provider", "register", "--namespace", namespace], dry_run=True, io=io)
+        return
+    state = run_and_capture_or_default(
+        ["az", "provider", "show", "--namespace", namespace, "--query", "registrationState", "-o", "tsv"],
+        io=io,
+        default="",
+    ).strip()
+    if state.lower() == "registered":
+        return
+    io.print(f"Registering Azure resource provider `{namespace}` for this subscription.")
+    try:
+        run_command(["az", "provider", "register", "--namespace", namespace], io=io)
+    except subprocess.CalledProcessError as exc:
+        details = "\n".join(part for part in [exc.stderr or "", exc.stdout or ""] if part).strip()
+        raise DeploymentError(
+            f"Unable to register Azure resource provider `{namespace}`.\n"
+            f"Azure response:\n{details or str(exc)}"
+        ) from exc
+    for _ in range(18):
+        state = run_and_capture_or_default(
+            ["az", "provider", "show", "--namespace", namespace, "--query", "registrationState", "-o", "tsv"],
+            io=io,
+            default="",
+        ).strip()
+        if state.lower() == "registered":
+            return
+        time.sleep(10)
+    raise DeploymentError(
+        f"Azure resource provider `{namespace}` is still not registered after waiting. "
+        "Rerun the script in a few minutes or register it manually with `az provider register --namespace "
+        f"{namespace}`."
+    )
+
+
+def ensure_app_insights_extension(*, dry_run: bool, io: BaseIO) -> None:
+    try:
+        run_command(["az", "extension", "add", "--name", "application-insights", "--upgrade"], dry_run=dry_run, io=io)
+    except subprocess.CalledProcessError:
+        io.print("WARNING: failed to install Azure application-insights CLI extension; APPINSIGHTS values may need manual entry in phase 05.")
+
+
+def ensure_resource_group(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> None:
+    azure = state["azure"]
+    run_command(
+        [
+            "az",
+            "group",
+            "create",
+            "--name",
+            azure["resource_group"],
+            "--location",
+            azure["location"],
+        ],
+        dry_run=dry_run,
+        io=io,
+    )
+
+
+def acr_uses_registry_credentials(state: dict[str, Any]) -> bool:
+    return state["azure"].get("acr_access_mode") == "registry-credentials"
+
+
+def acr_creates_new_registry(state: dict[str, Any]) -> bool:
+    return state["azure"].get("acr_provisioning_mode") == "create-basic"
+
+
+def ensure_acr_defaults(state: dict[str, Any]) -> None:
+    azure = state.setdefault("azure", {})
+    azure.setdefault("acr_access_mode", "managed-identity")
+    azure.setdefault("acr_provisioning_mode", "external" if acr_uses_registry_credentials(state) else "existing")
+    azure.setdefault("acr_sku", "Basic" if acr_creates_new_registry(state) else "")
+
+
+def infer_acr_name(value: str) -> str:
+    raw = value.strip()
+    if "://" in raw:
+        parsed = urlparse(raw)
+        raw = parsed.netloc or parsed.path
+    raw = raw.split("/", 1)[0]
+    return raw.split(".", 1)[0]
+
+
+def validate_existing_acr(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> None:
+    ensure_acr_defaults(state)
+    azure = state["azure"]
+    if acr_uses_registry_credentials(state):
+        azure["acr_name"] = azure.get("acr_name") or infer_acr_name(azure.get("acr_login_server", ""))
+        if not azure.get("acr_login_server") or not azure.get("acr_username") or not azure.get("acr_password"):
+            raise DeploymentError("External/shared ACR mode requires ACR login server, username, and password.")
+        azure["acr_id"] = ""
+        return
+    if dry_run:
+        azure["acr_login_server"] = f"{azure['acr_name']}.azurecr.io"
+        return
+    login_server = run_and_capture(
+        ["az", "acr", "show", "--name", azure["acr_name"], "--query", "loginServer", "-o", "tsv"],
+        io=io,
+    )
+    acr_id = run_and_capture(
+        ["az", "acr", "show", "--name", azure["acr_name"], "--query", "id", "-o", "tsv"],
+        io=io,
+    )
+    if not login_server or not acr_id:
+        raise DeploymentError(f"Unable to resolve existing ACR {azure['acr_name']}")
+    azure["acr_login_server"] = login_server
+    azure["acr_id"] = acr_id
+
+
+def ensure_acr(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> None:
+    ensure_acr_defaults(state)
+    azure = state["azure"]
+    if acr_uses_registry_credentials(state) or not acr_creates_new_registry(state):
+        validate_existing_acr(state, dry_run=dry_run, io=io)
+        return
+    run_command(
+        [
+            "az",
+            "acr",
+            "create",
+            "--name",
+            azure["acr_name"],
+            "--resource-group",
+            azure["resource_group"],
+            "--location",
+            azure["location"],
+            "--sku",
+            azure.get("acr_sku") or "Basic",
+        ],
+        dry_run=dry_run,
+        io=io,
+    )
+    validate_existing_acr(state, dry_run=dry_run, io=io)
+
+
+def ensure_log_analytics_workspace(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> None:
+    azure = state["azure"]
+    workspace_name = azure["log_analytics_workspace"]
+    run_command(
+        [
+            "az",
+            "monitor",
+            "log-analytics",
+            "workspace",
+            "create",
+            "--resource-group",
+            azure["resource_group"],
+            "--workspace-name",
+            workspace_name,
+            "--location",
+            azure["location"],
+        ],
+        dry_run=dry_run,
+        io=io,
+    )
+    if dry_run:
+        azure["log_analytics_workspace_id"] = f"{workspace_name}-workspace-id"
+        azure["log_analytics_workspace_key"] = "dry-run-workspace-key"
+        return
+    azure["log_analytics_workspace_id"] = run_and_capture(
+        [
+            "az",
+            "monitor",
+            "log-analytics",
+            "workspace",
+            "show",
+            "--resource-group",
+            azure["resource_group"],
+            "--workspace-name",
+            workspace_name,
+            "--query",
+            "customerId",
+            "-o",
+            "tsv",
+        ],
+        io=io,
+    )
+    azure["log_analytics_workspace_key"] = run_and_capture(
+        [
+            "az",
+            "monitor",
+            "log-analytics",
+            "workspace",
+            "get-shared-keys",
+            "--resource-group",
+            azure["resource_group"],
+            "--workspace-name",
+            workspace_name,
+            "--query",
+            "primarySharedKey",
+            "-o",
+            "tsv",
+        ],
+        io=io,
+    )
+
+
+def ensure_containerapp_environment(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> None:
+    azure = state["azure"]
+    if not dry_run:
+        existing = run_and_capture_or_default(
+            [
+                "az",
+                "containerapp",
+                "env",
+                "show",
+                "--name",
+                azure["containerapp_environment"],
+                "--resource-group",
+                azure["resource_group"],
+                "--query",
+                "name",
+                "-o",
+                "tsv",
+            ],
+            io=io,
+            default="",
+        )
+        if existing:
+            return
+    run_command(
+        [
+            "az",
+            "containerapp",
+            "env",
+            "create",
+            "--name",
+            azure["containerapp_environment"],
+            "--resource-group",
+            azure["resource_group"],
+            "--location",
+            azure["location"],
+            "--logs-workspace-id",
+            azure["log_analytics_workspace_id"],
+            "--logs-workspace-key",
+            azure["log_analytics_workspace_key"],
+        ],
+        dry_run=dry_run,
+        io=io,
+        secrets_to_mask=[azure["log_analytics_workspace_key"]],
+    )
+
+
+def ensure_app_insights(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> None:
+    azure = state["azure"]
+    results = state.setdefault("results", {})
+    warnings = results.setdefault("warnings", [])
+    if dry_run:
+        azure["app_insights_app_id"] = f"{azure['app_insights_name']}-app-id"
+        azure["app_insights_api_key"] = "dry-run-app-insights-api-key"
+        return
+    try:
+        existing = run_and_capture_or_default(
+            [
+                "az",
+                "monitor",
+                "app-insights",
+                "component",
+                "show",
+                "--app",
+                azure["app_insights_name"],
+                "--resource-group",
+                azure["resource_group"],
+                "--query",
+                "appId",
+                "-o",
+                "tsv",
+            ],
+            io=io,
+            default="",
+        )
+        if existing:
+            azure["app_insights_app_id"] = existing
+            disable_app_insights_smart_detection(state, dry_run=dry_run, io=io)
+            return
+        run_command(
+            [
+                "az",
+                "monitor",
+                "app-insights",
+                "component",
+                "create",
+                "--app",
+                azure["app_insights_name"],
+                "--resource-group",
+                azure["resource_group"],
+                "--location",
+                azure["location"],
+                "--workspace",
+                azure["log_analytics_workspace"],
+                "--kind",
+                "web",
+                "--application-type",
+                "web",
+            ],
+            io=io,
+        )
+        azure["app_insights_app_id"] = run_and_capture(
+            [
+                "az",
+                "monitor",
+                "app-insights",
+                "component",
+                "show",
+                "--app",
+                azure["app_insights_name"],
+                "--resource-group",
+                azure["resource_group"],
+                "--query",
+                "appId",
+                "-o",
+                "tsv",
+            ],
+            io=io,
+        )
+        azure["app_insights_api_key"] = run_and_capture(
+            [
+                "az",
+                "monitor",
+                "app-insights",
+                "api-key",
+                "create",
+                "--app",
+                azure["app_insights_name"],
+                "--resource-group",
+                azure["resource_group"],
+                "--api-key",
+                f"{azure['app_insights_name']}-telemetry",
+                "--read-properties",
+                "ReadTelemetry",
+                "--query",
+                "apiKey",
+                "-o",
+                "tsv",
+            ],
+            io=io,
+        )
+        disable_app_insights_smart_detection(state, dry_run=dry_run, io=io)
+    except subprocess.CalledProcessError:
+        warnings.append(
+            "Automatic Application Insights creation failed. Enter APPINSIGHTS_APP_ID and APPINSIGHTS_API_KEY manually in phase 05 or leave blank to keep telemetry disabled."
+        )
+        azure.setdefault("app_insights_app_id", "")
+        azure.setdefault("app_insights_api_key", "")
+
+
+def app_insights_component_id(state: dict[str, Any]) -> str:
+    azure = state["azure"]
+    return (
+        f"/subscriptions/{azure['subscription']}"
+        f"/resourceGroups/{azure['resource_group']}"
+        f"/providers/Microsoft.Insights/components/{azure['app_insights_name']}"
+    )
+
+
+def disable_app_insights_smart_detection(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> None:
+    if dry_run:
+        return
+    azure = state["azure"]
+    results = state.setdefault("results", {})
+    warnings = results.setdefault("warnings", [])
+    component_id = app_insights_component_id(state)
+    try:
+        proactive_configs_raw = run_and_capture(
+            [
+                "az",
+                "rest",
+                "--method",
+                "GET",
+                "--uri",
+                (
+                    f"https://management.azure.com{component_id}/ProactiveDetectionConfigs"
+                    f"?api-version={APP_INSIGHTS_PROACTIVE_DETECTIONS_API_VERSION}"
+                ),
+            ],
+            io=io,
+        )
+        proactive_configs_payload = json.loads(proactive_configs_raw or "[]")
+        if isinstance(proactive_configs_payload, list):
+            proactive_configs = proactive_configs_payload
+        elif isinstance(proactive_configs_payload, dict):
+            proactive_configs = proactive_configs_payload.get("value", [])
+        else:
+            proactive_configs = []
+        for config in proactive_configs:
+            config_name = str(config.get("name") or "").strip()
+            if not config_name:
+                continue
+            run_command(
+                [
+                    "az",
+                    "rest",
+                    "--method",
+                    "PUT",
+                    "--uri",
+                    (
+                        f"https://management.azure.com{component_id}/ProactiveDetectionConfigs/{config_name}"
+                        f"?api-version={APP_INSIGHTS_PROACTIVE_DETECTIONS_API_VERSION}"
+                    ),
+                    "--body",
+                    json.dumps(
+                        {
+                            "Name": config_name,
+                            "Enabled": False,
+                            "CustomEmails": [],
+                            "SendEmailsToSubscriptionOwners": False,
+                        }
+                    ),
+                ],
+                io=io,
+            )
+
+        smart_detector_rules_raw = run_and_capture(
+            [
+                "az",
+                "resource",
+                "list",
+                "--resource-group",
+                azure["resource_group"],
+                "--resource-type",
+                "Microsoft.AlertsManagement/smartDetectorAlertRules",
+                "--api-version",
+                SMART_DETECTOR_ALERT_RULES_API_VERSION,
+                "-o",
+                "json",
+            ],
+            io=io,
+        )
+        smart_detector_rules = json.loads(smart_detector_rules_raw or "[]")
+        for rule in smart_detector_rules:
+            rule_id = str(rule.get("id") or "").strip()
+            scopes = rule.get("properties", {}).get("scope") or []
+            if not rule_id or component_id not in scopes:
+                continue
+            run_command(
+                [
+                    "az",
+                    "resource",
+                    "update",
+                    "--ids",
+                    rule_id,
+                    "--api-version",
+                    SMART_DETECTOR_ALERT_RULES_API_VERSION,
+                    "--set",
+                    "properties.state=Disabled",
+                ],
+                io=io,
+            )
+    except (json.JSONDecodeError, subprocess.CalledProcessError):
+        warnings.append(
+            "Disabling Application Insights smart detection failed. Disable proactive detections and smart detector alert rules manually if required."
+        )
+
+
+def ensure_postgres_server(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> None:
+    azure = state["azure"]
+    runtime = state.setdefault("runtime", {})
+    operator_ip = runtime.get("OPERATOR_PUBLIC_IP")
+    if not operator_ip:
+        operator_ip = io.prompt("Operator public IPv4 for PostgreSQL bootstrap firewall rule", validator=validate_ipv4)
+        runtime["OPERATOR_PUBLIC_IP"] = operator_ip
+    azure["postgres_location"] = azure.get("postgres_location") or azure["location"]
+    if not dry_run:
+        existing = run_and_capture_or_default(
+            [
+                "az",
+                "postgres",
+                "flexible-server",
+                "show",
+                "--resource-group",
+                azure["resource_group"],
+                "--name",
+                azure["postgres_server"],
+                "--query",
+                "name",
+                "-o",
+                "tsv",
+            ],
+            io=io,
+            default="",
+        )
+        if not existing:
+            transient_failures = 0
+            while True:
+                command = [
+                    "az",
+                    "postgres",
+                    "flexible-server",
+                    "create",
+                    "--resource-group",
+                    azure["resource_group"],
+                    "--name",
+                    azure["postgres_server"],
+                    "--location",
+                    azure["postgres_location"],
+                    "--admin-user",
+                    azure["postgres_admin_username"],
+                    "--admin-password",
+                    azure["postgres_admin_password"],
+                    "--sku-name",
+                    "Standard_B1ms",
+                    "--tier",
+                    "Burstable",
+                    "--version",
+                    "16",
+                    "--storage-size",
+                    "32",
+                    "--public-access",
+                    operator_ip,
+                    "--yes",
+                ]
+                try:
+                    run_command(
+                        command,
+                        dry_run=False,
+                        io=io,
+                        capture_output=True,
+                        secrets_to_mask=[azure["postgres_admin_password"]],
+                    )
+                    break
+                except subprocess.CalledProcessError as exc:
+                    details = "\n".join(part for part in [exc.stderr or "", exc.stdout or ""] if part).strip()
+                    lowered = details.lower()
+                    if "missingsubscriptionregistration" in lowered or "not registered to use namespace 'microsoft.dbforpostgresql'" in lowered:
+                        ensure_provider_registered("Microsoft.DBforPostgreSQL", dry_run=False, io=io)
+                        continue
+                    if "location is restricted" in lowered or "locationnotavailableforresourcetype" in lowered:
+                        io.print(
+                            f"PostgreSQL Flexible Server cannot be created in `{azure['postgres_location']}` for this subscription or policy."
+                        )
+                        fallback_default = suggest_postgres_location_override(
+                            azure["postgres_location"],
+                            azure["location"],
+                        )
+                        azure["postgres_location"] = io.prompt(
+                            "PostgreSQL location override",
+                            default=fallback_default,
+                            validator=validate_non_empty,
+                        )
+                        save_state(state)
+                        transient_failures = 0
+                        continue
+                    if "internalservererror" in lowered or "an unexpected error occured while processing the request" in lowered:
+                        transient_failures += 1
+                        if transient_failures < POSTGRES_CREATE_RETRY_ATTEMPTS:
+                            wait_seconds = POSTGRES_CREATE_RETRY_BACKOFF_SECONDS * transient_failures
+                            io.print(
+                                "Azure returned InternalServerError while creating PostgreSQL Flexible Server. "
+                                f"Retrying in {wait_seconds} seconds "
+                                f"(attempt {transient_failures + 1} of {POSTGRES_CREATE_RETRY_ATTEMPTS})."
+                            )
+                            time.sleep(wait_seconds)
+                            continue
+                        io.print(
+                            "Azure returned repeated InternalServerError while creating PostgreSQL Flexible Server. "
+                            "This usually indicates a temporary regional control-plane or capacity issue."
+                        )
+                        azure["postgres_location"] = io.prompt(
+                            "PostgreSQL location override",
+                            default=suggest_postgres_location_override(
+                                azure["postgres_location"],
+                                azure["location"],
+                            ),
+                            validator=validate_non_empty,
+                        )
+                        save_state(state)
+                        transient_failures = 0
+                        continue
+                    raise DeploymentError(
+                        "Azure PostgreSQL Flexible Server creation failed.\n"
+                        f"Location: {azure['postgres_location']}\n"
+                        f"Azure response:\n{details or str(exc)}"
+                    ) from exc
+    else:
+        command = [
+            "az",
+            "postgres",
+            "flexible-server",
+            "create",
+            "--resource-group",
+            azure["resource_group"],
+            "--name",
+            azure["postgres_server"],
+            "--location",
+            azure["postgres_location"],
+            "--admin-user",
+            azure["postgres_admin_username"],
+            "--admin-password",
+            azure["postgres_admin_password"],
+            "--sku-name",
+            "Standard_B1ms",
+            "--tier",
+            "Burstable",
+            "--version",
+            "16",
+            "--storage-size",
+            "32",
+            "--public-access",
+            operator_ip,
+            "--yes",
+        ]
+        run_command(
+            command,
+            dry_run=True,
+            io=io,
+            secrets_to_mask=[azure["postgres_admin_password"]],
+        )
+    ensure_postgres_public_access(state, operator_ip=operator_ip, dry_run=dry_run, io=io)
+    ensure_postgres_firewall_rule(
+        state,
+        rule_name="allow-azure-services",
+        start_ip="0.0.0.0",
+        end_ip="0.0.0.0",
+        dry_run=dry_run,
+        io=io,
+    )
+    ensure_postgres_firewall_rule(
+        state,
+        rule_name="allow-operator",
+        start_ip=operator_ip,
+        end_ip=operator_ip,
+        dry_run=dry_run,
+        io=io,
+    )
+    run_command(
+        [
+            "az",
+            "postgres",
+            "flexible-server",
+            "db",
+            "create",
+            "--resource-group",
+            azure["resource_group"],
+            "--server-name",
+            azure["postgres_server"],
+            "--database-name",
+            azure["postgres_database"],
+        ],
+        dry_run=dry_run,
+        io=io,
+    )
+    database_url = build_database_url(
+        username=azure["postgres_admin_username"],
+        password=azure["postgres_admin_password"],
+        host=f"{azure['postgres_server']}.postgres.database.azure.com",
+        port=5432,
+        database=azure["postgres_database"],
+    )
+    state.setdefault("database", {})["database_url"] = database_url
+
+
+def suggest_postgres_location_override(current_location: str, app_location: str) -> str:
+    current = (current_location or "").strip().lower()
+    app = (app_location or "").strip().lower()
+    if app and app != current:
+        return app
+    if current in {"eastus", "centralus"}:
+        return "eastus2"
+    if current == "eastus2":
+        return "centralus"
+    return "eastus2"
+
+
+def ensure_postgres_public_access(state: dict[str, Any], *, operator_ip: str, dry_run: bool, io: BaseIO) -> None:
+    azure = state["azure"]
+    command = [
+        "az",
+        "postgres",
+        "flexible-server",
+        "update",
+        "--resource-group",
+        azure["resource_group"],
+        "--name",
+        azure["postgres_server"],
+        "--public-access",
+        operator_ip,
+    ]
+    if dry_run:
+        run_command(command, dry_run=True, io=io)
+        return
+    public_access = run_and_capture_or_default(
+        [
+            "az",
+            "postgres",
+            "flexible-server",
+            "show",
+            "--resource-group",
+            azure["resource_group"],
+            "--name",
+            azure["postgres_server"],
+            "--query",
+            "network.publicNetworkAccess",
+            "-o",
+            "tsv",
+        ],
+        io=io,
+        default="",
+    ).strip()
+    if public_access.lower() not in {"disabled", "false"}:
+        return
+    io.print(f"Enabling PostgreSQL public access for `{azure['postgres_server']}` so firewall rules and app connectivity can work.")
+    try:
+        run_command(command, dry_run=False, io=io)
+    except subprocess.CalledProcessError as exc:
+        details = "\n".join(part for part in [exc.stderr or "", exc.stdout or ""] if part).strip()
+        raise DeploymentError(
+            "Azure PostgreSQL Flexible Server public access update failed.\n"
+            f"Azure response:\n{details or str(exc)}"
+        ) from exc
+
+
+def ensure_postgres_firewall_rule(
+    state: dict[str, Any],
+    *,
+    rule_name: str,
+    start_ip: str,
+    end_ip: str,
+    dry_run: bool,
+    io: BaseIO,
+) -> None:
+    azure = state["azure"]
+    show_command = [
+        "az",
+        "postgres",
+        "flexible-server",
+        "firewall-rule",
+        "show",
+        "--resource-group",
+        azure["resource_group"],
+        "--name",
+        azure["postgres_server"],
+        "--rule-name",
+        rule_name,
+        "--query",
+        "name",
+        "-o",
+        "tsv",
+    ]
+    create_command = [
+        "az",
+        "postgres",
+        "flexible-server",
+        "firewall-rule",
+        "create",
+        "--resource-group",
+        azure["resource_group"],
+        "--name",
+        azure["postgres_server"],
+        "--rule-name",
+        rule_name,
+        "--start-ip-address",
+        start_ip,
+        "--end-ip-address",
+        end_ip,
+    ]
+    if dry_run:
+        run_command(show_command, dry_run=True, io=io)
+        run_command(create_command, dry_run=True, io=io)
+        return
+    existing = run_and_capture_or_default(show_command, io=io, default="").strip()
+    if existing:
+        return
+    try:
+        run_command(create_command, dry_run=False, io=io)
+    except subprocess.CalledProcessError as exc:
+        details = "\n".join(part for part in [exc.stderr or "", exc.stdout or ""] if part).strip()
+        lowered = details.lower()
+        if "doesn't have public access enabled" in lowered:
+            ensure_postgres_public_access(state, operator_ip=end_ip if rule_name == "allow-operator" else state["runtime"]["OPERATOR_PUBLIC_IP"], dry_run=False, io=io)
+            run_command(create_command, dry_run=False, io=io)
+            return
+        if "already exists" in lowered:
+            return
+        raise DeploymentError(
+            f"Azure PostgreSQL firewall rule creation failed for `{rule_name}`.\n"
+            f"Azure response:\n{details or str(exc)}"
+        ) from exc
+
+
+def ensure_containerapp(
+    state: dict[str, Any],
+    app_key: str,
+    *,
+    dry_run: bool,
+    io: BaseIO,
+) -> None:
+    azure = state["azure"]
+    app_name = azure[f"{app_key}_app_name"]
+    if not dry_run:
+        existing = run_and_capture_or_default(
+            [
+                "az",
+                "containerapp",
+                "show",
+                "--name",
+                app_name,
+                "--resource-group",
+                azure["resource_group"],
+                "--query",
+                "name",
+                "-o",
+                "tsv",
+            ],
+            io=io,
+            default="",
+        )
+        if existing:
+            azure[f"{app_key}_fqdn"] = run_and_capture_or_default(
+                [
+                    "az",
+                    "containerapp",
+                    "show",
+                    "--name",
+                    app_name,
+                    "--resource-group",
+                    azure["resource_group"],
+                    "--query",
+                    "properties.configuration.ingress.fqdn",
+                    "-o",
+                    "tsv",
+                ],
+                io=io,
+                default="",
+            )
+            return
+    run_command(
+        [
+            "az",
+            "containerapp",
+            "create",
+            "--name",
+            app_name,
+            "--resource-group",
+            azure["resource_group"],
+            "--environment",
+            azure["containerapp_environment"],
+            "--image",
+            PLACEHOLDER_IMAGE,
+            "--ingress",
+            "external",
+            "--target-port",
+            "80",
+            "--cpu",
+            PLACEHOLDER_CONFIG[app_key]["cpu"],
+            "--memory",
+            PLACEHOLDER_CONFIG[app_key]["memory"],
+            "--min-replicas",
+            "1",
+            "--max-replicas",
+            "1",
+            "--system-assigned",
+        ],
+        dry_run=dry_run,
+        io=io,
+    )
+    if dry_run:
+        azure[f"{app_key}_fqdn"] = f"{app_name}.example.internal"
+        return
+    azure[f"{app_key}_fqdn"] = run_and_capture(
+        [
+            "az",
+            "containerapp",
+            "show",
+            "--name",
+            app_name,
+            "--resource-group",
+            azure["resource_group"],
+            "--query",
+            "properties.configuration.ingress.fqdn",
+            "-o",
+            "tsv",
+        ],
+        io=io,
+    )
+
+
+def ensure_acrpull_assignment(state: dict[str, Any], app_key: str, *, dry_run: bool, io: BaseIO) -> None:
+    if acr_uses_registry_credentials(state):
+        return
+    azure = state["azure"]
+    app_name = azure[f"{app_key}_app_name"]
+    if dry_run:
+        return
+    principal_id = run_and_capture(
+        [
+            "az",
+            "containerapp",
+            "show",
+            "--name",
+            app_name,
+            "--resource-group",
+            azure["resource_group"],
+            "--query",
+            "identity.principalId",
+            "-o",
+            "tsv",
+        ],
+        io=io,
+    )
+    if not principal_id:
+        raise DeploymentError(f"Container app {app_name} is missing a system-assigned identity.")
+    existing = run_and_capture(
+        [
+            "az",
+            "role",
+            "assignment",
+            "list",
+            "--assignee-object-id",
+            principal_id,
+            "--scope",
+            azure["acr_id"],
+            "--query",
+            "[?roleDefinitionName=='AcrPull'] | length(@)",
+            "-o",
+            "tsv",
+        ],
+        io=io,
+    )
+    if existing == "0":
+        run_command(
+            [
+                "az",
+                "role",
+                "assignment",
+                "create",
+                "--assignee-object-id",
+                principal_id,
+                "--assignee-principal-type",
+                "ServicePrincipal",
+                "--role",
+                "AcrPull",
+                "--scope",
+                azure["acr_id"],
+            ],
+            io=io,
+        )
+
+
+def wait_for_database(state: dict[str, Any], *, io: BaseIO) -> None:
+    database_url = state["database"]["database_url"]
+    ensure_sql_executor_available(io=io)
+    for attempt in range(1, 11):
+        try:
+            run_sql_command(database_url, "SELECT 1;", io=io, dry_run=False)
+            return
+        except subprocess.CalledProcessError:
+            if attempt == 10:
+                raise
+            io.print(f"Database not ready yet; retrying in 10 seconds (attempt {attempt}/10).")
+            time.sleep(10)
+        except DeploymentError:
+            if attempt == 10:
+                raise
+            io.print(f"Database not ready yet; retrying in 10 seconds (attempt {attempt}/10).")
+            time.sleep(10)
+
+
+def apply_sql_files(state: dict[str, Any], files: list[Path], *, io: BaseIO, dry_run: bool) -> None:
+    database_url = state["database"]["database_url"]
+    ensure_sql_executor_available(io=io)
+    for sql_file in files:
+        run_sql_file(database_url, sql_file, io=io, dry_run=dry_run)
+
+
+def discover_required_extensions(files: list[Path]) -> list[str]:
+    pattern = re.compile(r"CREATE\s+EXTENSION\s+(?:IF\s+NOT\s+EXISTS\s+)?\"?([a-zA-Z0-9_-]+)\"?", re.IGNORECASE)
+    discovered: list[str] = []
+    seen: set[str] = set()
+    for sql_file in files:
+        text = sql_file.read_text(encoding="utf-8")
+        for match in pattern.finditer(text):
+            extension = match.group(1).strip().lower()
+            if extension and extension not in seen:
+                seen.add(extension)
+                discovered.append(extension)
+    return discovered
+
+
+def ensure_postgres_extensions_allowed(state: dict[str, Any], *, io: BaseIO, dry_run: bool) -> None:
+    init_files = discover_init_sql_files()
+    extensions = discover_required_extensions(init_files)
+    state.setdefault("database", {})["required_extensions"] = extensions
+    if not extensions:
+        return
+    azure = state["azure"]
+    value = ",".join(extensions)
+    io.print(f"Allow-listing PostgreSQL extensions on Azure: {value}")
+    run_command(
+        [
+            "az",
+            "postgres",
+            "flexible-server",
+            "parameter",
+            "set",
+            "--resource-group",
+            azure["resource_group"],
+            "--server-name",
+            azure["postgres_server"],
+            "--name",
+            "azure.extensions",
+            "--value",
+            value,
+        ],
+        dry_run=dry_run,
+        io=io,
+    )
+
+
+def print_entra_checklist(state: dict[str, Any], *, io: BaseIO) -> None:
+    azure = state["azure"]
+    callback_url = f"https://{azure.get('web_fqdn')}/api/auth/callback/azure-ad"
+    lines = [
+        "",
+        "Manual Entra portal checklist",
+        f"1. Create or reuse one Entra app registration for {state['client_name']}.",
+        f"2. Add the web redirect URI: {callback_url}",
+        "3. Configure the `groups` claim for ID tokens.",
+        "4. Add the Graph application permissions listed in README.md and grant admin consent.",
+        "5. Create a client secret for the app registration.",
+        "6. Identify the admin-group object ID and user-group object ID for the tenant.",
+        "7. Record the tenant ID, client ID, client secret, admin group ID, and user group ID for phase 05.",
+        "",
+    ]
+    io.print("\n".join(lines))
+
+
+def ensure_runtime_defaults(state: dict[str, Any]) -> None:
+    runtime = state.setdefault("runtime", {})
+    azure = state["azure"]
+    database = state["database"]
+    if not runtime.get("DATABASE_URL"):
+        runtime["DATABASE_URL"] = database.get("database_url", "")
+    if not runtime.get("NEXTAUTH_URL") and azure.get("web_fqdn"):
+        runtime["NEXTAUTH_URL"] = f"https://{azure.get('web_fqdn')}"
+    if not runtime.get("WORKER_API_URL") and azure.get("worker_fqdn"):
+        runtime["WORKER_API_URL"] = f"https://{azure.get('worker_fqdn')}"
+    if not runtime.get("WORKER_HEARTBEAT_URL") and azure.get("web_fqdn"):
+        runtime["WORKER_HEARTBEAT_URL"] = f"https://{azure.get('web_fqdn')}/api/internal/worker-heartbeat"
+    if not runtime.get("LICENSE_PUBLIC_KEY_PATH"):
+        runtime["LICENSE_PUBLIC_KEY_PATH"] = DEFAULT_LICENSE_PUBLIC_KEY_MOUNT_PATH
+    if not runtime.get("NEXTAUTH_SECRET"):
+        runtime["NEXTAUTH_SECRET"] = generate_secret(48)
+    if not runtime.get("WORKER_INTERNAL_API_TOKEN"):
+        runtime["WORKER_INTERNAL_API_TOKEN"] = generate_secret(48)
+    if not runtime.get("WORKER_HEARTBEAT_TOKEN"):
+        runtime["WORKER_HEARTBEAT_TOKEN"] = generate_secret(48)
+    if not runtime.get("APPINSIGHTS_APP_ID"):
+        runtime["APPINSIGHTS_APP_ID"] = azure.get("app_insights_app_id", "")
+    if not runtime.get("APPINSIGHTS_API_KEY"):
+        runtime["APPINSIGHTS_API_KEY"] = azure.get("app_insights_api_key", "")
+    if not runtime.get("LOCAL_LICENSE_PRIVATE_KEY_PATH"):
+        runtime["LOCAL_LICENSE_PRIVATE_KEY_PATH"] = str(ROOT / ".local" / "license-keys" / "private.pem")
+    if not runtime.get("LOCAL_LICENSE_PUBLIC_KEY_PATH"):
+        runtime["LOCAL_LICENSE_PUBLIC_KEY_PATH"] = str(ROOT / ".local" / "license-keys" / "public.pem")
+    for key, value in DEFAULT_RUNTIME_VALUES.items():
+        if not runtime.get(key):
+            runtime[key] = value
+
+
+def runtime_env_for_scripts(state: dict[str, Any]) -> dict[str, str]:
+    ensure_runtime_defaults(state)
+    azure = state["azure"]
+    runtime = state["runtime"]
+    source = state["source"]
+    environment = {
+        "APP_VERSION": source["app_version"],
+        "AZ_RESOURCE_GROUP": azure["resource_group"],
+        "AZ_ACR_NAME": azure["acr_name"],
+        "AZ_WEB_APP_NAME": azure["web_app_name"],
+        "AZ_WORKER_APP_NAME": azure["worker_app_name"],
+        "STG_DATABASE_URL": runtime["DATABASE_URL"],
+        "STG_ENTRA_CLIENT_SECRET": runtime["ENTRA_CLIENT_SECRET"],
+        "STG_NEXTAUTH_SECRET": runtime["NEXTAUTH_SECRET"],
+        "STG_WORKER_INTERNAL_API_TOKEN": runtime["WORKER_INTERNAL_API_TOKEN"],
+        "STG_WORKER_HEARTBEAT_TOKEN": runtime["WORKER_HEARTBEAT_TOKEN"],
+        "STG_NEXTAUTH_URL": runtime["NEXTAUTH_URL"],
+        "STG_WORKER_API_URL": runtime["WORKER_API_URL"],
+        "STG_WORKER_HEARTBEAT_URL": runtime["WORKER_HEARTBEAT_URL"],
+        "STG_ENTRA_TENANT_ID": runtime["ENTRA_TENANT_ID"],
+        "STG_ENTRA_CLIENT_ID": runtime["ENTRA_CLIENT_ID"],
+        "STG_ADMIN_GROUP_ID": runtime["ADMIN_GROUP_ID"],
+        "STG_USER_GROUP_ID": runtime["USER_GROUP_ID"],
+        "STG_INTERNAL_EMAIL_DOMAINS": runtime["INTERNAL_EMAIL_DOMAINS"],
+        "STG_DASHBOARD_DORMANT_LOOKBACK_DAYS": runtime["DASHBOARD_DORMANT_LOOKBACK_DAYS"],
+        "STG_APPINSIGHTS_APP_ID": runtime["APPINSIGHTS_APP_ID"],
+        "STG_APPINSIGHTS_API_KEY": runtime["APPINSIGHTS_API_KEY"],
+        "STG_LICENSE_PUBLIC_KEY_PATH": runtime["LICENSE_PUBLIC_KEY_PATH"],
+        "STG_LICENSE_CACHE_TTL_SECONDS": runtime["LICENSE_CACHE_TTL_SECONDS"],
+        "STG_DB_CONNECT_TIMEOUT_SECONDS": runtime["DB_CONNECT_TIMEOUT_SECONDS"],
+        "STG_SCHEDULER_POLL_SECONDS": runtime["SCHEDULER_POLL_SECONDS"],
+        "STG_GRAPH_BASE": runtime["GRAPH_BASE"],
+        "STG_GRAPH_MAX_CONCURRENCY": runtime["GRAPH_MAX_CONCURRENCY"],
+        "STG_GRAPH_MAX_RETRIES": runtime["GRAPH_MAX_RETRIES"],
+        "STG_GRAPH_CONNECT_TIMEOUT": runtime["GRAPH_CONNECT_TIMEOUT"],
+        "STG_GRAPH_READ_TIMEOUT": runtime["GRAPH_READ_TIMEOUT"],
+        "STG_GRAPH_PAGE_SIZE": runtime["GRAPH_PAGE_SIZE"],
+        "STG_GRAPH_PERMISSIONS_BATCH_SIZE": runtime["GRAPH_PERMISSIONS_BATCH_SIZE"],
+        "STG_GRAPH_PERMISSIONS_STALE_AFTER_HOURS": runtime["GRAPH_PERMISSIONS_STALE_AFTER_HOURS"],
+        "STG_FLUSH_EVERY": runtime["FLUSH_EVERY"],
+        "WORKER_HEARTBEAT_URL": runtime["WORKER_HEARTBEAT_URL"],
+    }
+    return environment
+
+
+def validate_runtime_ready(state: dict[str, Any]) -> None:
+    ensure_runtime_defaults(state)
+    runtime = state["runtime"]
+    missing = [field for field in REQUIRED_RUNTIME_FIELDS if not runtime.get(field)]
+    if missing:
+        raise DeploymentError(f"Runtime configuration is incomplete. Missing: {', '.join(missing)}")
+
+
+def sync_web_config(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> None:
+    env = runtime_env_for_scripts(state)
+    validate_runtime_ready(state)
+    run_command(
+        [
+            "scripts/ci/validate-required-env.sh",
+            "STG_DATABASE_URL",
+            "STG_ENTRA_CLIENT_SECRET",
+            "STG_NEXTAUTH_SECRET",
+            "STG_WORKER_INTERNAL_API_TOKEN",
+            "STG_WORKER_HEARTBEAT_TOKEN",
+            "STG_ENTRA_TENANT_ID",
+            "STG_ENTRA_CLIENT_ID",
+            "STG_ADMIN_GROUP_ID",
+            "STG_USER_GROUP_ID",
+            "STG_INTERNAL_EMAIL_DOMAINS",
+            "STG_DASHBOARD_DORMANT_LOOKBACK_DAYS",
+        ],
+        env=env,
+        dry_run=dry_run,
+        io=io,
+        secrets_to_mask=[env["STG_DATABASE_URL"], env["STG_ENTRA_CLIENT_SECRET"], env["STG_NEXTAUTH_SECRET"], env["STG_WORKER_INTERNAL_API_TOKEN"], env["STG_WORKER_HEARTBEAT_TOKEN"]],
+    )
+    run_command(
+        ["scripts/ci/sync-staging-web-config.sh"],
+        env=env,
+        dry_run=dry_run,
+        io=io,
+        secrets_to_mask=[env["STG_DATABASE_URL"], env["STG_ENTRA_CLIENT_SECRET"], env["STG_NEXTAUTH_SECRET"], env["STG_WORKER_INTERNAL_API_TOKEN"], env["STG_WORKER_HEARTBEAT_TOKEN"]],
+    )
+
+
+def sync_worker_config(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> None:
+    env = runtime_env_for_scripts(state)
+    validate_runtime_ready(state)
+    run_command(
+        [
+            "scripts/ci/validate-required-env.sh",
+            "STG_DATABASE_URL",
+            "STG_APPINSIGHTS_API_KEY",
+            "STG_ENTRA_CLIENT_SECRET",
+            "STG_WORKER_INTERNAL_API_TOKEN",
+            "STG_WORKER_HEARTBEAT_TOKEN",
+            "STG_APPINSIGHTS_APP_ID",
+            "STG_ENTRA_TENANT_ID",
+            "STG_ENTRA_CLIENT_ID",
+            "STG_INTERNAL_EMAIL_DOMAINS",
+            "STG_DB_CONNECT_TIMEOUT_SECONDS",
+            "STG_SCHEDULER_POLL_SECONDS",
+            "STG_GRAPH_BASE",
+            "STG_GRAPH_MAX_CONCURRENCY",
+            "STG_GRAPH_MAX_RETRIES",
+            "STG_GRAPH_CONNECT_TIMEOUT",
+            "STG_GRAPH_READ_TIMEOUT",
+            "STG_GRAPH_PAGE_SIZE",
+            "STG_GRAPH_PERMISSIONS_BATCH_SIZE",
+            "STG_GRAPH_PERMISSIONS_STALE_AFTER_HOURS",
+            "STG_FLUSH_EVERY",
+        ],
+        env=env,
+        dry_run=dry_run,
+        io=io,
+        secrets_to_mask=[env["STG_DATABASE_URL"], env["STG_APPINSIGHTS_API_KEY"], env["STG_ENTRA_CLIENT_SECRET"], env["STG_WORKER_INTERNAL_API_TOKEN"], env["STG_WORKER_HEARTBEAT_TOKEN"]],
+    )
+    run_command(
+        ["scripts/ci/sync-staging-worker-config.sh"],
+        env=env,
+        dry_run=dry_run,
+        io=io,
+        secrets_to_mask=[env["STG_DATABASE_URL"], env["STG_APPINSIGHTS_API_KEY"], env["STG_ENTRA_CLIENT_SECRET"], env["STG_WORKER_INTERNAL_API_TOKEN"], env["STG_WORKER_HEARTBEAT_TOKEN"]],
+    )
+
+
+def mount_license_public_key(state: dict[str, Any], app_name: str, *, dry_run: bool, io: BaseIO) -> None:
+    runtime = state["runtime"]
+    public_key_path = Path(runtime["LOCAL_LICENSE_PUBLIC_KEY_PATH"]).expanduser().resolve()
+    if not public_key_path.exists() and not dry_run:
+        raise DeploymentError(f"Local public key file is missing: {public_key_path}")
+    public_key_text = "dry-run-public-key" if dry_run else public_key_path.read_text(encoding="utf-8")
+    run_command(
+        [
+            "az",
+            "containerapp",
+            "secret",
+            "set",
+            "--name",
+            app_name,
+            "--resource-group",
+            state["azure"]["resource_group"],
+            "--secrets",
+            f"licensepublickey={public_key_text}",
+        ],
+        dry_run=dry_run,
+        io=io,
+        secrets_to_mask=[public_key_text],
+    )
+    run_command(
+        [
+            "az",
+            "containerapp",
+            "update",
+            "--name",
+            app_name,
+            "--resource-group",
+            state["azure"]["resource_group"],
+            "--secret-volume-mount",
+            "/mnt/secrets",
+        ],
+        dry_run=dry_run,
+        io=io,
+    )
+
+
+def configure_registry(state: dict[str, Any], app_name: str, *, dry_run: bool, io: BaseIO) -> None:
+    azure = state["azure"]
+    if acr_uses_registry_credentials(state):
+        run_command(
+            [
+                "az",
+                "containerapp",
+                "registry",
+                "set",
+                "--name",
+                app_name,
+                "--resource-group",
+                azure["resource_group"],
+                "--server",
+                azure["acr_login_server"],
+                "--username",
+                azure["acr_username"],
+                "--password",
+                azure["acr_password"],
+            ],
+            dry_run=dry_run,
+            io=io,
+            secrets_to_mask=[azure["acr_password"]],
+        )
+        return
+    run_command(
+        [
+            "az",
+            "containerapp",
+            "registry",
+            "set",
+            "--name",
+            app_name,
+            "--resource-group",
+            azure["resource_group"],
+            "--server",
+            azure["acr_login_server"],
+            "--identity",
+            "system",
+        ],
+        dry_run=dry_run,
+        io=io,
+    )
+
+
+def show_containerapp_details(state: dict[str, Any], app_key: str, *, expected_image: str, dry_run: bool, io: BaseIO) -> dict[str, str]:
+    azure = state["azure"]
+    app_name = azure[f"{app_key}_app_name"]
+    run_command(
+        ["scripts/ci/show-containerapp-revision.sh", app_name, expected_image],
+        env={"AZ_RESOURCE_GROUP": azure["resource_group"]},
+        dry_run=dry_run,
+        io=io,
+    )
+    if dry_run:
+        return {
+            "app_name": app_name,
+            "latest_revision": f"{app_name}--dry-run",
+            "ready_revision": f"{app_name}--dry-run",
+            "image": expected_image,
+            "expected_image": expected_image,
+            "fqdn": azure.get(f"{app_key}_fqdn", ""),
+            "image_matches_expected": "true",
+        }
+    payload = run_and_capture(
+        [
+            "az",
+            "containerapp",
+            "show",
+            "--name",
+            app_name,
+            "--resource-group",
+            azure["resource_group"],
+            "--query",
+            "{app_name:name,latest_revision:properties.latestRevisionName,ready_revision:properties.latestReadyRevisionName,image:properties.template.containers[0].image,fqdn:properties.configuration.ingress.fqdn}",
+            "-o",
+            "json",
+        ],
+        io=io,
+    )
+    data = eval_json(payload)
+    return {
+        "app_name": str(data.get("app_name") or app_name),
+        "latest_revision": str(data.get("latest_revision") or ""),
+        "ready_revision": str(data.get("ready_revision") or ""),
+        "image": str(data.get("image") or ""),
+        "expected_image": expected_image,
+        "fqdn": str(data.get("fqdn") or ""),
+        "image_matches_expected": str(data.get("image") == expected_image).lower(),
+    }
+
+
+def eval_json(value: str) -> dict[str, Any]:
+    import json
+
+    return json.loads(value or "{}")
+
+
+def update_containerapp_image(state: dict[str, Any], app_name: str, expected_image: str, *, dry_run: bool, io: BaseIO) -> None:
+    resource_group = state["azure"]["resource_group"]
+    update_command = [
+        "az",
+        "containerapp",
+        "update",
+        "--name",
+        app_name,
+        "--resource-group",
+        resource_group,
+        "--image",
+        expected_image,
+    ]
+    if dry_run:
+        run_command(update_command, dry_run=True, io=io)
+        return
+
+    payload = eval_json(
+        run_and_capture(
+            [
+                "az",
+                "containerapp",
+                "show",
+                "--name",
+                app_name,
+                "--resource-group",
+                resource_group,
+                "-o",
+                "json",
+            ],
+            io=io,
+        )
+    )
+    containers = payload.get("properties", {}).get("template", {}).get("containers") or []
+    if not containers:
+        raise DeploymentError(f"Container app {app_name} is missing template containers.")
+
+    container = containers[0]
+    has_startup_override = "command" in container or "args" in container
+    if has_startup_override:
+        # Match the staging workflow's plain image update while explicitly clearing
+        # any lingering startup override inherited from the placeholder revision.
+        update_command.extend(["--command", "", "--args", ""])
+
+    run_command(update_command, io=io)
+
+
+def cleanup_runtime_dir(path: Path, *, dry_run: bool, io: BaseIO) -> None:
+    if dry_run or not path.exists():
+        return
+    import shutil
+
+    shutil.rmtree(path, ignore_errors=True)
+    dist_root = path.parent
+    if dist_root.exists() and not any(dist_root.iterdir()):
+        dist_root.rmdir()
+
+
+def docker_login(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> None:
+    azure = state["azure"]
+    command = [
+        "docker",
+        "login",
+        azure["acr_login_server"],
+        "--username",
+        azure["acr_username"],
+        "--password-stdin",
+    ]
+    io.print(f"$ {shlex.join(command[:-1] + ['***'])}")
+    if dry_run:
+        return
+    merged_env = os.environ.copy()
+    result = subprocess.run(
+        command,
+        cwd=str(ROOT),
+        env=merged_env,
+        input=azure["acr_password"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, command, output=result.stdout, stderr=result.stderr)
+
+
+def build_and_push_runtime_with_docker(
+    state: dict[str, Any],
+    *,
+    image_name: str,
+    context_path: Path,
+    dry_run: bool,
+    io: BaseIO,
+) -> str:
+    azure = state["azure"]
+    source = state["source"]
+    image = f"{azure['acr_login_server']}/{image_name}:{source['image_tag']}"
+    docker_login(state, dry_run=dry_run, io=io)
+    run_command(["docker", "build", "--tag", image, str(context_path)], dry_run=dry_run, io=io)
+    run_command(["docker", "push", image], dry_run=dry_run, io=io)
+    return image
+
+
+def phase_init(args, io: BaseIO) -> dict[str, Any]:
+    client_name = io.prompt("Client name", validator=validate_non_empty)
+    subscription = io.prompt("Azure subscription ID or name", validator=validate_non_empty)
+    location = io.prompt("Azure location", default="eastus", validator=validate_non_empty)
+    use_existing_acr = io.confirm("Use an existing ACR in the client's tenant?", default=True)
+    if use_existing_acr:
+        acr_name = io.prompt("Existing Azure Container Registry name", validator=validate_non_empty)
+        acr_provisioning_mode = "existing"
+        acr_sku = ""
+    else:
+        suggested_acr_name = normalize_acr_name(f"acr-{client_name}")
+        acr_name = io.prompt("New Azure Container Registry name", default=suggested_acr_name, validator=normalize_acr_name)
+        acr_provisioning_mode = "create-basic"
+        acr_sku = "Basic"
+    state = build_default_state(
+        client_name,
+        compute_source_metadata(io=io),
+        subscription,
+        location,
+        acr_name,
+        acr_access_mode="managed-identity",
+        acr_provisioning_mode=acr_provisioning_mode,
+        acr_sku=acr_sku,
+    )
+    ensure_runtime_defaults(state)
+    ensure_acr_defaults(state)
+    save_state(state)
+    io.print(f"Initialized deployment state at {state['state_dir']}")
+    persist(state, "init")
+    return state
+
+
+def phase_provision(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> dict[str, Any]:
+    ensure_acr_defaults(state)
+    ensure_az_login(state, dry_run=dry_run, io=io)
+    ensure_containerapp_extension(dry_run=dry_run, io=io)
+    ensure_app_insights_extension(dry_run=dry_run, io=io)
+    ensure_provider_registered("Microsoft.App", dry_run=dry_run, io=io)
+    ensure_provider_registered("Microsoft.ContainerRegistry", dry_run=dry_run, io=io)
+    ensure_provider_registered("Microsoft.OperationalInsights", dry_run=dry_run, io=io)
+    ensure_provider_registered("Microsoft.Insights", dry_run=dry_run, io=io)
+    ensure_provider_registered("Microsoft.DBforPostgreSQL", dry_run=dry_run, io=io)
+    ensure_resource_group(state, dry_run=dry_run, io=io)
+    ensure_acr(state, dry_run=dry_run, io=io)
+    ensure_log_analytics_workspace(state, dry_run=dry_run, io=io)
+    ensure_containerapp_environment(state, dry_run=dry_run, io=io)
+    ensure_app_insights(state, dry_run=dry_run, io=io)
+    ensure_postgres_server(state, dry_run=dry_run, io=io)
+    ensure_containerapp(state, "web", dry_run=dry_run, io=io)
+    ensure_containerapp(state, "worker", dry_run=dry_run, io=io)
+    ensure_acrpull_assignment(state, "web", dry_run=dry_run, io=io)
+    ensure_acrpull_assignment(state, "worker", dry_run=dry_run, io=io)
+    ensure_runtime_defaults(state)
+    persist(state, "provision")
+    return state
+
+
+def phase_bootstrap_db(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> dict[str, Any]:
+    ensure_az_login(state, dry_run=dry_run, io=io)
+    ensure_provider_registered("Microsoft.DBforPostgreSQL", dry_run=dry_run, io=io)
+    ensure_postgres_extensions_allowed(state, io=io, dry_run=dry_run)
+    if not dry_run:
+        wait_for_database(state, io=io)
+    apply_sql_files(state, discover_init_sql_files(), io=io, dry_run=dry_run)
+    state.setdefault("database", {})["bootstrap_mode"] = "init-only"
+    state.setdefault("database", {})["bootstrapped_at_utc"] = utc_now_iso()
+    persist(state, "bootstrap-db")
+    return state
+
+
+def phase_entra_checkpoint(state: dict[str, Any], *, io: BaseIO) -> dict[str, Any]:
+    print_entra_checklist(state, io=io)
+    if not io.confirm("Have you completed the manual Entra checklist above?", default=False):
+        raise DeploymentError("Stop here until the Entra setup is complete, then rerun this phase.")
+    checkpoints = state.setdefault("manual_checkpoints", {})
+    checkpoints["entra_completed"] = True
+    checkpoints["entra_completed_at_utc"] = utc_now_iso()
+    persist(state, "entra-checkpoint")
+    return state
+
+
+def phase_capture_runtime(state: dict[str, Any], *, io: BaseIO) -> dict[str, Any]:
+    ensure_runtime_defaults(state)
+    prompt_or_default(io, state, "runtime", "ENTRA_TENANT_ID", "Entra tenant ID")
+    prompt_or_default(io, state, "runtime", "ENTRA_CLIENT_ID", "Entra client ID")
+    prompt_or_default(io, state, "runtime", "ENTRA_CLIENT_SECRET", "Entra client secret", secret=True)
+    prompt_or_default(io, state, "runtime", "ADMIN_GROUP_ID", "Admin group object ID")
+    prompt_or_default(io, state, "runtime", "USER_GROUP_ID", "User group object ID")
+    prompt_or_default(io, state, "runtime", "INTERNAL_EMAIL_DOMAINS", "Internal email domains (CSV)", allow_empty=True, validator=None)
+    prompt_or_default(io, state, "runtime", "NEXTAUTH_URL", "NEXTAUTH_URL", validator=validate_non_empty)
+    prompt_or_default(io, state, "runtime", "WORKER_API_URL", "WORKER_API_URL", validator=validate_non_empty)
+    prompt_or_default(io, state, "runtime", "WORKER_HEARTBEAT_URL", "WORKER_HEARTBEAT_URL", validator=validate_non_empty)
+    prompt_or_default(io, state, "runtime", "APPINSIGHTS_APP_ID", "APPINSIGHTS_APP_ID", allow_empty=True, validator=None)
+    prompt_or_default(io, state, "runtime", "APPINSIGHTS_API_KEY", "APPINSIGHTS_API_KEY", secret=True, allow_empty=True, validator=None)
+    prompt_or_default(io, state, "runtime", "NEXTAUTH_SECRET", "NEXTAUTH_SECRET", secret=True)
+    prompt_or_default(io, state, "runtime", "WORKER_INTERNAL_API_TOKEN", "WORKER_INTERNAL_API_TOKEN", secret=True)
+    prompt_or_default(io, state, "runtime", "WORKER_HEARTBEAT_TOKEN", "WORKER_HEARTBEAT_TOKEN", secret=True)
+    prompt_or_default(io, state, "runtime", "LOCAL_LICENSE_PUBLIC_KEY_PATH", "Local license public key path", validator=validate_non_empty)
+    prompt_or_default(io, state, "runtime", "LOCAL_LICENSE_PRIVATE_KEY_PATH", "Local license private key path", validator=validate_non_empty)
+    for key in [
+        "DASHBOARD_DORMANT_LOOKBACK_DAYS",
+        "DB_CONNECT_TIMEOUT_SECONDS",
+        "SCHEDULER_POLL_SECONDS",
+        "GRAPH_BASE",
+        "GRAPH_MAX_CONCURRENCY",
+        "GRAPH_MAX_RETRIES",
+        "GRAPH_CONNECT_TIMEOUT",
+        "GRAPH_READ_TIMEOUT",
+        "GRAPH_PAGE_SIZE",
+        "GRAPH_PERMISSIONS_BATCH_SIZE",
+        "GRAPH_PERMISSIONS_STALE_AFTER_HOURS",
+        "FLUSH_EVERY",
+        "LICENSE_CACHE_TTL_SECONDS",
+    ]:
+        prompt_or_default(io, state, "runtime", key, key, validator=validate_non_empty)
+    persist(state, "capture-runtime")
+    return state
+
+
+def phase_build_web(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> dict[str, Any]:
+    source = state["source"]
+    registry_server = state["azure"].get("acr_login_server") or f"{state['azure']['acr_name']}.azurecr.io"
+    run_command(["npm", "ci"], cwd=ROOT / "web", dry_run=dry_run, io=io)
+    run_command(["npm", "test"], cwd=ROOT / "web", env={"APP_VERSION": source["app_version"]}, dry_run=dry_run, io=io)
+    run_command(["npm", "run", "build"], cwd=ROOT / "web", env={"APP_VERSION": source["app_version"]}, dry_run=dry_run, io=io)
+    run_command(["scripts/ci/package-web-runtime.sh"], dry_run=dry_run, io=io)
+    if acr_uses_registry_credentials(state):
+        expected_image = build_and_push_runtime_with_docker(
+            state,
+            image_name="sentinel-web",
+            context_path=ROOT / ".dist" / "web-runtime",
+            dry_run=dry_run,
+            io=io,
+        )
+    else:
+        expected_image = f"{registry_server}/sentinel-web:{source['image_tag']}"
+        run_command(
+            [
+                "az",
+                "acr",
+                "build",
+                "--registry",
+                state["azure"]["acr_name"],
+                "--resource-group",
+                state["azure"]["resource_group"],
+                "--image",
+                f"sentinel-web:{source['image_tag']}",
+                "./.dist/web-runtime",
+            ],
+            dry_run=dry_run,
+            io=io,
+        )
+    cleanup_runtime_dir(ROOT / ".dist" / "web-runtime", dry_run=dry_run, io=io)
+    state.setdefault("results", {}).setdefault("web", {})["expected_image"] = expected_image
+    persist(state, "build-web")
+    return state
+
+
+def phase_deploy_web(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> dict[str, Any]:
+    configure_registry(state, state["azure"]["web_app_name"], dry_run=dry_run, io=io)
+    sync_web_config(state, dry_run=dry_run, io=io)
+    mount_license_public_key(state, state["azure"]["web_app_name"], dry_run=dry_run, io=io)
+    run_command(
+        [
+            "az",
+            "containerapp",
+            "ingress",
+            "enable",
+            "--name",
+            state["azure"]["web_app_name"],
+            "--resource-group",
+            state["azure"]["resource_group"],
+            "--type",
+            "external",
+            "--target-port",
+            PLACEHOLDER_CONFIG["web"]["port"],
+            "--transport",
+            "auto",
+        ],
+        dry_run=dry_run,
+        io=io,
+    )
+    expected_image = safe_get(state, "results", "web", "expected_image")
+    run_command(
+        [
+            "az",
+            "containerapp",
+            "update",
+            "--name",
+            state["azure"]["web_app_name"],
+            "--resource-group",
+            state["azure"]["resource_group"],
+            "--image",
+            expected_image,
+        ],
+        dry_run=dry_run,
+        io=io,
+    )
+    details = show_containerapp_details(state, "web", expected_image=expected_image, dry_run=dry_run, io=io)
+    state.setdefault("results", {})["web"] = details
+    state["azure"]["web_fqdn"] = details["fqdn"]
+    persist(state, "deploy-web")
+    return state
+
+
+def phase_build_worker(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> dict[str, Any]:
+    source = state["source"]
+    registry_server = state["azure"].get("acr_login_server") or f"{state['azure']['acr_name']}.azurecr.io"
+    run_command(["python3", "-m", "pip", "install", "--upgrade", "pip"], dry_run=dry_run, io=io)
+    run_command(["python3", "-m", "pip", "install", "-r", "worker/requirements.txt"], dry_run=dry_run, io=io)
+    run_command(["python3", "-m", "unittest", "discover", "-s", "worker/tests", "-p", "test_*.py"], dry_run=dry_run, io=io)
+    run_command(["python3", "-m", "compileall", "worker/app"], dry_run=dry_run, io=io)
+    run_command(["scripts/ci/package-worker-runtime.sh"], dry_run=dry_run, io=io, env={"PYTHON_BIN": "python3"})
+    if acr_uses_registry_credentials(state):
+        expected_image = build_and_push_runtime_with_docker(
+            state,
+            image_name="sentinel-worker",
+            context_path=ROOT / ".dist" / "worker-runtime",
+            dry_run=dry_run,
+            io=io,
+        )
+    else:
+        expected_image = f"{registry_server}/sentinel-worker:{source['image_tag']}"
+        run_command(
+            [
+                "az",
+                "acr",
+                "build",
+                "--registry",
+                state["azure"]["acr_name"],
+                "--resource-group",
+                state["azure"]["resource_group"],
+                "--image",
+                f"sentinel-worker:{source['image_tag']}",
+                "./.dist/worker-runtime",
+            ],
+            dry_run=dry_run,
+            io=io,
+        )
+    cleanup_runtime_dir(ROOT / ".dist" / "worker-runtime", dry_run=dry_run, io=io)
+    state.setdefault("results", {}).setdefault("worker", {})["expected_image"] = expected_image
+    persist(state, "build-worker")
+    return state
+
+
+def phase_deploy_worker(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> dict[str, Any]:
+    configure_registry(state, state["azure"]["worker_app_name"], dry_run=dry_run, io=io)
+    sync_worker_config(state, dry_run=dry_run, io=io)
+    mount_license_public_key(state, state["azure"]["worker_app_name"], dry_run=dry_run, io=io)
+    run_command(
+        [
+            "az",
+            "containerapp",
+            "ingress",
+            "enable",
+            "--name",
+            state["azure"]["worker_app_name"],
+            "--resource-group",
+            state["azure"]["resource_group"],
+            "--type",
+            "external",
+            "--target-port",
+            PLACEHOLDER_CONFIG["worker"]["port"],
+            "--transport",
+            "auto",
+        ],
+        dry_run=dry_run,
+        io=io,
+    )
+    expected_image = safe_get(state, "results", "worker", "expected_image")
+    update_containerapp_image(state, state["azure"]["worker_app_name"], expected_image, dry_run=dry_run, io=io)
+    details = show_containerapp_details(state, "worker", expected_image=expected_image, dry_run=dry_run, io=io)
+    state.setdefault("results", {})["worker"] = details
+    state["azure"]["worker_fqdn"] = details["fqdn"]
+    persist(state, "deploy-worker")
+    return state
+
+
+def phase_license(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> dict[str, Any]:
+    runtime = state["runtime"]
+    license_type = state.setdefault("license", {}).get("license_type") or io.prompt("License type", default="enterprise", validator=validate_non_empty)
+    expires_at = state["license"].get("expires_at") or io.prompt("License expiry timestamp (ISO-8601) or 'none'", default="", validator=None, allow_empty=True)
+    no_expiry = expires_at.strip().lower() in {"", "none", "no-expiry"}
+    issued_at = utc_now_iso()
+    command = [
+        "node",
+        "scripts/generate-license.mjs",
+        "--license-type",
+        license_type,
+        "--tenant-id",
+        runtime["ENTRA_TENANT_ID"],
+        "--issued-at",
+        issued_at,
+        "--private-key",
+        runtime["LOCAL_LICENSE_PRIVATE_KEY_PATH"],
+    ]
+    if no_expiry:
+        command.append("--no-expiry")
+    else:
+        command.extend(["--expires-at", expires_at])
+    if dry_run:
+        license_path = str(ROOT / ".local" / "licenses" / f"{state['deployment_id']}.license")
+        run_command(command + ["--output", license_path], dry_run=True, io=io)
+        state["license"].update(
+            {
+                "license_id": f"dry-run-{state['client_slug']}",
+                "license_type": license_type,
+                "license_file_path": license_path,
+                "installed_at_utc": utc_now_iso(),
+                "expires_at": None if no_expiry else expires_at,
+            }
+        )
+        persist(state, "license")
+        return state
+    completed = run_and_capture(command, io=io)
+    license_path = completed.splitlines()[-1].strip()
+    state["license"]["license_type"] = license_type
+    state["license"]["license_file_path"] = license_path
+    installed = install_client_license.install_license(
+        database_url=state["database"]["database_url"],
+        license_path=Path(license_path),
+        actor_name="Local deployment script",
+    )
+    state["license"]["license_id"] = installed["license_id"]
+    state["license"]["installed_at_utc"] = installed["installed_at_utc"]
+    state["license"]["expires_at"] = None if no_expiry else expires_at
+    persist(state, "license")
+    return state
+
+
+def ensure_graph_ingest_schedule(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> None:
+    database_url = state["database"]["database_url"]
+    cron_expr = state.setdefault("runtime", {}).get("GRAPH_INGEST_CRON") or io.prompt(
+        "Cron expression for graph_ingest schedule",
+        default=DEFAULT_GRAPH_INGEST_CRON,
+        validator=validate_non_empty,
+    )
+    state["runtime"]["GRAPH_INGEST_CRON"] = cron_expr
+    sql = f"""
+    INSERT INTO job_schedules (schedule_id, job_id, cron_expr, next_run_at, enabled)
+    SELECT gen_random_uuid(), j.job_id, {sql_literal(cron_expr)}, NULL, true
+    FROM jobs j
+    LEFT JOIN job_schedules js ON js.job_id = j.job_id
+    WHERE j.job_type = 'graph_ingest' AND js.job_id IS NULL;
+    """
+    run_psql_sql(database_url, sql, dry_run=dry_run, io=io)
+
+
+def sql_literal(value: str) -> str:
+    delimiter = stable_delimiter(value)
+    return f"${delimiter}${value}${delimiter}$"
+
+
+def ensure_sql_executor_available(*, io: BaseIO) -> None:
+    if command_exists("psql") or psycopg2_available():
+        return
+    raise DeploymentError(
+        "Database execution requires either `psql` or the Python package `psycopg2`.\n"
+        "Install one of the following and rerun:\n"
+        "- `brew install libpq` and add `psql` to your PATH\n"
+        "- `python3 -m pip install psycopg2-binary`"
+    )
+
+
+def execute_sql_with_psycopg2(database_url: str, sql_text: str) -> None:
+    try:
+        import psycopg2
+    except ImportError as exc:  # pragma: no cover
+        raise DeploymentError("psycopg2 is not installed.") from exc
+    connection = None
+    try:
+        connection = psycopg2.connect(database_url)
+        connection.autocommit = False
+        with connection.cursor() as cursor:
+            cursor.execute(sql_text)
+        connection.commit()
+    except Exception:
+        if connection is not None:
+            try:
+                connection.rollback()
+            except Exception:
+                pass
+        raise
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def run_sql_file(
+    database_url: str,
+    sql_file: Path,
+    *,
+    io: BaseIO,
+    dry_run: bool,
+    capture_output: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    if command_exists("psql"):
+        return run_command(
+            ["psql", database_url, "-v", "ON_ERROR_STOP=1", "-f", str(sql_file)],
+            dry_run=dry_run,
+            io=io,
+            capture_output=capture_output,
+            secrets_to_mask=[database_url],
+        )
+    io.print(f"$ python/sql-exec {repo_relative(sql_file)}")
+    if dry_run:
+        return subprocess.CompletedProcess(["python/sql-exec", str(sql_file)], 0, stdout="", stderr="")
+    try:
+        execute_sql_with_psycopg2(database_url, sql_file.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise DeploymentError(f"Failed to execute SQL file {sql_file.name}: {exc}") from exc
+    return subprocess.CompletedProcess(["python/sql-exec", str(sql_file)], 0, stdout="", stderr="")
+
+
+def run_sql_command(database_url: str, sql_text: str, *, io: BaseIO, dry_run: bool) -> subprocess.CompletedProcess[str]:
+    if command_exists("psql"):
+        return run_command(
+            ["psql", database_url, "-v", "ON_ERROR_STOP=1", "-c", sql_text],
+            io=io,
+            dry_run=dry_run,
+            secrets_to_mask=[database_url],
+        )
+    io.print(f"$ python/sql-exec -c {shlex.quote(sql_text)}")
+    if dry_run:
+        return subprocess.CompletedProcess(["python/sql-exec", "-c", sql_text], 0, stdout="", stderr="")
+    try:
+        execute_sql_with_psycopg2(database_url, sql_text)
+    except Exception as exc:
+        raise DeploymentError(f"Failed to execute SQL command: {exc}") from exc
+    return subprocess.CompletedProcess(["python/sql-exec", "-c", sql_text], 0, stdout="", stderr="")
+
+
+def run_psql_sql(database_url: str, sql_text: str, *, dry_run: bool, io: BaseIO) -> str:
+    temp_file = write_temp_sql(sql_text)
+    try:
+        ensure_sql_executor_available(io=io)
+        completed = run_sql_file(database_url, temp_file, io=io, dry_run=dry_run, capture_output=True)
+        return completed.stdout.strip()
+    finally:
+        if temp_file.exists():
+            temp_file.unlink()
+
+
+def smoke_check_web(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> str:
+    url = f"https://{state['azure']['web_fqdn']}"
+    if dry_run:
+        run_command(["curl", "-I", "-L", url], dry_run=True, io=io)
+        return "dry-run-ok"
+    run_command(["curl", "-fsSLI", "-L", url], io=io)
+    return "ok"
+
+
+def smoke_check_worker(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> str:
+    url = f"https://{state['azure']['worker_fqdn']}/health"
+    token = state["runtime"]["WORKER_INTERNAL_API_TOKEN"]
+    if dry_run:
+        run_command(["curl", "-H", "X-Worker-Internal-Token: ***", url], dry_run=True, io=io)
+        return "dry-run-ok"
+    run_command(
+        ["curl", "-fsSL", "-H", f"X-Worker-Internal-Token: {token}", url],
+        io=io,
+        secrets_to_mask=[token],
+    )
+    return "ok"
+
+
+def phase_bootstrap_tenant(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> dict[str, Any]:
+    ensure_graph_ingest_schedule(state, dry_run=dry_run, io=io)
+    smoke_checks = state.setdefault("results", {}).setdefault("smoke_checks", {})
+    smoke_checks["web"] = smoke_check_web(state, dry_run=dry_run, io=io)
+    smoke_checks["worker"] = smoke_check_worker(state, dry_run=dry_run, io=io)
+    persist(state, "bootstrap-tenant")
+    return state
+
+
+def phase_report(state: dict[str, Any], *, io: BaseIO) -> dict[str, Any]:
+    persist(state, "report")
+    append_master_csv_row(state)
+    io.print(build_summary_markdown(state))
+    io.print(f"Master CSV: {MASTER_CSV_PATH}")
+    return state
+
+
+def main(argv: list[str] | None = None, *, io: BaseIO | None = None) -> int:
+    argv = argv or sys.argv[1:]
+    io = io or ConsoleIO()
+    args = parse_args(argv)
+    if args.phase == "init":
+        phase_init(args, io)
+        return 0
+    state = require_state(args)
+    if args.phase == "provision":
+        phase_provision(state, dry_run=args.dry_run, io=io)
+    elif args.phase == "bootstrap-db":
+        phase_bootstrap_db(state, dry_run=args.dry_run, io=io)
+    elif args.phase == "entra-checkpoint":
+        phase_entra_checkpoint(state, io=io)
+    elif args.phase == "capture-runtime":
+        phase_capture_runtime(state, io=io)
+    elif args.phase == "build-web":
+        phase_build_web(state, dry_run=args.dry_run, io=io)
+    elif args.phase == "deploy-web":
+        phase_deploy_web(state, dry_run=args.dry_run, io=io)
+    elif args.phase == "build-worker":
+        phase_build_worker(state, dry_run=args.dry_run, io=io)
+    elif args.phase == "deploy-worker":
+        phase_deploy_worker(state, dry_run=args.dry_run, io=io)
+    elif args.phase == "license":
+        phase_license(state, dry_run=args.dry_run, io=io)
+    elif args.phase == "bootstrap-tenant":
+        phase_bootstrap_tenant(state, dry_run=args.dry_run, io=io)
+    elif args.phase == "report":
+        phase_report(state, io=io)
+    else:
+        raise DeploymentError(f"Unknown phase: {args.phase}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except DeploymentError as exc:
+        sys.stderr.write(f"{exc}\n")
+        raise SystemExit(1)
