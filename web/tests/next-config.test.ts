@@ -3,6 +3,6 @@ import assert from "node:assert/strict";
 
 const nextConfig = require("../../next.config.js");
 
-test("next config does not define custom response headers", () => {
+test("next config keeps security headers out of framework config", () => {
   assert.equal(nextConfig.headers, undefined);
 });

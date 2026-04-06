@@ -11,8 +11,10 @@
   "include": [
     "tests/**/*.ts",
     "tests/**/*.tsx",
+    "proxy.ts",
     "app/lib/cron.ts",
     "app/lib/request-body.ts",
+    "app/lib/security-headers.ts",
     "app/api/internal/worker-heartbeat/route.ts",
     "app/lib/version.ts",
     "app/admin/AdminVersionBadge.tsx"
