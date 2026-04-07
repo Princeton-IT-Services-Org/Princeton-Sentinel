@@ -239,12 +239,65 @@ const postHandler = async function POST(req: Request) {
   }
 
   // ── UNBLOCK ─────────────────────────────────────────────────────────
-  const updated = await query<{ id: number; block_scope: string; bot_name: string | null; user_display_name: string | null; user_principal_name: string | null }>(
-    `UPDATE copilot_access_blocks
-     SET unblocked_at = now(), unblocked_by = $3, unblock_reason = $4
+  const activeBlocks = await query<{
+    id: number;
+    block_scope: string;
+    bot_name: string | null;
+    user_display_name: string | null;
+    user_principal_name: string | null;
+  }>(
+    `SELECT id, block_scope, bot_name, user_display_name, user_principal_name
+     FROM copilot_access_blocks
      WHERE user_id = $1 AND bot_id = $2 AND unblocked_at IS NULL
-     RETURNING id, block_scope, bot_name, user_display_name, user_principal_name`,
-    [userId, botId, adminUpn, unblockReason]
+     ORDER BY blocked_at DESC
+     LIMIT 1`,
+    [userId, botId]
+  );
+
+  if (activeBlocks.length === 0) {
+    return NextResponse.json(
+      { error: "no_active_block_found" },
+      { status: 404 }
+    );
+  }
+
+  const activeBlock = activeBlocks[0];
+  const unblockedScope = activeBlock.block_scope;
+
+  // Call worker (handles CA cleanup only for scope=all)
+  const workerResult = await callWorkerCA("/conditional-access/unblock", {
+    user_id: userId,
+    bot_id: botId,
+    block_scope: unblockedScope,
+    actor,
+  });
+
+  if (!workerResult.success && unblockedScope === "all") {
+    await writeAuditEvent({
+      action: "copilot_user_unblock_failed",
+      entityType: "copilot_access_block",
+      entityId: `${userId}:${botId}`,
+      actor,
+      details: {
+        user_id: userId,
+        bot_id: botId,
+        block_scope: unblockedScope,
+        worker_success: false,
+        worker_error: workerResult.error,
+      },
+    });
+    return NextResponse.json(
+      { error: workerResult.error || "unblock_failed" },
+      { status: 502 }
+    );
+  }
+
+  const updated = await query<{ id: number }>(
+    `UPDATE copilot_access_blocks
+     SET unblocked_at = now(), unblocked_by = $2, unblock_reason = $3
+     WHERE id = $1 AND unblocked_at IS NULL
+     RETURNING id`,
+    [activeBlock.id, adminUpn, unblockReason]
   );
 
   if (updated.length === 0) {
@@ -254,23 +307,13 @@ const postHandler = async function POST(req: Request) {
     );
   }
 
-  const unblockedScope = updated[0].block_scope;
-
   await query(
     `INSERT INTO agent_access_revoke_log
        (action, admin_upn, admin_name, bot_id, bot_name, user_id, user_name, user_email, reason)
      VALUES ('unblock', $1, $2, $3, $4, $5, $6, $7, $8)`,
-    [adminUpn, actor.name || null, botId, updated[0].bot_name || botId, userId,
-     updated[0].user_display_name || null, updated[0].user_principal_name || null, unblockReason]
+    [adminUpn, actor.name || null, botId, activeBlock.bot_name || botId, userId,
+     activeBlock.user_display_name || null, activeBlock.user_principal_name || null, unblockReason]
   );
-
-  // Call worker (handles CA cleanup only for scope=all)
-  const workerResult = await callWorkerCA("/conditional-access/unblock", {
-    user_id: userId,
-    bot_id: botId,
-    block_scope: unblockedScope,
-    actor,
-  });
 
   await writeAuditEvent({
     action: "copilot_user_unblocked",

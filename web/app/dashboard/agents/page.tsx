@@ -233,7 +233,7 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
     ),
     query<any>(
       `SELECT
-         date_bin('${grainStr}', time_bucket, '2000-01-01') AS bucket,
+         date_bin('${grainStr}', time_bucket, '2000-01-01') AS time_bucket,
          ROUND((SUM(avg_response_sec * total_responses) / NULLIF(SUM(total_responses), 0))::numeric, 2) AS avg_response_sec,
          ROUND((SUM(p50_response_sec * total_responses) / NULLIF(SUM(total_responses), 0))::numeric, 2) AS p50_response_sec,
          ROUND((SUM(p95_response_sec * total_responses) / NULLIF(SUM(total_responses), 0))::numeric, 2) AS p95_response_sec,
@@ -244,9 +244,9 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
          ${agentFilter && agentFilter !== "*" ? `AND bot_id = '${agentFilter.replace(/'/g, "''")}'` : ""}
          ${channelFilter && channelFilter !== "*" ? `AND channel = '${channelFilter.replace(/'/g, "''")}'` : ""}
          ${!includeTest ? "AND is_test = false" : ""}
-       GROUP BY bucket
+       GROUP BY time_bucket
        HAVING SUM(total_responses) > 0
-       ORDER BY bucket ASC`
+       ORDER BY time_bucket ASC`
     ),
     query<any>(
       `SELECT
@@ -400,7 +400,8 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
 
   // ── Response time data ──
   const responseTimeData = responseTimeRows.map((r: any) => {
-    const ts = typeof r.time_bucket === "string" ? r.time_bucket : new Date(r.time_bucket).toISOString();
+    const rawBucket = r.time_bucket ?? r.bucket;
+    const ts = typeof rawBucket === "string" ? rawBucket : new Date(rawBucket).toISOString();
     return {
       label: formatDate(ts, { month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit" }),
       avg: Number(r.avg_response_sec || 0),

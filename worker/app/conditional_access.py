@@ -228,38 +228,38 @@ class ConditionalAccessManager:
 
     # ── global agent disable/enable ──────────────────────────────────
 
-    def get_app_object_id(self, app_registration_id: str) -> Optional[str]:
-        """Look up the Entra object ID for an app by its client/application ID."""
+    def get_service_principal_object_id(self, app_registration_id: str) -> Optional[str]:
+        """Look up the Entra service principal object ID for an app registration."""
         try:
             data = self._graph.get_json(
-                f"/applications?$filter=appId eq '{app_registration_id}'&$select=id"
+                f"/servicePrincipals?$filter=appId eq '{app_registration_id}'&$select=id"
             )
-            apps = data.get("value", [])
-            return apps[0]["id"] if apps else None
+            principals = data.get("value", [])
+            return principals[0]["id"] if principals else None
         except GraphError as exc:
-            emit("ERROR", "CA", f"get_app_object_id failed: appId={app_registration_id} error={exc}")
+            emit("ERROR", "CA", f"get_service_principal_object_id failed: appId={app_registration_id} error={exc}")
             return None
 
-    def disable_agent(self, app_object_id: str) -> CAResult:
-        """Disable an agent's app registration — blocks ALL users immediately."""
+    def disable_agent(self, service_principal_object_id: str) -> CAResult:
+        """Disable an agent's service principal — blocks ALL users immediately."""
         try:
             self._graph.request_json(
-                "PATCH", f"/applications/{app_object_id}",
+                "PATCH", f"/servicePrincipals/{service_principal_object_id}",
                 json={"accountEnabled": False},
             )
-            emit("INFO", "CA", f"Agent disabled: app_object_id={app_object_id}")
+            emit("INFO", "CA", f"Agent disabled: service_principal_object_id={service_principal_object_id}")
             return CAResult(success=True)
         except GraphError as exc:
             return _graph_error_to_result(exc, "disable_agent")
 
-    def enable_agent(self, app_object_id: str) -> CAResult:
-        """Re-enable an agent's app registration — restores access for all users."""
+    def enable_agent(self, service_principal_object_id: str) -> CAResult:
+        """Re-enable an agent's service principal — restores access for all users."""
         try:
             self._graph.request_json(
-                "PATCH", f"/applications/{app_object_id}",
+                "PATCH", f"/servicePrincipals/{service_principal_object_id}",
                 json={"accountEnabled": True},
             )
-            emit("INFO", "CA", f"Agent re-enabled: app_object_id={app_object_id}")
+            emit("INFO", "CA", f"Agent re-enabled: service_principal_object_id={service_principal_object_id}")
             return CAResult(success=True)
         except GraphError as exc:
             return _graph_error_to_result(exc, "enable_agent")

@@ -407,18 +407,18 @@ def create_app():
 
         ca = ConditionalAccessManager()
 
-        # Resolve object ID if not cached
-        app_object_id = agent_reg["app_object_id"]
-        if not app_object_id:
-            app_object_id = ca.get_app_object_id(agent_reg["app_registration_id"])
-            if not app_object_id:
-                return jsonify({"error": "app_registration_not_found_in_entra"}), 404
+        # Always resolve the service principal object ID. Older rows may cache the
+        # application object ID, which cannot be patched with accountEnabled.
+        service_principal_object_id = ca.get_service_principal_object_id(agent_reg["app_registration_id"])
+        if not service_principal_object_id:
+            return jsonify({"error": "service_principal_not_found_in_entra"}), 404
+        if agent_reg["app_object_id"] != service_principal_object_id:
             db.execute(
                 "UPDATE copilot_agent_registrations SET app_object_id = %s, updated_at = now() WHERE bot_id = %s",
-                [app_object_id, bot_id],
+                [service_principal_object_id, bot_id],
             )
 
-        result = ca.disable_agent(app_object_id)
+        result = ca.disable_agent(service_principal_object_id)
 
         if result.success:
             db.execute(
@@ -430,7 +430,7 @@ def create_app():
                 entity_type="copilot_agent",
                 entity_id=bot_id,
                 actor=actor,
-                details={"reason": reason, "app_object_id": app_object_id},
+                details={"reason": reason, "service_principal_object_id": service_principal_object_id},
             )
             return jsonify({"status": "disabled"})
 
@@ -447,14 +447,23 @@ def create_app():
             return jsonify({"error": "bot_id is required"}), 400
 
         agent_reg = db.fetch_one(
-            "SELECT app_object_id FROM copilot_agent_registrations WHERE bot_id = %s",
+            "SELECT app_registration_id, app_object_id FROM copilot_agent_registrations WHERE bot_id = %s",
             [bot_id],
         )
-        if not agent_reg or not agent_reg["app_object_id"]:
-            return jsonify({"error": "agent_not_registered_or_missing_object_id"}), 400
+        if not agent_reg:
+            return jsonify({"error": "agent_not_registered"}), 400
 
         ca = ConditionalAccessManager()
-        result = ca.enable_agent(agent_reg["app_object_id"])
+        service_principal_object_id = ca.get_service_principal_object_id(agent_reg["app_registration_id"])
+        if not service_principal_object_id:
+            return jsonify({"error": "service_principal_not_found_in_entra"}), 404
+        if agent_reg["app_object_id"] != service_principal_object_id:
+            db.execute(
+                "UPDATE copilot_agent_registrations SET app_object_id = %s, updated_at = now() WHERE bot_id = %s",
+                [service_principal_object_id, bot_id],
+            )
+
+        result = ca.enable_agent(service_principal_object_id)
 
         if result.success:
             db.execute(
@@ -466,7 +475,7 @@ def create_app():
                 entity_type="copilot_agent",
                 entity_id=bot_id,
                 actor=actor,
-                details={"app_object_id": agent_reg["app_object_id"]},
+                details={"service_principal_object_id": service_principal_object_id},
             )
             return jsonify({"status": "enabled"})
 
