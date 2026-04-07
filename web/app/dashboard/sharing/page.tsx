@@ -90,8 +90,6 @@ async function SharingPage({ searchParams }: { searchParams?: Promise<SearchPara
   const internalDomainParamIndex = params.length + 1;
   const limitParamIndex = params.length + 2;
   const offsetParamIndex = params.length + 3;
-  const breakdownLimitParamIndex = internalDomainParamIndex;
-  const breakdownOffsetParamIndex = internalDomainParamIndex + 1;
   const siteRowsBase = `
     WITH
     ${buildSitePrincipalCountsCte({ paramIndex: internalDomainParamIndex })}
@@ -119,7 +117,7 @@ async function SharingPage({ searchParams }: { searchParams?: Promise<SearchPara
       SELECT link_scope, link_type, count
       FROM mv_msgraph_link_breakdown
       ORDER BY count DESC
-      LIMIT $${breakdownLimitParamIndex} OFFSET $${breakdownOffsetParamIndex}
+      LIMIT $1 OFFSET $2
       `,
       [lbPageSize, (lbPage - 1) * lbPageSize]
     ),
