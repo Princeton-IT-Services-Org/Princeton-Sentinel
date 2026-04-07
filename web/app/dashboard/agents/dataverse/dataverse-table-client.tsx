@@ -5,19 +5,7 @@ import Link from "next/link";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
-
-const TIMEZONES = [
-  { label: "Browser local", value: "" },
-  { label: "UTC", value: "UTC" },
-  { label: "GMT (London)", value: "Europe/London" },
-  { label: "CET (Paris)", value: "Europe/Paris" },
-  { label: "IST (Kolkata)", value: "Asia/Kolkata" },
-  { label: "SGT (Singapore)", value: "Asia/Singapore" },
-  { label: "AEST (Sydney)", value: "Australia/Sydney" },
-  { label: "EST (New York)", value: "America/New_York" },
-  { label: "CST (Chicago)", value: "America/Chicago" },
-  { label: "PST (Los Angeles)", value: "America/Los_Angeles" },
-];
+import LocalDateTime from "@/components/local-date-time";
 
 const TIMESTAMP_KEYS = new Set(["cr6c3_lastseeninsync", "modifiedon"]);
 
@@ -30,30 +18,10 @@ const COLUMNS: { key: string; label: string }[] = [
   { key: "modifiedon", label: "Modified On" },
 ];
 
-function formatTimestamp(raw: string, tz: string): string {
-  try {
-    const date = new Date(raw);
-    if (isNaN(date.getTime())) return raw;
-    return new Intl.DateTimeFormat("en-GB", {
-      timeZone: tz || undefined,
-      year: "numeric",
-      month: "short",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false,
-    }).format(date);
-  } catch {
-    return raw;
-  }
-}
-
 export default function DataverseTableClient() {
   const [rows, setRows] = React.useState<Record<string, any>[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
-  const [timezone, setTimezone] = React.useState("");
 
   React.useEffect(() => {
     async function load() {
@@ -74,8 +42,6 @@ export default function DataverseTableClient() {
     }
     load();
   }, []);
-
-  const effectiveTz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   return (
     <main className="mx-auto max-w-[1400px] space-y-4 px-4 py-6">
@@ -105,20 +71,6 @@ export default function DataverseTableClient() {
               )}
             </CardTitle>
             <CardDescription>All agent-user assignments from Dataverse</CardDescription>
-          </div>
-          <div className="flex items-center gap-2">
-            <label className="whitespace-nowrap text-xs text-muted-foreground">Timezone</label>
-            <select
-              value={timezone}
-              onChange={(e) => setTimezone(e.target.value)}
-              className="rounded-md border bg-background px-2 py-1 text-xs text-foreground"
-            >
-              {TIMEZONES.map((tz) => (
-                <option key={tz.value} value={tz.value}>
-                  {tz.label}{tz.value === "" ? ` (${Intl.DateTimeFormat().resolvedOptions().timeZone})` : ""}
-                </option>
-              ))}
-            </select>
           </div>
         </CardHeader>
         <CardContent>
@@ -157,7 +109,7 @@ export default function DataverseTableClient() {
                           : isTrue
                           ? <span className="font-medium text-red-500">true</span>
                           : isTimestamp
-                          ? formatTimestamp(String(val), effectiveTz)
+                          ? <LocalDateTime value={String(val)} fallback="—" />
                           : String(val);
                         return (
                           <TableCell key={col.key} className="max-w-xs truncate" title={val == null ? "" : String(val)}>
