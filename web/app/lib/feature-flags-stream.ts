@@ -27,6 +27,10 @@ declare global {
 
 let subscribeOverride: SubscribeOverride | null = null;
 
+function reportBackgroundFailure(context: string, error: unknown) {
+  console.error(`Feature flag stream ${context} failed`, error);
+}
+
 function getBroadcasterState(): BroadcasterState {
   if (!global._featureFlagsBroadcaster) {
     global._featureFlagsBroadcaster = {
@@ -75,7 +79,9 @@ function scheduleReconnect(state: BroadcasterState) {
   state.reconnectAttempt += 1;
   state.reconnectTimer = setTimeout(() => {
     state.reconnectTimer = null;
-    void startListener(state);
+    void startListener(state).catch((error) => {
+      reportBackgroundFailure("reconnect", error);
+    });
   }, delayMs);
 }
 
@@ -115,7 +121,9 @@ async function connectListener(state: BroadcasterState) {
     if (message.channel !== FEATURE_STATE_CHANNEL) {
       return;
     }
-    void broadcastLatestPayload(state);
+    void broadcastLatestPayload(state).catch((error) => {
+      reportBackgroundFailure("broadcast", error);
+    });
   });
 
   client.on("error", () => {
@@ -188,4 +196,3 @@ export async function resetFeatureFlagStreamForTests() {
 
   await disconnectListener(state);
 }
-
