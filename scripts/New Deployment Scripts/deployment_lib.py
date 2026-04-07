@@ -139,6 +139,7 @@ REQUIRED_RUNTIME_FIELDS = [
     "ADMIN_GROUP_ID",
     "USER_GROUP_ID",
     "DATABASE_URL",
+    "DATAVERSE_URL",
     "NEXTAUTH_SECRET",
     "WORKER_INTERNAL_API_TOKEN",
     "WORKER_HEARTBEAT_TOKEN",
@@ -542,6 +543,7 @@ def build_runtime_env_snapshot(state: dict[str, Any]) -> dict[str, str]:
     snapshot = {
         "APP_VERSION": str(source.get("app_version") or ""),
         "DATABASE_URL": str(database.get("database_url") or runtime.get("DATABASE_URL") or ""),
+        "DATAVERSE_URL": str(runtime.get("DATAVERSE_URL") or ""),
         "NEXTAUTH_URL": str(runtime.get("NEXTAUTH_URL") or ""),
         "NEXTAUTH_SECRET": str(runtime.get("NEXTAUTH_SECRET") or ""),
         "ENTRA_TENANT_ID": str(runtime.get("ENTRA_TENANT_ID") or ""),
@@ -702,6 +704,7 @@ def csv_row_from_state(state: dict[str, Any]) -> dict[str, str]:
         "postgres_admin_username": str(azure.get("postgres_admin_username") or ""),
         "postgres_admin_password": str(azure.get("postgres_admin_password") or ""),
         "database_url": str(database.get("database_url") or runtime.get("DATABASE_URL") or ""),
+        "dataverse_url": str(runtime.get("DATAVERSE_URL") or ""),
         "web_app_name": str(azure.get("web_app_name") or ""),
         "web_fqdn": str(azure.get("web_fqdn") or ""),
         "worker_app_name": str(azure.get("worker_app_name") or ""),
