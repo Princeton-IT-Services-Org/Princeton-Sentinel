@@ -11,7 +11,7 @@ public_dir="${repo_root}/web/public"
 runtime_dir="${repo_root}/.dist/web-runtime"
 required_public_assets=(
   "pis-logo.png"
-  "PITS WHITE (1) 1-2.png"
+  "pits-white-logo.png"
 )
 
 if [[ ! -f "${standalone_dir}/server.js" ]]; then

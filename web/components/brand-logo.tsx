@@ -3,7 +3,7 @@ import Image from "next/image";
 import { cn } from "@/lib/utils";
 
 const LIGHT_THEME_LOGO_SRC = "/pis-logo.png";
-const DARK_THEME_LOGO_SRC = "/PITS%20WHITE%20%281%29%201-2.png";
+const DARK_THEME_LOGO_SRC = "/pits-white-logo.png";
 
 type BrandLogoProps = {
   alt: string;
