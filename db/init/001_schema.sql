@@ -245,15 +245,50 @@ CREATE TABLE IF NOT EXISTS copilot_tool_stats (
 );
 
 CREATE TABLE IF NOT EXISTS copilot_response_times (
-  bot_id text NOT NULL,
-  time_bucket timestamptz NOT NULL,
-  avg_response_sec numeric(10,2) DEFAULT 0,
-  p50_response_sec numeric(10,2) DEFAULT 0,
-  p95_response_sec numeric(10,2) DEFAULT 0,
-  p99_response_sec numeric(10,2) DEFAULT 0,
-  total_responses int DEFAULT 0,
-  synced_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (bot_id, time_bucket)
+  bot_id              TEXT        NOT NULL,
+  channel             TEXT        NOT NULL DEFAULT '',
+  is_test             BOOLEAN     NOT NULL DEFAULT false,
+  time_bucket         TIMESTAMPTZ NOT NULL,
+  avg_response_sec    NUMERIC(10,2) DEFAULT 0,
+  p50_response_sec    NUMERIC(10,2) DEFAULT 0,
+  p95_response_sec    NUMERIC(10,2) DEFAULT 0,
+  p99_response_sec    NUMERIC(10,2) DEFAULT 0,
+  total_responses     INT         DEFAULT 0,
+  synced_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (bot_id, channel, is_test, time_bucket)
+);
+
+CREATE TABLE IF NOT EXISTS copilot_tool_stats_hourly (
+  tool_name            TEXT        NOT NULL,
+  bot_id               TEXT        NOT NULL,
+  channel              TEXT        NOT NULL DEFAULT '',
+  is_test              BOOLEAN     NOT NULL DEFAULT false,
+  time_bucket          TIMESTAMPTZ NOT NULL,
+  tool_type            TEXT,
+  total_calls          INT         DEFAULT 0,
+  successful_calls     INT         DEFAULT 0,
+  failed_calls         INT         DEFAULT 0,
+  success_rate         NUMERIC(5,2) DEFAULT 0,
+  avg_duration_sec     NUMERIC(10,2) DEFAULT 0,
+  p50_duration_sec     NUMERIC(10,2) DEFAULT 0,
+  p95_duration_sec     NUMERIC(10,2) DEFAULT 0,
+  unique_conversations INT         DEFAULT 0,
+  synced_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (tool_name, bot_id, channel, is_test, time_bucket)
+);
+
+CREATE TABLE IF NOT EXISTS copilot_topic_stats_hourly (
+  topic_name           TEXT        NOT NULL,
+  bot_id               TEXT        NOT NULL,
+  channel              TEXT        NOT NULL DEFAULT '',
+  is_test              BOOLEAN     NOT NULL DEFAULT false,
+  time_bucket          TIMESTAMPTZ NOT NULL,
+  avg_duration_sec     NUMERIC(10,2) DEFAULT 0,
+  median_duration_sec  NUMERIC(10,2) DEFAULT 0,
+  max_duration_sec     NUMERIC(10,2) DEFAULT 0,
+  execution_count      INT         DEFAULT 0,
+  synced_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (topic_name, bot_id, channel, is_test, time_bucket)
 );
 
 -- Append-only event log for agent user block/unblock actions
@@ -578,6 +613,20 @@ CREATE INDEX IF NOT EXISTS idx_copilot_response_times_bucket
 ON copilot_response_times (time_bucket DESC);
 CREATE INDEX IF NOT EXISTS idx_copilot_response_times_bot_bucket
 ON copilot_response_times (bot_id, time_bucket DESC);
+CREATE INDEX IF NOT EXISTS idx_copilot_response_times_channel
+ON copilot_response_times (channel, time_bucket DESC);
+CREATE INDEX IF NOT EXISTS idx_copilot_tool_stats_hourly_bucket
+ON copilot_tool_stats_hourly (time_bucket DESC);
+CREATE INDEX IF NOT EXISTS idx_copilot_tool_stats_hourly_bot
+ON copilot_tool_stats_hourly (bot_id, time_bucket DESC);
+CREATE INDEX IF NOT EXISTS idx_copilot_tool_stats_hourly_channel
+ON copilot_tool_stats_hourly (channel, time_bucket DESC);
+CREATE INDEX IF NOT EXISTS idx_copilot_topic_stats_hourly_bucket
+ON copilot_topic_stats_hourly (time_bucket DESC);
+CREATE INDEX IF NOT EXISTS idx_copilot_topic_stats_hourly_bot
+ON copilot_topic_stats_hourly (bot_id, time_bucket DESC);
+CREATE INDEX IF NOT EXISTS idx_copilot_topic_stats_hourly_channel
+ON copilot_topic_stats_hourly (channel, time_bucket DESC);
 
 -- Triggered MV queue invalidation on base table changes (statement-level)
 CREATE TRIGGER trg_refresh_mvs_users
