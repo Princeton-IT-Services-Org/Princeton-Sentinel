@@ -20,7 +20,13 @@ function buildSearchFilter(search: string | null) {
   if (!search) return { clause: "", params: [] as any[] };
   return {
     clause:
-      "WHERE (LOWER(i.title) LIKE $1 OR LOWER(i.web_url) LIKE $1 OR LOWER(i.site_id) LIKE $1 OR LOWER(i.route_drive_id) LIKE $1 OR LOWER(i.site_key) LIKE $1)",
+      "WHERE (" +
+      "LOWER(COALESCE(i.title, '')) LIKE $1::text OR " +
+      "LOWER(COALESCE(i.web_url, '')) LIKE $1::text OR " +
+      "LOWER(COALESCE(i.site_id, '')) LIKE $1::text OR " +
+      "LOWER(COALESCE(i.route_drive_id, '')) LIKE $1::text OR " +
+      "LOWER(COALESCE(i.site_key, '')) LIKE $1::text" +
+      ")",
     params: [`%${search.toLowerCase()}%`],
   };
 }
