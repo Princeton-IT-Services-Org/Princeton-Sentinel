@@ -446,6 +446,20 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+CREATE OR REPLACE FUNCTION notify_feature_state_changed() RETURNS trigger AS $$
+BEGIN
+  PERFORM pg_notify(
+    'ps_feature_state_changed',
+    json_build_object(
+      'table_name', TG_TABLE_NAME,
+      'operation', TG_OP,
+      'changed_at', now()
+    )::text
+  );
+  RETURN COALESCE(NEW, OLD);
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE TRIGGER trg_touch_users
 AFTER INSERT OR UPDATE OR DELETE ON msgraph_users
 FOR EACH ROW EXECUTE FUNCTION touch_table_update_log();
@@ -489,6 +503,14 @@ FOR EACH ROW EXECUTE FUNCTION touch_table_update_log();
 CREATE TRIGGER trg_touch_active_license_artifact
 AFTER INSERT OR UPDATE OR DELETE ON active_license_artifact
 FOR EACH ROW EXECUTE FUNCTION touch_table_update_log();
+
+CREATE TRIGGER trg_notify_feature_flags_state
+AFTER INSERT OR UPDATE OR DELETE ON feature_flags
+FOR EACH ROW EXECUTE FUNCTION notify_feature_state_changed();
+
+CREATE TRIGGER trg_notify_active_license_feature_state
+AFTER INSERT OR UPDATE OR DELETE ON active_license_artifact
+FOR EACH ROW EXECUTE FUNCTION notify_feature_state_changed();
 
 CREATE TRIGGER trg_reject_license_artifact_update
 BEFORE UPDATE ON license_artifacts

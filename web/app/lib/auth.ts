@@ -9,6 +9,7 @@ type RequireAuthResult = {
   groups: string[];
 };
 
+let requireUserOverride: (() => Promise<RequireAuthResult>) | null = null;
 let requireAdminOverride: (() => Promise<RequireAuthResult>) | null = null;
 
 function getAuthEnv() {
@@ -125,6 +126,9 @@ export function isUser(groups: string[]) {
 }
 
 export async function requireUser() {
+  if (requireUserOverride) {
+    return requireUserOverride();
+  }
   const session = await getSession();
   const groups = getGroupsFromSession(session);
   if (!session || !isUser(groups)) {
@@ -147,4 +151,8 @@ export async function requireAdmin() {
 
 export function setRequireAdminForTests(override: (() => Promise<RequireAuthResult>) | null) {
   requireAdminOverride = override;
+}
+
+export function setRequireUserForTests(override: (() => Promise<RequireAuthResult>) | null) {
+  requireUserOverride = override;
 }

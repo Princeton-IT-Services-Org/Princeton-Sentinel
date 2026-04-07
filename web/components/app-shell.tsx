@@ -2,13 +2,20 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 
+import {
+  FEATURE_DISABLED_MESSAGE,
+  FEATURE_DISABLED_REDIRECT_DELAY_MS,
+  FEATURE_DISABLED_REDIRECT_TARGET,
+  shouldRedirectForDisabledFeature,
+} from "@/app/lib/feature-flags-client";
 import type { FeatureFlags } from "@/app/lib/feature-flags-config";
 import { matchesFeaturePath } from "@/app/lib/feature-flags-config";
 import UserMenu from "@/components/user-menu";
 import { FeatureFlagsProvider, useFeatureFlags } from "@/components/feature-flags-provider";
+import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
 const LOGO_HEIGHT = 36;
@@ -26,6 +33,9 @@ function AppShellContent({ userLabel, canAdmin, children }: Omit<AppShellProps, 
   const pathname = usePathname() ?? "/";
   const router = useRouter();
   const { flags } = useFeatureFlags();
+  const [featureDisabledNotice, setFeatureDisabledNotice] = useState<string | null>(null);
+  const previousFlagsRef = useRef(flags);
+  const redirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const navItems = [
     { href: "/dashboard", label: "Overview", active: pathname === "/dashboard" },
     { href: "/dashboard/sites", label: "SharePoint Sites", active: pathname.startsWith("/dashboard/sites") || pathname.startsWith("/sites") },
@@ -38,14 +48,36 @@ function AppShellContent({ userLabel, canAdmin, children }: Omit<AppShellProps, 
   ].filter((item) => (item.href === "/dashboard/agents" ? flags.agents_dashboard : true));
 
   useEffect(() => {
-    if (flags.agents_dashboard) {
-      return;
+    const previousFlags = previousFlagsRef.current;
+
+    if (shouldRedirectForDisabledFeature(previousFlags, flags, pathname)) {
+      setFeatureDisabledNotice(FEATURE_DISABLED_MESSAGE);
+      if (redirectTimerRef.current) {
+        clearTimeout(redirectTimerRef.current);
+      }
+      redirectTimerRef.current = setTimeout(() => {
+        router.replace(FEATURE_DISABLED_REDIRECT_TARGET);
+        router.refresh();
+      }, FEATURE_DISABLED_REDIRECT_DELAY_MS);
+    } else if (flags.agents_dashboard || !matchesFeaturePath("agents_dashboard", pathname)) {
+      setFeatureDisabledNotice(null);
+      if (redirectTimerRef.current) {
+        clearTimeout(redirectTimerRef.current);
+        redirectTimerRef.current = null;
+      }
     }
-    if (matchesFeaturePath("agents_dashboard", pathname)) {
-      router.replace("/dashboard");
-      router.refresh();
-    }
-  }, [flags.agents_dashboard, pathname, router]);
+
+    previousFlagsRef.current = flags;
+  }, [flags, pathname, router]);
+
+  useEffect(
+    () => () => {
+      if (redirectTimerRef.current) {
+        clearTimeout(redirectTimerRef.current);
+      }
+    },
+    []
+  );
 
   return (
     <div className="min-h-screen bg-background">
@@ -94,7 +126,16 @@ function AppShellContent({ userLabel, canAdmin, children }: Omit<AppShellProps, 
           ))}
         </div>
       </header>
-      <div className="mx-auto w-full max-w-7xl px-4 py-5 lg:px-6">{children}</div>
+      <div className="mx-auto w-full max-w-7xl px-4 py-5 lg:px-6">
+        {featureDisabledNotice ? (
+          <Card className="mb-4 border-amber-500/30 bg-amber-500/5">
+            <CardContent className="pt-6 text-sm text-foreground">
+              <span className="font-semibold">Feature disabled.</span> {featureDisabledNotice}
+            </CardContent>
+          </Card>
+        ) : null}
+        {children}
+      </div>
     </div>
   );
 }

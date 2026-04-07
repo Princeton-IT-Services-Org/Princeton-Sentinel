@@ -12,6 +12,7 @@ import {
   mergeFeatureFlags,
   setFeatureFlagsQueryForTests,
 } from "../app/lib/feature-flags";
+import { shouldRedirectForDisabledFeature } from "../app/lib/feature-flags-client";
 import { LICENSE_FEATURE_DEFAULTS, setLicenseSummaryForTests } from "../app/lib/license";
 
 type MockQueryResult = any[];
@@ -70,12 +71,21 @@ test("getFeatureFlags ignores unknown feature rows", async () => {
   clearMockQuery();
 });
 
-test("getFeatureFlagVersion normalizes timestamps to ISO strings", async () => {
+test("getFeatureFlagVersion normalizes the effective feature-state timestamp to ISO strings", async () => {
   const updatedAt = new Date("2026-03-20T15:04:05.123Z");
   setMockQuery([[{ last_updated_at: updatedAt }]]);
 
   const version = await getFeatureFlagVersion();
   assert.equal(version, "2026-03-20T15:04:05.123Z");
+
+  clearMockQuery();
+});
+
+test("getFeatureFlagVersion accounts for active license changes", async () => {
+  setMockQuery([[{ last_updated_at: "2026-03-23T16:00:00.000Z" }]]);
+
+  const version = await getFeatureFlagVersion();
+  assert.equal(version, "2026-03-23T16:00:00.000Z");
 
   clearMockQuery();
 });
@@ -134,4 +144,31 @@ test("getFeatureFlags disables agents dashboard when the license disables it", a
   assert.equal(flags.test_mode, false);
 
   clearMockQuery();
+});
+
+test("shouldRedirectForDisabledFeature only redirects when a gated route was just disabled", () => {
+  assert.equal(
+    shouldRedirectForDisabledFeature(
+      { agents_dashboard: true, test_mode: false },
+      { agents_dashboard: false, test_mode: false },
+      "/dashboard/agents"
+    ),
+    true
+  );
+  assert.equal(
+    shouldRedirectForDisabledFeature(
+      { agents_dashboard: false, test_mode: false },
+      { agents_dashboard: false, test_mode: false },
+      "/dashboard/agents"
+    ),
+    false
+  );
+  assert.equal(
+    shouldRedirectForDisabledFeature(
+      { agents_dashboard: true, test_mode: false },
+      { agents_dashboard: false, test_mode: false },
+      "/dashboard/sites"
+    ),
+    false
+  );
 });

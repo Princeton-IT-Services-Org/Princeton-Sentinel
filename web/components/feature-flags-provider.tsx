@@ -15,8 +15,6 @@ type FeatureFlagsContextValue = {
   version: string | null;
 };
 
-const REFRESH_INTERVAL_MS = 5000;
-
 const FeatureFlagsContext = createContext<FeatureFlagsContextValue | null>(null);
 
 function areFeatureFlagsEqual(left: FeatureFlags, right: FeatureFlags) {
@@ -51,46 +49,57 @@ export function FeatureFlagsProvider({ initialFlags, initialVersion, children }:
   }, [version]);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function refresh() {
-      try {
-        const res = await fetch("/api/feature-flags", { cache: "no-store" });
-        if (!res.ok) {
-          return;
-        }
-
-        const payload = (await res.json()) as FeatureFlagsPayload;
-        if (cancelled) {
-          return;
-        }
-
-        const nextFlags = payload.flags || flagsRef.current;
-        const nextVersion = payload.version ?? null;
-        const flagsChanged = !areFeatureFlagsEqual(flagsRef.current, nextFlags);
-        const versionChanged = versionRef.current !== nextVersion;
-
-        if (!flagsChanged && !versionChanged) {
-          return;
-        }
-
-        if (flagsChanged) {
-          setFlags(nextFlags);
-          flagsRef.current = nextFlags;
-        }
-
-        setVersion(nextVersion);
-        versionRef.current = nextVersion;
-      } catch {
-        // Ignore polling failures and keep the last known feature state.
-      }
+    if (typeof EventSource === "undefined") {
+      return;
     }
 
-    refresh();
-    const interval = setInterval(refresh, REFRESH_INTERVAL_MS);
+    let cancelled = false;
+    const eventSource = new EventSource("/api/feature-flags/stream");
+
+    const applyPayload = (payload: FeatureFlagsPayload) => {
+      if (cancelled) {
+        return;
+      }
+
+      const nextFlags = payload.flags || flagsRef.current;
+      const nextVersion = payload.version ?? null;
+      const flagsChanged = !areFeatureFlagsEqual(flagsRef.current, nextFlags);
+      const versionChanged = versionRef.current !== nextVersion;
+
+      if (!flagsChanged && !versionChanged) {
+        return;
+      }
+
+      if (flagsChanged) {
+        setFlags(nextFlags);
+        flagsRef.current = nextFlags;
+      }
+
+      setVersion(nextVersion);
+      versionRef.current = nextVersion;
+    };
+
+    const handleStreamEvent = (event: Event) => {
+      if (!(event instanceof MessageEvent)) {
+        return;
+      }
+
+      try {
+        const payload = JSON.parse(event.data) as FeatureFlagsPayload;
+        applyPayload(payload);
+      } catch {
+        // Ignore malformed stream payloads and keep the last known feature state.
+      }
+    };
+
+    eventSource.addEventListener("snapshot", handleStreamEvent);
+    eventSource.addEventListener("updated", handleStreamEvent);
+
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      eventSource.removeEventListener("snapshot", handleStreamEvent);
+      eventSource.removeEventListener("updated", handleStreamEvent);
+      eventSource.close();
     };
   }, []);
 

@@ -22,6 +22,8 @@ type FeatureFlagVersionRow = {
   last_updated_at: string | Date | null;
 };
 
+const FEATURE_STATE_VERSION_TABLES = ["feature_flags", "active_license_artifact"] as const;
+
 type QueryFn = <T = any>(text: string, params?: any[]) => Promise<T[]>;
 
 let featureFlagsQueryOverride: QueryFn | null = null;
@@ -65,11 +67,12 @@ export async function getFeatureFlags(): Promise<FeatureFlags> {
 export async function getFeatureFlagVersion(): Promise<string | null> {
   const rows = await runFeatureFlagsQuery<FeatureFlagVersionRow>(
     `
-    SELECT last_updated_at
+    SELECT MAX(last_updated_at) AS last_updated_at
     FROM table_update_log
-    WHERE table_name = 'feature_flags'
-    LIMIT 1
+    WHERE table_name = ANY($1::text[])
     `
+    ,
+    [FEATURE_STATE_VERSION_TABLES]
   );
 
   return normalizeVersion(rows[0]?.last_updated_at);
