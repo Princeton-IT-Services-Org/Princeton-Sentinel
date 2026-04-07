@@ -14,6 +14,7 @@ test("agents dataverse API route is wrapped with request timing", () => {
 test("agents dataverse page is wrapped with page request timing", () => {
   const source = readFileSync(path.join(process.cwd(), "app/dashboard/agents/dataverse/page.tsx"), "utf8");
 
+  assert.match(source, /redirectIfFeatureDisabled\("agents_dashboard"\)/);
   assert.match(source, /withPageRequestTiming/);
   assert.match(source, /export default withPageRequestTiming\("\/dashboard\/agents\/dataverse", DataverseTablePage\)/);
 });

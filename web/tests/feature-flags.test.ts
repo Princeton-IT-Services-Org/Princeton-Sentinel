@@ -12,7 +12,10 @@ import {
   mergeFeatureFlags,
   setFeatureFlagsQueryForTests,
 } from "../app/lib/feature-flags";
-import { shouldRedirectForDisabledFeature } from "../app/lib/feature-flags-client";
+import {
+  shouldRedirectForDisabledFeature,
+  shouldRedirectImmediatelyForDisabledFeature,
+} from "../app/lib/feature-flags-client";
 import { LICENSE_FEATURE_DEFAULTS, setLicenseSummaryForTests } from "../app/lib/license";
 
 type MockQueryResult = any[];
@@ -166,6 +169,23 @@ test("shouldRedirectForDisabledFeature only redirects when a gated route was jus
   assert.equal(
     shouldRedirectForDisabledFeature(
       { agents_dashboard: true, test_mode: false },
+      { agents_dashboard: false, test_mode: false },
+      "/dashboard/sites"
+    ),
+    false
+  );
+});
+
+test("shouldRedirectImmediatelyForDisabledFeature redirects when a gated route starts disabled", () => {
+  assert.equal(
+    shouldRedirectImmediatelyForDisabledFeature(
+      { agents_dashboard: false, test_mode: false },
+      "/dashboard/agents/dataverse"
+    ),
+    true
+  );
+  assert.equal(
+    shouldRedirectImmediatelyForDisabledFeature(
       { agents_dashboard: false, test_mode: false },
       "/dashboard/sites"
     ),

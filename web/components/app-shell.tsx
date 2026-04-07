@@ -9,6 +9,7 @@ import {
   FEATURE_DISABLED_MESSAGE,
   FEATURE_DISABLED_REDIRECT_DELAY_MS,
   FEATURE_DISABLED_REDIRECT_TARGET,
+  shouldRedirectImmediatelyForDisabledFeature,
   shouldRedirectForDisabledFeature,
 } from "@/app/lib/feature-flags-client";
 import type { FeatureFlags } from "@/app/lib/feature-flags-config";
@@ -59,6 +60,14 @@ function AppShellContent({ userLabel, canAdmin, children }: Omit<AppShellProps, 
         router.replace(FEATURE_DISABLED_REDIRECT_TARGET);
         router.refresh();
       }, FEATURE_DISABLED_REDIRECT_DELAY_MS);
+    } else if (shouldRedirectImmediatelyForDisabledFeature(flags, pathname)) {
+      setFeatureDisabledNotice(null);
+      if (redirectTimerRef.current) {
+        clearTimeout(redirectTimerRef.current);
+        redirectTimerRef.current = null;
+      }
+      router.replace(FEATURE_DISABLED_REDIRECT_TARGET);
+      router.refresh();
     } else if (flags.agents_dashboard || !matchesFeaturePath("agents_dashboard", pathname)) {
       setFeatureDisabledNotice(null);
       if (redirectTimerRef.current) {

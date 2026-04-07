@@ -133,3 +133,48 @@ test("feature-flag stream route emits a snapshot and later updates", async () =>
     await cleanupTestState();
   }
 });
+
+test("feature-flag stream route unsubscribes when the request aborts during startup", async () => {
+  setRequireUserForTests(async () => ({
+    session: { user: { email: "user@example.com" } },
+    groups: [],
+  }));
+
+  let resolveSubscription: ((unsubscribe: () => void) => void) | null = null;
+  let unsubscribed = false;
+  let queryCalled = false;
+
+  setFeatureFlagSubscriptionForTests(
+    (subscriber) =>
+      new Promise((resolve) => {
+        void subscriber;
+        resolveSubscription = resolve;
+      })
+  );
+  setFeatureFlagsQueryForTests(async () => {
+    queryCalled = true;
+    return [];
+  });
+
+  const abortController = new AbortController();
+
+  try {
+    const response = await GET(new Request("http://localhost/api/feature-flags/stream", { signal: abortController.signal }));
+    const reader = response.body?.getReader();
+    assert.ok(reader);
+
+    const readPromise = reader!.read();
+    abortController.abort();
+    resolveSubscription?.(() => {
+      unsubscribed = true;
+    });
+
+    const result = await readPromise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(result.done, true);
+    assert.equal(unsubscribed, true);
+    assert.equal(queryCalled, false);
+  } finally {
+    await cleanupTestState();
+  }
+});

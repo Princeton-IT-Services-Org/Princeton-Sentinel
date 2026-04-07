@@ -39,9 +39,7 @@ export const GET = async function GET(req: Request) {
       };
 
       cleanup = () => {
-        if (closed) {
-          return;
-        }
+        const shouldCloseController = !closed;
         closed = true;
         if (heartbeatTimer) {
           clearInterval(heartbeatTimer);
@@ -51,38 +49,62 @@ export const GET = async function GET(req: Request) {
           unsubscribe();
           unsubscribe = null;
         }
-        try {
-          controller.close();
-        } catch {
-          // Ignore close races during abort/teardown.
+        if (shouldCloseController) {
+          try {
+            controller.close();
+          } catch {
+            // Ignore close races during abort/teardown.
+          }
         }
       };
 
       req.signal.addEventListener("abort", cleanup, { once: true });
 
-      unsubscribe = await subscribeToFeatureFlagUpdates((payload) => {
-        if (!snapshotSent) {
-          queuedPayloads.push(payload);
+      try {
+        unsubscribe = await subscribeToFeatureFlagUpdates((payload) => {
+          if (!snapshotSent) {
+            queuedPayloads.push(payload);
+            return;
+          }
+          send(formatSseEvent("updated", payload));
+        });
+
+        if (closed) {
+          cleanup();
           return;
         }
-        send(formatSseEvent("updated", payload));
-      });
 
-      send(`retry: ${RETRY_INTERVAL_MS}\n\n`);
-      send(formatSseComment("connected"));
+        send(`retry: ${RETRY_INTERVAL_MS}\n\n`);
+        send(formatSseComment("connected"));
 
-      const snapshot = await getFeatureFlagsPayload();
-      send(formatSseEvent("snapshot", snapshot));
-      snapshotSent = true;
+        const snapshot = await getFeatureFlagsPayload();
+        if (closed) {
+          cleanup();
+          return;
+        }
 
-      for (const payload of queuedPayloads) {
-        send(formatSseEvent("updated", payload));
+        send(formatSseEvent("snapshot", snapshot));
+        snapshotSent = true;
+
+        for (const payload of queuedPayloads) {
+          send(formatSseEvent("updated", payload));
+        }
+        queuedPayloads.length = 0;
+
+        if (closed) {
+          cleanup();
+          return;
+        }
+
+        heartbeatTimer = setInterval(() => {
+          send(formatSseComment("heartbeat"));
+        }, HEARTBEAT_INTERVAL_MS);
+      } catch (error) {
+        cleanup();
+        if (!closed) {
+          controller.error(error);
+        }
       }
-      queuedPayloads.length = 0;
-
-      heartbeatTimer = setInterval(() => {
-        send(formatSseComment("heartbeat"));
-      }, HEARTBEAT_INTERVAL_MS);
     },
     cancel() {
       cleanup();
