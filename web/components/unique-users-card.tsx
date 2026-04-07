@@ -1,23 +1,27 @@
 "use client";
 
 import { HoverCard, HoverCardTrigger, HoverCardContent } from "@/components/ui/hover-card";
+import { InfoTooltip } from "@/components/info-tooltip";
 
 export function UniqueUsersCard({
   count,
   userIds,
 }: {
   count: string;
-  userIds: string[];
+  userIds: { displayName: string | null; email: string | null; channel: string | null; agent: string | null; startedAt: string | null }[];
 }) {
   return (
     <HoverCard openDelay={200} closeDelay={100}>
       <HoverCardTrigger asChild>
         <div className="ps-metric-card cursor-pointer transition-shadow hover:shadow-md">
-          <div className="ps-metric-label">Unique Users</div>
+          <div className="ps-metric-label flex items-center gap-1">
+            Unique Users
+            <InfoTooltip label="Distinct users who had at least one conversation in the selected time range. Hover to see the list. Names are resolved from MS Teams (fromName) or Azure AD where available." />
+          </div>
           <div className="ps-metric-value">{count}</div>
         </div>
       </HoverCardTrigger>
-      <HoverCardContent side="bottom" className="w-80 max-h-72 overflow-hidden">
+      <HoverCardContent side="bottom" className="w-[30rem] max-h-72 overflow-hidden">
         <div className="mb-2 flex items-center justify-between">
           <h4 className="text-sm font-semibold">
             Unique Users ({userIds.length})
@@ -28,14 +32,30 @@ export function UniqueUsersCard({
             <p className="text-xs text-muted-foreground">No users found.</p>
           ) : (
             <ul className="space-y-1">
-              {userIds.map((id) => (
-                <li
-                  key={id}
-                  className="rounded bg-muted/50 px-2 py-1 font-mono text-xs break-all"
-                >
-                  {id}
-                </li>
-              ))}
+              {userIds.map(({ displayName, email, channel, agent, startedAt }, i) => {
+                const label = displayName || email || "Unknown";
+                const channelLabel = channel
+                  ? (channel === "msteams" ? "MS Teams"
+                    : channel === "webchat" ? "Web Chat"
+                    : channel === "directline" ? "Direct Line"
+                    : channel.startsWith("pva-studio") || channel === "pva-studio" ? "PVA Studio"
+                    : channel)
+                  : null;
+                const timeLabel = startedAt
+                  ? startedAt.slice(0, 16).replace("T", " ")
+                  : null;
+                return (
+                  <li
+                    key={i}
+                    className="rounded bg-muted/50 px-2 py-1 text-xs"
+                  >
+                    <span className="font-medium">{label}</span>
+                    {channelLabel ? <span className="text-muted-foreground"> · {channelLabel}</span> : null}
+                    {agent ? <span className="text-muted-foreground"> · {agent}</span> : null}
+                    {timeLabel ? <span className="text-muted-foreground"> · {timeLabel}</span> : null}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>
@@ -55,7 +75,10 @@ export function TotalConversationsCard({
     <HoverCard openDelay={200} closeDelay={100}>
       <HoverCardTrigger asChild>
         <div className="ps-metric-card cursor-pointer transition-shadow hover:shadow-md">
-          <div className="ps-metric-label">Total Conversations</div>
+          <div className="ps-metric-label flex items-center gap-1">
+            Total Conversations
+            <InfoTooltip label="Count of distinct conversation sessions started in the selected time range. Each session is one end-to-end interaction between a user and an agent. Hover to see the latest sessions." />
+          </div>
           <div className="ps-metric-value">{count}</div>
         </div>
       </HoverCardTrigger>

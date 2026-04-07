@@ -57,6 +57,7 @@ export function commonBarOptions(indexAxis: "x" | "y" = "x"): ChartOptions<"bar"
   const p = palette();
   return {
     responsive: true,
+    maintainAspectRatio: false,
     animation: false,
     transitions: { active: { animation: { duration: 0 } }, show: { animation: { duration: 0 } } },
     plugins: {

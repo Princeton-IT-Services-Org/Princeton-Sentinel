@@ -27,6 +27,7 @@ const ADMIN_PREFIXES = [
   "/api/schedules",
   "/api/runs",
   "/api/analytics",
+  "/api/agents/access-blocks",
 ];
 const USER_PREFIXES = ["/dashboard", "/sites", "/api/graph", "/api/feature-flags"];
 const LOG_PREFIX = "[PERF] [WEBAPP]";
@@ -114,6 +115,10 @@ export async function proxy(req: NextRequest) {
   }
   if (pathname.startsWith("/api/internal/worker-heartbeat")) {
     return applySecurityHeaders(NextResponse.next());
+  }
+  // Agent access-check: uses its own API key auth, not Entra session
+  if (pathname.startsWith("/api/agents/access-check")) {
+    return NextResponse.next();
   }
   const timing = createTimingMeta(req);
 

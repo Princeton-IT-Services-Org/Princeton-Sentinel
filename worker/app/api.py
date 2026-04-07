@@ -4,6 +4,8 @@ from flask import Flask, g, jsonify, request
 
 from app import db
 from app.auth import require_internal_token
+from app.conditional_access import ConditionalAccessManager, CAResult
+from app.dataverse_client import DataverseClient
 from app.heartbeat import get_heartbeat_status, is_heartbeat_healthy
 from app.license import (
     LicenseFeatureError,
@@ -244,5 +246,273 @@ def create_app():
             details={"job_type": job["job_type"]},
         )
         return jsonify({"status": "resumed"})
+
+    # ── Conditional Access: agent kill-switch ─────────────────────────
+
+    @app.post("/conditional-access/block")
+    @require_internal_token
+    def ca_block_user():
+        body = request.get_json(silent=True) or {}
+        user_id = (body.get("user_id") or "").strip()
+        bot_id = (body.get("bot_id") or "").strip()
+        bot_name = (body.get("bot_name") or "").strip()
+        block_scope = (body.get("block_scope") or "agent").strip()
+        actor = _actor_from_body(body)
+
+        if not user_id or not bot_id:
+            return jsonify({"error": "user_id and bot_id are required"}), 400
+
+        # scope=agent → app-level only, no Entra CA needed
+        if block_scope == "agent":
+            log_audit_event(
+                action="copilot_access_block",
+                entity_type="copilot_access_block",
+                entity_id=f"{user_id}:{bot_id}",
+                actor=actor,
+                details={"user_id": user_id, "bot_id": bot_id, "block_scope": "agent"},
+            )
+            return jsonify({"status": "blocked", "block_scope": "agent"})
+
+        # scope=all → create/update Entra Conditional Access policy
+        ca = ConditionalAccessManager()
+        result: CAResult = ca.block_user(bot_id, bot_name, user_id)
+
+        if result.success:
+            db.execute(
+                """
+                UPDATE copilot_access_blocks
+                SET entra_policy_id  = %s,
+                    entra_sync_status = 'synced',
+                    entra_sync_error  = NULL
+                WHERE user_id = %s AND bot_id = %s AND unblocked_at IS NULL
+                """,
+                [result.policy_id, user_id, bot_id],
+            )
+        else:
+            db.execute(
+                """
+                UPDATE copilot_access_blocks
+                SET entra_sync_status = 'failed',
+                    entra_sync_error  = %s
+                WHERE user_id = %s AND bot_id = %s AND unblocked_at IS NULL
+                """,
+                [result.error, user_id, bot_id],
+            )
+
+        log_audit_event(
+            action="copilot_access_block",
+            entity_type="copilot_access_block",
+            entity_id=f"{user_id}:{bot_id}",
+            actor=actor,
+            details={
+                "user_id": user_id,
+                "bot_id": bot_id,
+                "block_scope": "all",
+                "sync_success": result.success,
+                "policy_id": result.policy_id,
+                "error": result.error,
+            },
+        )
+
+        if result.success:
+            return jsonify({"status": "blocked", "policy_id": result.policy_id, "block_scope": "all"})
+        return jsonify({"error": result.error, "status": "sync_failed"}), 502
+
+    @app.post("/conditional-access/unblock")
+    @require_internal_token
+    def ca_unblock_user():
+        body = request.get_json(silent=True) or {}
+        user_id = (body.get("user_id") or "").strip()
+        bot_id = (body.get("bot_id") or "").strip()
+        block_scope = (body.get("block_scope") or "agent").strip()
+        actor = _actor_from_body(body)
+
+        if not user_id or not bot_id:
+            return jsonify({"error": "user_id and bot_id are required"}), 400
+
+        # scope=agent → no Entra CA to clean up
+        if block_scope == "agent":
+            log_audit_event(
+                action="copilot_access_unblock",
+                entity_type="copilot_access_block",
+                entity_id=f"{user_id}:{bot_id}",
+                actor=actor,
+                details={"user_id": user_id, "bot_id": bot_id, "block_scope": "agent"},
+            )
+            return jsonify({"status": "unblocked", "block_scope": "agent"})
+
+        # scope=all → remove user from Entra CA policy
+        ca = ConditionalAccessManager()
+        result: CAResult = ca.unblock_user(bot_id, user_id)
+
+        if result.success:
+            db.execute(
+                """
+                UPDATE copilot_access_blocks
+                SET entra_sync_status = 'synced',
+                    entra_sync_error  = NULL
+                WHERE user_id = %s AND bot_id = %s AND unblocked_at IS NULL
+                """,
+                [user_id, bot_id],
+            )
+        else:
+            db.execute(
+                """
+                UPDATE copilot_access_blocks
+                SET entra_sync_status = 'failed',
+                    entra_sync_error  = %s
+                WHERE user_id = %s AND bot_id = %s AND unblocked_at IS NULL
+                """,
+                [result.error, user_id, bot_id],
+            )
+
+        log_audit_event(
+            action="copilot_access_unblock",
+            entity_type="copilot_access_block",
+            entity_id=f"{user_id}:{bot_id}",
+            actor=actor,
+            details={
+                "user_id": user_id,
+                "bot_id": bot_id,
+                "block_scope": "all",
+                "sync_success": result.success,
+                "policy_id": result.policy_id,
+                "error": result.error,
+            },
+        )
+
+        if result.success:
+            return jsonify({"status": "unblocked", "policy_id": result.policy_id, "block_scope": "all"})
+        return jsonify({"error": result.error, "status": "sync_failed"}), 502
+
+    # ── Global agent disable/enable ─────────────────────────────────
+
+    @app.post("/conditional-access/disable-agent")
+    @require_internal_token
+    def ca_disable_agent():
+        body = request.get_json(silent=True) or {}
+        bot_id = (body.get("bot_id") or "").strip()
+        reason = (body.get("reason") or "").strip()
+        actor = _actor_from_body(body)
+
+        if not bot_id:
+            return jsonify({"error": "bot_id is required"}), 400
+
+        agent_reg = db.fetch_one(
+            "SELECT app_registration_id, app_object_id FROM copilot_agent_registrations WHERE bot_id = %s",
+            [bot_id],
+        )
+        if not agent_reg:
+            return jsonify({"error": "agent_not_registered"}), 400
+
+        ca = ConditionalAccessManager()
+
+        # Resolve object ID if not cached
+        app_object_id = agent_reg["app_object_id"]
+        if not app_object_id:
+            app_object_id = ca.get_app_object_id(agent_reg["app_registration_id"])
+            if not app_object_id:
+                return jsonify({"error": "app_registration_not_found_in_entra"}), 404
+            db.execute(
+                "UPDATE copilot_agent_registrations SET app_object_id = %s, updated_at = now() WHERE bot_id = %s",
+                [app_object_id, bot_id],
+            )
+
+        result = ca.disable_agent(app_object_id)
+
+        if result.success:
+            db.execute(
+                "UPDATE copilot_agent_registrations SET disabled_at = now(), disabled_by = %s, disabled_reason = %s, updated_at = now() WHERE bot_id = %s",
+                [actor.get("upn") or actor.get("oid") or "unknown", reason or None, bot_id],
+            )
+            log_audit_event(
+                action="copilot_agent_disabled",
+                entity_type="copilot_agent",
+                entity_id=bot_id,
+                actor=actor,
+                details={"reason": reason, "app_object_id": app_object_id},
+            )
+            return jsonify({"status": "disabled"})
+
+        return jsonify({"error": result.error, "status": "disable_failed"}), 502
+
+    @app.post("/conditional-access/enable-agent")
+    @require_internal_token
+    def ca_enable_agent():
+        body = request.get_json(silent=True) or {}
+        bot_id = (body.get("bot_id") or "").strip()
+        actor = _actor_from_body(body)
+
+        if not bot_id:
+            return jsonify({"error": "bot_id is required"}), 400
+
+        agent_reg = db.fetch_one(
+            "SELECT app_object_id FROM copilot_agent_registrations WHERE bot_id = %s",
+            [bot_id],
+        )
+        if not agent_reg or not agent_reg["app_object_id"]:
+            return jsonify({"error": "agent_not_registered_or_missing_object_id"}), 400
+
+        ca = ConditionalAccessManager()
+        result = ca.enable_agent(agent_reg["app_object_id"])
+
+        if result.success:
+            db.execute(
+                "UPDATE copilot_agent_registrations SET disabled_at = NULL, disabled_by = NULL, disabled_reason = NULL, updated_at = now() WHERE bot_id = %s",
+                [bot_id],
+            )
+            log_audit_event(
+                action="copilot_agent_enabled",
+                entity_type="copilot_agent",
+                entity_id=bot_id,
+                actor=actor,
+                details={"app_object_id": agent_reg["app_object_id"]},
+            )
+            return jsonify({"status": "enabled"})
+
+        return jsonify({"error": result.error, "status": "enable_failed"}), 502
+
+    # ── Dataverse: fetch table data ────────────────────────────────
+
+    @app.get("/dataverse/table")
+    @require_internal_token
+    def dataverse_table():
+        entity_set = request.args.get("entity_set", "").strip()
+        if not entity_set:
+            return jsonify({"error": "entity_set query param is required"}), 400
+
+        select = request.args.get("select", "").strip() or None
+        odata_filter = request.args.get("filter", "").strip() or None
+        top_str = request.args.get("top", "").strip()
+        top = int(top_str) if top_str.isdigit() else None
+
+        try:
+            dv = DataverseClient()
+            rows = dv.fetch_table(entity_set, select=select, filter=odata_filter, top=top)
+            return jsonify({"rows": rows, "count": len(rows)})
+        except Exception as exc:
+            emit("ERROR", "DATAVERSE", f"Dataverse fetch failed: {exc}")
+            return jsonify({"error": str(exc)}), 502
+
+    @app.post("/dataverse/patch")
+    @require_internal_token
+    def dataverse_patch():
+        body = request.get_json(silent=True) or {}
+        entity_set = (body.get("entity_set") or "").strip()
+        row_id = (body.get("row_id") or "").strip()
+        data = body.get("data") or {}
+
+        if not entity_set or not row_id:
+            return jsonify({"error": "entity_set and row_id are required"}), 400
+        if not isinstance(data, dict) or not data:
+            return jsonify({"error": "data must be a non-empty object"}), 400
+
+        try:
+            dv = DataverseClient()
+            dv.patch_row(entity_set, row_id, data)
+            return jsonify({"status": "updated"})
+        except Exception as exc:
+            emit("ERROR", "DATAVERSE", f"Dataverse patch failed: {exc}")
+            return jsonify({"error": str(exc)}), 502
 
     return app

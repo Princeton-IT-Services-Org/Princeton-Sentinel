@@ -13,7 +13,7 @@ export function InfoTooltip({ label, className }: InfoTooltipProps) {
       >
         i
       </button>
-      <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-2 hidden w-64 -translate-x-1/2 rounded-md border bg-background px-3 py-2 text-left text-xs font-normal leading-5 text-foreground shadow-md group-hover:block group-focus-within:block">
+      <span className="pointer-events-none absolute left-1/2 top-full z-50 mt-2 hidden w-64 -translate-x-1/2 rounded-md border bg-background px-3 py-2 text-left text-xs font-normal normal-case leading-5 tracking-normal text-foreground shadow-md whitespace-pre-line group-hover:block group-focus-within:block">
         {label}
       </span>
     </span>
