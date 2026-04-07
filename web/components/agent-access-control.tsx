@@ -54,10 +54,9 @@ const SCOPE_BADGE: Record<string, { label: string; className: string }> = {
 export default function AgentAccessControl() {
   const [blocks, setBlocks] = React.useState<Block[]>([]);
   const [agents, setAgents] = React.useState<Agent[]>([]);
-  const [users, setUsers] = React.useState<User[]>([]);
+  const [, setUsers] = React.useState<User[]>([]);
   const [registrations, setRegistrations] = React.useState<Registration[]>([]);
   const [dvRows, setDvRows] = React.useState<DvRow[]>([]);
-  const [dvLoading, setDvLoading] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
