@@ -28,6 +28,7 @@ az containerapp update \
     APPINSIGHTS_APP_ID="${STG_APPINSIGHTS_APP_ID}" \
     APPINSIGHTS_API_KEY=secretref:appinsightsapikey \
     DATABASE_URL=secretref:dburl \
+    DATAVERSE_URL="${STG_DATAVERSE_URL}" \
     WORKER_INTERNAL_API_TOKEN=secretref:workerinternaltoken \
     WORKER_HEARTBEAT_TOKEN=secretref:workerheartbeattoken \
     DB_CONNECT_TIMEOUT_SECONDS="${STG_DB_CONNECT_TIMEOUT_SECONDS}" \
