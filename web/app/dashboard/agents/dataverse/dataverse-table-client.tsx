@@ -35,12 +35,6 @@ type Block = {
 
 type Agent = { bot_id: string; bot_name: string | null };
 
-const SYNC_BADGE: Record<string, { label: string; className: string }> = {
-  synced: { label: "Synced", className: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300" },
-  pending: { label: "Pending", className: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300" },
-  failed: { label: "Failed", className: "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300" },
-  not_applicable: { label: "N/A", className: "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400" },
-};
 
 const SCOPE_BADGE: Record<string, { label: string; className: string }> = {
   agent: { label: "This Agent", className: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300" },
@@ -437,7 +431,6 @@ export default function DataverseTableClient() {
                     <TableHead>User</TableHead>
                     <TableHead>Agent</TableHead>
                     <TableHead>Scope</TableHead>
-                    <TableHead>Entra Status</TableHead>
                     <TableHead>Reason</TableHead>
                     <TableHead>Blocked By</TableHead>
                     <TableHead>Blocked At</TableHead>
@@ -446,7 +439,6 @@ export default function DataverseTableClient() {
                 </TableHeader>
                 <TableBody>
                   {blocks.map((b) => {
-                    const syncBadge = SYNC_BADGE[b.entra_sync_status] || SYNC_BADGE.not_applicable;
                     const scopeBadge = SCOPE_BADGE[b.block_scope] || SCOPE_BADGE.agent;
                     return (
                       <TableRow key={b.id}>
@@ -459,14 +451,6 @@ export default function DataverseTableClient() {
                         <TableCell>
                           <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${scopeBadge.className}`}>
                             {scopeBadge.label}
-                          </span>
-                        </TableCell>
-                        <TableCell>
-                          <span
-                            className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${syncBadge.className}`}
-                            title={b.entra_sync_error || undefined}
-                          >
-                            {syncBadge.label}
                           </span>
                         </TableCell>
                         <TableCell className="max-w-[160px] truncate text-muted-foreground" title={b.block_reason || ""}>
