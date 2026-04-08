@@ -70,6 +70,20 @@ def _safe_license_summary(context: str):
         return get_license_lookup_failure_summary(text)
 
 
+def _classify_dv_error(exc: Exception) -> str:
+    msg = str(exc)
+    msg_lower = msg.lower()
+    if "dataverse_url must be set" in msg_lower or "entra_" in msg_lower:
+        return "not_configured"
+    if "failed to acquire" in msg_lower or "(401)" in msg or "unauthorized" in msg_lower:
+        return "auth_failed"
+    if "(403)" in msg or "forbidden" in msg_lower:
+        return "permission_denied"
+    if "timed out" in msg_lower or "connectionerror" in msg_lower or "failed to establish" in msg_lower or "(503)" in msg:
+        return "unreachable"
+    return "unknown"
+
+
 def create_app():
     app = Flask(__name__)
 
@@ -501,7 +515,7 @@ def create_app():
             return jsonify({"rows": rows, "count": len(rows)})
         except Exception as exc:
             emit("ERROR", "DATAVERSE", f"Dataverse fetch failed: {exc}")
-            return jsonify({"error": str(exc)}), 502
+            return jsonify({"error": str(exc), "dv_error_type": _classify_dv_error(exc)}), 502
 
     @app.post("/dataverse/patch")
     @require_internal_token
@@ -522,6 +536,6 @@ def create_app():
             return jsonify({"status": "updated"})
         except Exception as exc:
             emit("ERROR", "DATAVERSE", f"Dataverse patch failed: {exc}")
-            return jsonify({"error": str(exc)}), 502
+            return jsonify({"error": str(exc), "dv_error_type": _classify_dv_error(exc)}), 502
 
     return app
