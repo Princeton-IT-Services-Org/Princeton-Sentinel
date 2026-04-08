@@ -114,11 +114,6 @@ export async function proxy(req: NextRequest) {
   if (pathname.startsWith("/api/internal/worker-heartbeat")) {
     return applySecurityHeaders(NextResponse.next());
   }
-  // Agent access-check: uses its own API key auth, not Entra session
-  if (pathname.startsWith("/api/agents/access-check")) {
-    return nextWithTiming(req, timing);
-  }
-
   if (pathname.startsWith("/signout")) {
     const response = nextWithTiming(req, timing);
     const token = await getToken({
