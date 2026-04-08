@@ -1,7 +1,9 @@
 "use client";
 import { Bar, Pie } from "react-chartjs-2";
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, ArcElement, Title, Tooltip, Legend } from "chart.js";
+import { useRouter } from "next/navigation";
 import { barColors, commonBarOptions, commonPieOptions, labelLimit, numberLabel, pieColors } from "@/components/chart-config";
+import { cn } from "@/lib/utils";
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, Title, Tooltip, Legend);
 
@@ -9,11 +11,14 @@ export function SharingSummaryBarChart({
   data,
   label,
   xTitle,
+  href,
 }: {
-  data: { label: string; value: number }[];
+  data: { label: string; value: number; href?: string }[];
   label: string;
   xTitle: string;
+  href?: string;
 }) {
+  const router = useRouter();
   const barData = {
     labels: data.map((d) => labelLimit(d.label)),
     datasets: [
@@ -29,6 +34,14 @@ export function SharingSummaryBarChart({
   const baseOptions: any = commonBarOptions("y");
   const barOptions = {
     ...baseOptions,
+    onClick: (_event: unknown, elements: { index: number }[]) => {
+      if (elements.length > 0) {
+        const targetHref = data[elements[0].index]?.href ?? href;
+        if (targetHref) {
+          router.push(targetHref);
+        }
+      }
+    },
     plugins: {
       ...baseOptions.plugins,
       tooltip: { ...baseOptions.plugins?.tooltip, callbacks: { label: (ctx: any) => `${ctx.dataset.label}: ${numberLabel(ctx.parsed.x ?? 0)}` } },
@@ -47,13 +60,29 @@ export function SharingSummaryBarChart({
       },
     },
   };
-  return <Bar data={barData} options={barOptions} />;
+  return (
+    <div className={cn("h-full w-full", href || data.some((d) => d.href) ? "cursor-pointer" : undefined)}>
+      <Bar data={barData} options={barOptions} />
+    </div>
+  );
 }
 
-export function SharingSummaryPieChart({ data }: { data: { label: string; value: number }[] }) {
+export function SharingSummaryPieChart({ data, href }: { data: { label: string; value: number; href?: string }[]; href?: string }) {
+  const router = useRouter();
   const colors = pieColors();
+  const pieOptions = {
+    ...commonPieOptions(),
+    onClick: (_event: unknown, elements: { index: number }[]) => {
+      if (elements.length > 0) {
+        const targetHref = data[elements[0].index]?.href ?? href;
+        if (targetHref) {
+          router.push(targetHref);
+        }
+      }
+    },
+  };
   return (
-    <div style={{ width: "100%", minWidth: 0 }}>
+    <div className={cn(href || data.some((d) => d.href) ? "cursor-pointer" : undefined)} style={{ width: "100%", minWidth: 0 }}>
       <div style={{ width: "100%", minWidth: 0 }}>
         <Pie
           data={{
@@ -66,7 +95,7 @@ export function SharingSummaryPieChart({ data }: { data: { label: string; value:
               },
             ],
           }}
-          options={commonPieOptions()}
+          options={pieOptions}
           height={260}
         />
       </div>

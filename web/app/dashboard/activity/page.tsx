@@ -14,13 +14,34 @@ import FilterBar from "@/components/filter-bar";
 import MetricGrid from "@/components/metric-grid";
 import { MetricCard } from "@/components/metric-card";
 
-function buildSearchFilter(search: string | null) {
-  if (!search) return { clause: "", params: [] as any[] };
+function buildActivityFilter(search: string | null, siteType: string | null) {
+  const clauses: string[] = [];
+  const params: any[] = [];
+
+  if (search) {
+    params.push(`%${search.toLowerCase()}%`);
+    const index = params.length;
+    clauses.push(
+      `(LOWER(title) LIKE $${index} OR LOWER(web_url) LIKE $${index} OR LOWER(site_id) LIKE $${index} OR LOWER(site_key) LIKE $${index} OR LOWER(route_drive_id) LIKE $${index})`
+    );
+  }
+
+  if (siteType === "personal") {
+    clauses.push("is_personal = true");
+  } else if (siteType === "nonPersonal") {
+    clauses.push("COALESCE(is_personal, false) = false");
+  }
+
   return {
-    clause:
-      "WHERE (LOWER(title) LIKE $1 OR LOWER(web_url) LIKE $1 OR LOWER(site_id) LIKE $1 OR LOWER(site_key) LIKE $1 OR LOWER(route_drive_id) LIKE $1)",
-    params: [`%${search.toLowerCase()}%`],
+    clause: clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "",
+    params,
   };
+}
+
+function buildSiteTypeClause(siteType: string | null) {
+  if (siteType === "personal") return "WHERE is_personal = true";
+  if (siteType === "nonPersonal") return "WHERE COALESCE(is_personal, false) = false";
+  return "";
 }
 
 export const dynamic = "force-dynamic";
@@ -31,6 +52,7 @@ async function ActivityPage({ searchParams }: { searchParams?: Promise<SearchPar
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
 
   const search = getParam(resolvedSearchParams, "q");
+  const siteType = getParam(resolvedSearchParams, "siteType") || "all";
   const windowDays = getWindowDays(resolvedSearchParams, 90);
   const windowStart = windowDays ? new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString() : null;
   const { page, pageSize, offset } = getPagination(resolvedSearchParams, { page: 1, pageSize: 50 });
@@ -48,8 +70,9 @@ async function ActivityPage({ searchParams }: { searchParams?: Promise<SearchPar
     lastActivity: "last_activity_dt",
   };
   const sortColumn = sortMap[sort] || "last_activity_dt";
-  const { clause, params } = buildSearchFilter(search);
+  const { clause, params } = buildActivityFilter(search, siteType);
   const summaryParams = windowStart ? [...params, windowStart] : [...params];
+  const graphSiteTypeClause = buildSiteTypeClause(siteType);
   const graphSummaryParams = windowStart ? [windowStart] : [];
   const activityBaseCte = `
       WITH base AS (
@@ -74,6 +97,7 @@ async function ActivityPage({ searchParams }: { searchParams?: Promise<SearchPar
         SELECT site_key, route_drive_id, title, web_url, is_personal, template, is_available, last_available_at,
                availability_reason, storage_used_bytes, storage_total_bytes, last_activity_dt
         FROM mv_msgraph_routable_site_drives
+        ${graphSiteTypeClause}
       ), activity AS (
         SELECT
           d.site_key,
@@ -157,6 +181,16 @@ async function ActivityPage({ searchParams }: { searchParams?: Promise<SearchPar
         <FilterBar>
           <Input name="q" placeholder="Search sites..." defaultValue={search || ""} className="w-64" />
           <select
+            name="siteType"
+            defaultValue={siteType}
+            className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
+            title="Site type"
+          >
+            <option value="all">All sites</option>
+            <option value="personal">Personal</option>
+            <option value="nonPersonal">Non-personal</option>
+          </select>
+          <select
             name="days"
             defaultValue={windowDays == null ? "all" : String(windowDays)}
             className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
@@ -210,7 +244,14 @@ async function ActivityPage({ searchParams }: { searchParams?: Promise<SearchPar
         page={page}
         pageSize={pageSize}
         totalItems={total}
-        extraParams={{ q: search || undefined, pageSize, sort, dir, days: windowDays == null ? "all" : windowDays }}
+        extraParams={{
+          q: search || undefined,
+          pageSize,
+          sort,
+          dir,
+          days: windowDays == null ? "all" : windowDays,
+          siteType: siteType === "all" ? undefined : siteType,
+        }}
       />
     </main>
   );

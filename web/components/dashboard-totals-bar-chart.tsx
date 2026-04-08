@@ -14,7 +14,7 @@ export function DashboardTotalsBarChart({
 }) {
   const router = useRouter();
   const labels = ["SharePoint Sites", "Active Users", "Groups", "Drives"];
-  const pageLinks = ["/dashboard/sites", "/dashboard/users", "/dashboard/groups", null];
+  const pageLinks = ["/dashboard/sites", "/dashboard/users", "/dashboard/groups", "/dashboard/activity"];
   const data = {
     labels,
     datasets: [

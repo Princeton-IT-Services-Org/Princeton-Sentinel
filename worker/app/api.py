@@ -291,28 +291,6 @@ def create_app():
         ca = ConditionalAccessManager()
         result: CAResult = ca.block_user(bot_id, bot_name, user_id)
 
-        if result.success:
-            db.execute(
-                """
-                UPDATE copilot_access_blocks
-                SET entra_policy_id  = %s,
-                    entra_sync_status = 'synced',
-                    entra_sync_error  = NULL
-                WHERE user_id = %s AND bot_id = %s AND unblocked_at IS NULL
-                """,
-                [result.policy_id, user_id, bot_id],
-            )
-        else:
-            db.execute(
-                """
-                UPDATE copilot_access_blocks
-                SET entra_sync_status = 'failed',
-                    entra_sync_error  = %s
-                WHERE user_id = %s AND bot_id = %s AND unblocked_at IS NULL
-                """,
-                [result.error, user_id, bot_id],
-            )
-
         log_audit_event(
             action="copilot_access_block",
             entity_type="copilot_access_block",
@@ -358,27 +336,6 @@ def create_app():
         # scope=all → remove user from Entra CA policy
         ca = ConditionalAccessManager()
         result: CAResult = ca.unblock_user(bot_id, user_id)
-
-        if result.success:
-            db.execute(
-                """
-                UPDATE copilot_access_blocks
-                SET entra_sync_status = 'synced',
-                    entra_sync_error  = NULL
-                WHERE user_id = %s AND bot_id = %s AND unblocked_at IS NULL
-                """,
-                [user_id, bot_id],
-            )
-        else:
-            db.execute(
-                """
-                UPDATE copilot_access_blocks
-                SET entra_sync_status = 'failed',
-                    entra_sync_error  = %s
-                WHERE user_id = %s AND bot_id = %s AND unblocked_at IS NULL
-                """,
-                [result.error, user_id, bot_id],
-            )
 
         log_audit_event(
             action="copilot_access_unblock",
