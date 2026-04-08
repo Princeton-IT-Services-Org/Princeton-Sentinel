@@ -24,6 +24,7 @@ from datetime import datetime, timezone, timedelta
 import requests
 
 from app import db
+from app.dataverse_client import DataverseClient
 from app.jobs.mv_refresh import enqueue_impacted_mvs_for_tables
 from app.runtime_logger import emit
 from app.utils import log_job_run_log
@@ -101,6 +102,9 @@ def run_copilot_telemetry(*, run_id: str, job_id: str, actor=None):
     response_times = _fetch_response_times(since_iso)
     if response_times:
         _upsert_response_times(response_times)
+
+    # --- Stage 7: Dataverse block sync ---
+    _sync_dv_blocks(run_id=run_id)
 
     # --- Summary ---
     log_job_run_log(run_id=run_id, level="INFO", message="copilot_telemetry_completed", context={
@@ -717,3 +721,136 @@ def _classify_outcome(turn_count: int, error_count: int = 0) -> str:
     if error_count > 0:
         return "escalated"
     return "resolved"
+
+
+# ---------------------------------------------------------------------------
+# Dataverse → Active Blocks sync (runs at end of each copilot_telemetry run)
+# ---------------------------------------------------------------------------
+
+_DV_BLOCK_ENTITY_SET = "cr6c3_table11s"
+_DV_BLOCK_SELECT = (
+    "cr6c3_table11id,"
+    "cr6c3_agentname,"
+    "cr6c3_username,"
+    "cr6c3_disableflagcopilot,"
+    "cr6c3_copilotflagchangereason,"
+    "cr6c3_userlastmodifiedby"
+)
+
+
+def _sync_dv_blocks(*, run_id: str) -> None:
+    """Reconcile Dataverse cr6c3_disableflagcopilot with copilot_access_blocks."""
+    try:
+        client = DataverseClient()
+    except RuntimeError as exc:
+        emit("WARN", "COPILOT_TELEMETRY", f"DV block sync skipped (DV not configured): {exc}")
+        return
+
+    try:
+        rows = client.fetch_table(_DV_BLOCK_ENTITY_SET, select=_DV_BLOCK_SELECT)
+    except Exception as exc:
+        emit("ERROR", "COPILOT_TELEMETRY", f"DV block sync failed to fetch rows: {exc}")
+        log_job_run_log(run_id=run_id, level="ERROR", message="dv_block_sync_fetch_failed",
+                        context={"error": str(exc)})
+        return
+
+    emit("INFO", "COPILOT_TELEMETRY", f"DV block sync: fetched {len(rows)} DV rows")
+
+    # Pre-load active blocks with both bot_id and bot_name aliases so DV rows can
+    # reconcile correctly even when local rows were created with a different identifier.
+    active_blocks = _dv_load_active_blocks()
+
+    created = closed = skipped = 0
+
+    for row in rows:
+        agent_name = (row.get("cr6c3_agentname") or "").strip()
+        username = (row.get("cr6c3_username") or "").strip()
+        disabled = row.get("cr6c3_disableflagcopilot") or False
+        reason = (row.get("cr6c3_copilotflagchangereason") or "").strip() or None
+        modified_by = (row.get("cr6c3_userlastmodifiedby") or "dataverse_sync").strip()
+
+        if not agent_name or not username:
+            skipped += 1
+            continue
+
+        bot_id = _dv_resolve_bot_id(agent_name)
+        block_keys = _dv_block_keys(username, agent_name, bot_id)
+        has_active = any(key in active_blocks for key in block_keys)
+
+        if disabled and not has_active:
+            db.execute(
+                """
+                INSERT INTO copilot_access_blocks
+                  (user_id, user_principal_name, bot_id, bot_name,
+                   block_scope, entra_sync_status, blocked_by, block_reason)
+                VALUES (%s, %s, %s, %s, 'agent', 'not_applicable', %s, %s)
+                ON CONFLICT DO NOTHING
+                """,
+                [username, username, bot_id, agent_name, modified_by, reason],
+            )
+            log_job_run_log(run_id=run_id, level="INFO", message="dv_block_sync_block_created",
+                            context={"username": username, "agent": agent_name, "blocked_by": modified_by})
+            active_blocks.update(block_keys)
+            created += 1
+
+        elif not disabled and has_active:
+            db.execute(
+                """
+                UPDATE copilot_access_blocks
+                SET unblocked_at = now(),
+                    unblocked_by = %s,
+                    unblock_reason = %s
+                WHERE LOWER(COALESCE(user_principal_name, user_id)) = LOWER(%s)
+                  AND (
+                    LOWER(COALESCE(bot_name, '')) = LOWER(%s)
+                    OR LOWER(COALESCE(bot_id, '')) = LOWER(%s)
+                  )
+                  AND unblocked_at IS NULL
+                """,
+                [modified_by, reason or "Unblocked via Dataverse", username, agent_name, bot_id],
+            )
+            log_job_run_log(run_id=run_id, level="INFO", message="dv_block_sync_block_closed",
+                            context={"username": username, "agent": agent_name, "unblocked_by": modified_by})
+            active_blocks.difference_update(block_keys)
+            closed += 1
+
+        else:
+            skipped += 1
+
+    emit("INFO", "COPILOT_TELEMETRY",
+         f"DV block sync done: created={created} closed={closed} skipped={skipped}")
+    log_job_run_log(run_id=run_id, level="INFO", message="dv_block_sync_finished",
+                    context={"created": created, "closed": closed, "skipped": skipped})
+
+
+def _normalize_dv_key(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
+def _dv_block_keys(username: str | None, agent_name: str | None, bot_id: str | None = None) -> set[tuple[str, str]]:
+    user_aliases = {alias for alias in {_normalize_dv_key(username)} if alias}
+    bot_aliases = {alias for alias in {_normalize_dv_key(agent_name), _normalize_dv_key(bot_id)} if alias}
+    return {(user_alias, bot_alias) for user_alias in user_aliases for bot_alias in bot_aliases}
+
+
+def _dv_load_active_blocks() -> set[tuple[str, str]]:
+    rows = db.fetch_all(
+        """
+        SELECT user_principal_name, user_id, bot_name, bot_id
+        FROM copilot_access_blocks
+        WHERE unblocked_at IS NULL
+        """
+    )
+    active_keys: set[tuple[str, str]] = set()
+    for row in rows:
+        user_value = row.get("user_principal_name") or row.get("user_id")
+        active_keys.update(_dv_block_keys(user_value, row.get("bot_name"), row.get("bot_id")))
+    return active_keys
+
+
+def _dv_resolve_bot_id(agent_name: str) -> str:
+    row = db.fetch_one(
+        "SELECT bot_id FROM copilot_agent_registrations WHERE LOWER(bot_name) = LOWER(%s) LIMIT 1",
+        [agent_name],
+    )
+    return row["bot_id"] if row else agent_name

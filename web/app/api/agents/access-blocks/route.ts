@@ -4,6 +4,7 @@ import { query } from "@/app/lib/db";
 import { writeAuditEvent } from "@/app/lib/audit";
 import {
   callWorker,
+  callWorkerJson,
   isWorkerTimeoutError,
   parseWorkerErrorText,
 } from "@/app/lib/worker-api";
@@ -12,20 +13,60 @@ import { withApiRequestTiming } from "@/app/lib/request-timing";
 
 export const dynamic = "force-dynamic";
 
-// ── GET: list active blocks + available users/agents for dropdowns ──────
+const DV_ENTITY_SET = "cr6c3_table11s";
+const DV_SELECT_COLS = [
+  "cr6c3_table11id",
+  "cr6c3_agentname",
+  "cr6c3_username",
+  "cr6c3_disableflagcopilot",
+  "cr6c3_copilotflagchangereason",
+  "cr6c3_userlastmodifiedby",
+  "cr6c3_lastseeninsync",
+  "modifiedon",
+].join(",");
+
+type DvRow = {
+  cr6c3_table11id?: string;
+  cr6c3_agentname?: string | null;
+  cr6c3_username?: string | null;
+  cr6c3_disableflagcopilot?: boolean | null;
+  cr6c3_copilotflagchangereason?: string | null;
+  cr6c3_userlastmodifiedby?: string | null;
+  cr6c3_lastseeninsync?: string | null;
+  modifiedon?: string | null;
+};
+
+function normalizeValue(value: string | null | undefined): string {
+  return (value || "").trim().toLowerCase();
+}
+
+function mapDvRowToBlock(row: DvRow) {
+  return {
+    id: row.cr6c3_table11id || `${row.cr6c3_agentname || ""}:${row.cr6c3_username || ""}`,
+    dv_row_id: row.cr6c3_table11id || null,
+    user_id: row.cr6c3_username || "",
+    user_display_name: row.cr6c3_username || null,
+    user_principal_name: row.cr6c3_username || null,
+    bot_id: row.cr6c3_agentname || "",
+    bot_name: row.cr6c3_agentname || null,
+    block_scope: "agent" as const,
+    blocked_by: row.cr6c3_userlastmodifiedby || "unknown",
+    blocked_at: row.modifiedon || row.cr6c3_lastseeninsync || new Date().toISOString(),
+    block_reason: row.cr6c3_copilotflagchangereason || null,
+  };
+}
+
+async function fetchDataverseRows(): Promise<DvRow[]> {
+  const qs = new URLSearchParams({ entity_set: DV_ENTITY_SET, select: DV_SELECT_COLS });
+  const data = await callWorkerJson(`/dataverse/table?${qs.toString()}`);
+  return Array.isArray(data?.rows) ? data.rows : [];
+}
 
 const getHandler = async function GET() {
   await requireAdmin();
 
-  const [blocks, users, agents, registrations] = await Promise.all([
-    query(
-      `SELECT id, user_id, user_display_name, user_principal_name,
-              bot_id, bot_name, block_scope, entra_policy_id,
-              entra_sync_status, entra_sync_error, blocked_by, blocked_at, block_reason
-       FROM copilot_access_blocks
-       WHERE unblocked_at IS NULL
-       ORDER BY blocked_at DESC`
-    ),
+  const [rows, users, agents, registrations] = await Promise.all([
+    fetchDataverseRows(),
     query(
       `SELECT DISTINCT user_id, MAX(bot_name) AS last_agent
        FROM copilot_sessions
@@ -47,10 +88,13 @@ const getHandler = async function GET() {
     ),
   ]);
 
+  const blocks = rows
+    .filter((row) => row.cr6c3_disableflagcopilot === true)
+    .map(mapDvRowToBlock)
+    .sort((a, b) => Date.parse(b.blocked_at) - Date.parse(a.blocked_at));
+
   return NextResponse.json({ blocks, users, agents, registrations });
 };
-
-// ── POST: block or unblock a user ──────────────────────────────────────
 
 const postHandler = async function POST(req: Request) {
   const { session } = await requireAdmin();
@@ -66,10 +110,11 @@ const postHandler = async function POST(req: Request) {
   const botId = getNonEmptyString(body.bot_id);
   const botName = getNonEmptyString(body.bot_name) || botId;
   const userDisplayName = getNonEmptyString(body.user_display_name) || userId;
-  const userPrincipalName = getNonEmptyString(body.user_principal_name);
+  const userPrincipalName = getNonEmptyString(body.user_principal_name) || userId;
   const blockScope = getNonEmptyString(body.block_scope) || "agent";
   const blockReason = getNonEmptyString(body.block_reason) || null;
   const unblockReason = getNonEmptyString(body.unblock_reason) || null;
+  const dvRowId = getNonEmptyString(body.dv_row_id) || null;
 
   if (!action || !["block", "unblock", "disable-agent", "enable-agent", "register-agent"].includes(action)) {
     return NextResponse.json(
@@ -85,7 +130,6 @@ const postHandler = async function POST(req: Request) {
   };
   const adminUpn = actor.upn || actor.oid || "unknown";
 
-  // ── REGISTER AGENT ─────────────────────────────────────────────────
   if (action === "register-agent") {
     if (!botId) {
       return NextResponse.json({ error: "bot_id is required" }, { status: 400 });
@@ -116,7 +160,6 @@ const postHandler = async function POST(req: Request) {
     return NextResponse.json({ status: "registered", bot_id: botId });
   }
 
-  // ── DISABLE AGENT (global kill switch) ────────────────────────────
   if (action === "disable-agent") {
     if (!botId) {
       return NextResponse.json({ error: "bot_id is required" }, { status: 400 });
@@ -140,7 +183,6 @@ const postHandler = async function POST(req: Request) {
     return NextResponse.json({ status: "disabled", bot_id: botId });
   }
 
-  // ── ENABLE AGENT (re-enable) ─────────────────────────────────────
   if (action === "enable-agent") {
     if (!botId) {
       return NextResponse.json({ error: "bot_id is required" }, { status: 400 });
@@ -163,42 +205,39 @@ const postHandler = async function POST(req: Request) {
   }
 
   if (!userId || !botId) {
-    return NextResponse.json(
-      { error: "user_id and bot_id are required" },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "user_id and bot_id are required" }, { status: 400 });
+  }
+  if (!dvRowId) {
+    return NextResponse.json({ error: "dv_row_id is required" }, { status: 400 });
   }
   if (!["agent", "all"].includes(blockScope)) {
-    return NextResponse.json(
-      { error: "block_scope must be 'agent' or 'all'" },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "block_scope must be 'agent' or 'all'" }, { status: 400 });
   }
 
-  const defaultSyncStatus = blockScope === "agent" ? "not_applicable" : "pending";
+  const rows = await fetchDataverseRows();
+  const dvRow = rows.find((row) => row.cr6c3_table11id === dvRowId);
+  if (!dvRow) {
+    return NextResponse.json({ error: "dv_row_not_found" }, { status: 404 });
+  }
 
-  // ── BLOCK ───────────────────────────────────────────────────────────
+  const matchesActionTarget =
+    normalizeValue(dvRow.cr6c3_agentname) === normalizeValue(botName || botId) &&
+    normalizeValue(dvRow.cr6c3_username) === normalizeValue(userPrincipalName || userDisplayName || userId);
+
+  if (!matchesActionTarget) {
+    return NextResponse.json({ error: "dv_row_mismatch" }, { status: 409 });
+  }
+
   if (action === "block") {
-    const existing = await query(
-      `SELECT id FROM copilot_access_blocks
-       WHERE user_id = $1 AND bot_id = $2 AND unblocked_at IS NULL`,
-      [userId, botId]
-    );
-    if (existing.length > 0) {
-      return NextResponse.json(
-        { error: "user_already_blocked" },
-        { status: 409 }
-      );
+    if (dvRow.cr6c3_disableflagcopilot === true) {
+      return NextResponse.json({ error: "user_already_blocked" }, { status: 409 });
     }
 
-    await query(
-      `INSERT INTO copilot_access_blocks
-         (user_id, user_display_name, user_principal_name, bot_id, bot_name,
-          block_scope, entra_sync_status, blocked_by, block_reason)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [userId, userDisplayName, userPrincipalName, botId, botName,
-       blockScope, defaultSyncStatus, adminUpn, blockReason]
-    );
+    await updateDvRow(dvRowId, {
+      cr6c3_disableflagcopilot: true,
+      cr6c3_copilotflagchangereason: blockReason,
+      cr6c3_userlastmodifiedby: adminUpn,
+    });
 
     await query(
       `INSERT INTO agent_access_revoke_log
@@ -207,7 +246,6 @@ const postHandler = async function POST(req: Request) {
       [adminUpn, actor.name || null, botId, botName, userId, userDisplayName, userPrincipalName || null, blockReason]
     );
 
-    // Call worker (handles CA only for scope=all, audit for both)
     const workerResult = await callWorkerCA("/conditional-access/block", {
       user_id: userId,
       bot_id: botId,
@@ -232,47 +270,25 @@ const postHandler = async function POST(req: Request) {
 
     return NextResponse.json({
       status: "blocked",
+      dv_row_id: dvRowId,
       block_scope: blockScope,
       entra_synced: blockScope === "all" ? workerResult.success : null,
       entra_error: blockScope === "all" ? workerResult.error : null,
     });
   }
 
-  // ── UNBLOCK ─────────────────────────────────────────────────────────
-  const activeBlocks = await query<{
-    id: number;
-    block_scope: string;
-    bot_name: string | null;
-    user_display_name: string | null;
-    user_principal_name: string | null;
-  }>(
-    `SELECT id, block_scope, bot_name, user_display_name, user_principal_name
-     FROM copilot_access_blocks
-     WHERE user_id = $1 AND bot_id = $2 AND unblocked_at IS NULL
-     ORDER BY blocked_at DESC
-     LIMIT 1`,
-    [userId, botId]
-  );
-
-  if (activeBlocks.length === 0) {
-    return NextResponse.json(
-      { error: "no_active_block_found" },
-      { status: 404 }
-    );
+  if (dvRow.cr6c3_disableflagcopilot !== true) {
+    return NextResponse.json({ error: "no_active_block_found" }, { status: 404 });
   }
 
-  const activeBlock = activeBlocks[0];
-  const unblockedScope = activeBlock.block_scope;
-
-  // Call worker (handles CA cleanup only for scope=all)
   const workerResult = await callWorkerCA("/conditional-access/unblock", {
     user_id: userId,
     bot_id: botId,
-    block_scope: unblockedScope,
+    block_scope: blockScope,
     actor,
   });
 
-  if (!workerResult.success && unblockedScope === "all") {
+  if (!workerResult.success && blockScope === "all") {
     await writeAuditEvent({
       action: "copilot_user_unblock_failed",
       entityType: "copilot_access_block",
@@ -281,38 +297,25 @@ const postHandler = async function POST(req: Request) {
       details: {
         user_id: userId,
         bot_id: botId,
-        block_scope: unblockedScope,
+        block_scope: blockScope,
         worker_success: false,
         worker_error: workerResult.error,
       },
     });
-    return NextResponse.json(
-      { error: workerResult.error || "unblock_failed" },
-      { status: 502 }
-    );
+    return NextResponse.json({ error: workerResult.error || "unblock_failed" }, { status: 502 });
   }
 
-  const updated = await query<{ id: number }>(
-    `UPDATE copilot_access_blocks
-     SET unblocked_at = now(), unblocked_by = $2, unblock_reason = $3
-     WHERE id = $1 AND unblocked_at IS NULL
-     RETURNING id`,
-    [activeBlock.id, adminUpn, unblockReason]
-  );
-
-  if (updated.length === 0) {
-    return NextResponse.json(
-      { error: "no_active_block_found" },
-      { status: 404 }
-    );
-  }
+  await updateDvRow(dvRowId, {
+    cr6c3_disableflagcopilot: false,
+    cr6c3_copilotflagchangereason: unblockReason,
+    cr6c3_userlastmodifiedby: adminUpn,
+  });
 
   await query(
     `INSERT INTO agent_access_revoke_log
        (action, admin_upn, admin_name, bot_id, bot_name, user_id, user_name, user_email, reason)
      VALUES ('unblock', $1, $2, $3, $4, $5, $6, $7, $8)`,
-    [adminUpn, actor.name || null, botId, activeBlock.bot_name || botId, userId,
-     activeBlock.user_display_name || null, activeBlock.user_principal_name || null, unblockReason]
+    [adminUpn, actor.name || null, botId, botName, userId, userDisplayName, userPrincipalName || null, unblockReason]
   );
 
   await writeAuditEvent({
@@ -323,7 +326,7 @@ const postHandler = async function POST(req: Request) {
     details: {
       user_id: userId,
       bot_id: botId,
-      block_scope: unblockedScope,
+      block_scope: blockScope,
       worker_success: workerResult.success,
       worker_error: workerResult.error,
     },
@@ -331,13 +334,31 @@ const postHandler = async function POST(req: Request) {
 
   return NextResponse.json({
     status: "unblocked",
-    block_scope: unblockedScope,
-    entra_synced: unblockedScope === "all" ? workerResult.success : null,
-    entra_error: unblockedScope === "all" ? workerResult.error : null,
+    dv_row_id: dvRowId,
+    block_scope: blockScope,
+    entra_synced: blockScope === "all" ? workerResult.success : null,
+    entra_error: blockScope === "all" ? workerResult.error : null,
   });
 };
 
-// ── Worker call helper ─────────────────────────────────────────────────
+async function updateDvRow(rowId: string, data: Record<string, unknown>): Promise<void> {
+  try {
+    const { res, text } = await callWorker("/dataverse/patch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ entity_set: DV_ENTITY_SET, row_id: rowId, data }),
+    });
+    if (!res.ok) {
+      throw new Error(parseWorkerErrorText(text));
+    }
+  } catch (err: unknown) {
+    if (isWorkerTimeoutError(err)) {
+      throw new Error("dataverse_patch_timeout");
+    }
+    const message = err instanceof Error ? err.message : "dataverse_patch_failed";
+    throw new Error(message);
+  }
+}
 
 async function callWorkerCA(
   path: string,

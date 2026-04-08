@@ -6,7 +6,7 @@ import { withApiRequestTiming } from "@/app/lib/request-timing";
 export const dynamic = "force-dynamic";
 
 const ENTITY_SET = "cr6c3_table11s";
-const SELECT_COLS = "cr6c3_table11id,cr6c3_agentname,cr6c3_username,cr6c3_disableflagcopilot,cr6c3_copilotflagchangereason,cr6c3_lastseeninsync,modifiedon";
+const SELECT_COLS = "cr6c3_table11id,cr6c3_agentname,cr6c3_username,cr6c3_disableflagcopilot,cr6c3_copilotflagchangereason,cr6c3_lastseeninsync,cr6c3_userlastmodifiedby,modifiedon";
 
 /**
  * GET /api/agents/dataverse

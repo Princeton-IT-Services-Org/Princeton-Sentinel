@@ -14,54 +14,96 @@ const COLUMNS: { key: string; label: string }[] = [
   { key: "cr6c3_username", label: "User Name" },
   { key: "cr6c3_disableflagcopilot", label: "Disable Flag" },
   { key: "cr6c3_copilotflagchangereason", label: "Flag Change Reason" },
+  { key: "cr6c3_userlastmodifiedby", label: "Last Modified By" },
   { key: "cr6c3_lastseeninsync", label: "Last Seen In Sync" },
   { key: "modifiedon", label: "Modified On" },
 ];
 
-type Block = {
-  id: number;
+type DvRow = {
+  cr6c3_table11id?: string;
+  cr6c3_agentname?: string | null;
+  cr6c3_username?: string | null;
+  cr6c3_disableflagcopilot?: boolean | null;
+  cr6c3_copilotflagchangereason?: string | null;
+  cr6c3_userlastmodifiedby?: string | null;
+  cr6c3_lastseeninsync?: string | null;
+  modifiedon?: string | null;
+  [key: string]: any;
+};
+
+type ActiveBlock = {
+  id: string;
+  dv_row_id: string;
   user_id: string;
   user_display_name: string | null;
   user_principal_name: string | null;
   bot_id: string;
   bot_name: string | null;
-  block_scope: "agent" | "all";
-  entra_sync_status: string;
-  entra_sync_error: string | null;
+  block_scope: "agent";
   blocked_by: string;
   blocked_at: string;
   block_reason: string | null;
 };
 
-type Agent = { bot_id: string; bot_name: string | null };
+function normalizeValue(value: string | null | undefined): string {
+  return (value || "").trim().toLowerCase();
+}
 
+function findDvRow(rows: DvRow[], agentName: string, userName: string): DvRow | undefined {
+  const normalizedAgent = normalizeValue(agentName);
+  const normalizedUser = normalizeValue(userName);
 
-const SCOPE_BADGE: Record<string, { label: string; className: string }> = {
-  agent: { label: "This Agent", className: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300" },
-  all: { label: "All Agents", className: "bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300" },
-};
+  return rows.find((row) =>
+    normalizeValue(row.cr6c3_agentname) === normalizedAgent &&
+    normalizeValue(row.cr6c3_username) === normalizedUser
+  );
+}
+
+function patchDvState(rows: DvRow[], rowId: string | null | undefined, disabled: boolean, reason: string | null, modifiedBy?: string | null): DvRow[] {
+  if (!rowId) return rows;
+  return rows.map((row) =>
+    row.cr6c3_table11id === rowId
+      ? {
+          ...row,
+          cr6c3_disableflagcopilot: disabled,
+          cr6c3_copilotflagchangereason: reason,
+          cr6c3_userlastmodifiedby: modifiedBy ?? row.cr6c3_userlastmodifiedby,
+          modifiedon: new Date().toISOString(),
+        }
+      : row
+  );
+}
+
+function deriveActiveBlocks(rows: DvRow[]): ActiveBlock[] {
+  return rows
+    .filter((row) => row.cr6c3_disableflagcopilot === true && row.cr6c3_table11id && row.cr6c3_agentname && row.cr6c3_username)
+    .map((row) => ({
+      id: row.cr6c3_table11id as string,
+      dv_row_id: row.cr6c3_table11id as string,
+      user_id: row.cr6c3_username as string,
+      user_display_name: row.cr6c3_username || null,
+      user_principal_name: row.cr6c3_username || null,
+      bot_id: row.cr6c3_agentname as string,
+      bot_name: row.cr6c3_agentname || null,
+      block_scope: "agent" as const,
+      blocked_by: row.cr6c3_userlastmodifiedby || "unknown",
+      blocked_at: row.modifiedon || row.cr6c3_lastseeninsync || new Date().toISOString(),
+      block_reason: row.cr6c3_copilotflagchangereason || null,
+    }))
+    .sort((a, b) => Date.parse(b.blocked_at) - Date.parse(a.blocked_at));
+}
 
 export default function DataverseTableClient() {
-  // Dataverse rows
-  const [rows, setRows] = React.useState<Record<string, any>[]>([]);
+  const [rows, setRows] = React.useState<DvRow[]>([]);
   const [dvLoading, setDvLoading] = React.useState(true);
   const [dvError, setDvError] = React.useState<string | null>(null);
   const [dvErrorType, setDvErrorType] = React.useState<string | null>(null);
-
-  // Access control
-  const [blocks, setBlocks] = React.useState<Block[]>([]);
-  const [agents, setAgents] = React.useState<Agent[]>([]);
-  const [blocksLoading, setBlocksLoading] = React.useState(true);
   const [submitting, setSubmitting] = React.useState(false);
   const [blockError, setBlockError] = React.useState<string | null>(null);
   const [blockErrorType, setBlockErrorType] = React.useState<string | null>(null);
-
-  // Block form state
   const [selectedAgent, setSelectedAgent] = React.useState("");
   const [selectedUser, setSelectedUser] = React.useState("");
   const [blockReason, setBlockReason] = React.useState("");
-
-  // Confirmation modal
   const [modal, setModal] = React.useState<{
     title: string;
     description: string;
@@ -90,59 +132,48 @@ export default function DataverseTableClient() {
     }
   }, []);
 
-  const fetchBlocks = React.useCallback(async () => {
-    try {
-      const res = await fetch("/api/agents/access-blocks");
-      if (!res.ok) { setBlockError("Failed to load access blocks"); return; }
-      const data = await res.json();
-      setBlocks(data.blocks || []);
-      setAgents(data.agents || []);
-      setBlockError(null);
-    } catch {
-      setBlockError("Failed to load access blocks");
-    } finally {
-      setBlocksLoading(false);
-    }
-  }, []);
-
   React.useEffect(() => {
     fetchDv();
-    fetchBlocks();
-  }, [fetchDv, fetchBlocks]);
+  }, [fetchDv]);
 
-  // Derive unique agent names from DV rows
   const dvAgents = React.useMemo(() => {
     const seen = new Set<string>();
     return rows
       .filter((r) => r.cr6c3_agentname)
       .reduce<string[]>((acc, r) => {
         const name = r.cr6c3_agentname as string;
-        if (!seen.has(name)) { seen.add(name); acc.push(name); }
+        if (!seen.has(name)) {
+          seen.add(name);
+          acc.push(name);
+        }
         return acc;
       }, [])
       .sort();
   }, [rows]);
 
-  // Derive users for the selected agent
   const dvUsersForAgent = React.useMemo(() => {
     if (!selectedAgent) return [];
     const seen = new Set<string>();
     return rows
-      .filter((r) => r.cr6c3_agentname === selectedAgent && r.cr6c3_username)
+      .filter((r) => normalizeValue(r.cr6c3_agentname) === normalizeValue(selectedAgent) && r.cr6c3_username)
       .reduce<string[]>((acc, r) => {
         const name = r.cr6c3_username as string;
-        if (!seen.has(name)) { seen.add(name); acc.push(name); }
+        if (!seen.has(name)) {
+          seen.add(name);
+          acc.push(name);
+        }
         return acc;
       }, [])
       .sort();
   }, [rows, selectedAgent]);
 
+  const activeBlocks = React.useMemo(() => deriveActiveBlocks(rows), [rows]);
+
   function handleBlock() {
     if (!selectedUser || !selectedAgent) return;
-    const agent = agents.find((a) => a.bot_id === selectedAgent);
     setModal({
       title: "Confirm Block",
-      description: `Block "${selectedUser}" from "${agent?.bot_name || selectedAgent}"?`,
+      description: `Block "${selectedUser}" from "${selectedAgent}"?`,
       reason: blockReason,
       onConfirm: (reason) => executeBlock(reason),
     });
@@ -151,7 +182,8 @@ export default function DataverseTableClient() {
   async function executeBlock(reason: string) {
     setSubmitting(true);
     setBlockError(null);
-    const agent = agents.find((a) => a.bot_id === selectedAgent);
+    const trimmedReason = reason.trim() || null;
+    const dvRow = findDvRow(rows, selectedAgent, selectedUser);
     try {
       const res = await fetch("/api/agents/access-blocks", {
         method: "POST",
@@ -159,11 +191,13 @@ export default function DataverseTableClient() {
         body: JSON.stringify({
           action: "block",
           user_id: selectedUser,
-          bot_id: selectedAgent,
-          bot_name: agent?.bot_name || selectedAgent,
           user_display_name: selectedUser,
+          user_principal_name: selectedUser,
+          bot_id: selectedAgent,
+          bot_name: selectedAgent,
           block_scope: "agent",
-          block_reason: reason.trim() || null,
+          block_reason: trimmedReason,
+          dv_row_id: dvRow?.cr6c3_table11id ?? null,
         }),
       });
       const data = await res.json();
@@ -171,25 +205,13 @@ export default function DataverseTableClient() {
         setBlockError(data.error || "Block failed");
         setBlockErrorType(data.dv_error_type || "unknown");
       } else {
-        const dvRow = rows.find(
-          (r) => r.cr6c3_agentname === selectedAgent && r.cr6c3_username === selectedUser,
-        );
-        if (dvRow) {
-          await fetch("/api/agents/dataverse", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              row_id: dvRow.cr6c3_table11id,
-              data: { cr6c3_disableflagcopilot: true, cr6c3_copilotflagchangereason: reason.trim() || null },
-            }),
-          });
-        }
         setBlockError(null);
         setBlockErrorType(null);
+        setRows((prev) => patchDvState(prev, dvRow?.cr6c3_table11id, true, trimmedReason));
         setSelectedUser("");
         setSelectedAgent("");
         setBlockReason("");
-        await Promise.all([fetchDv(), fetchBlocks()]);
+        await fetchDv();
       }
     } catch {
       setBlockError("Request failed");
@@ -198,19 +220,19 @@ export default function DataverseTableClient() {
     }
   }
 
-  function handleUnblock(block: Block) {
-    const scopeLabel = block.block_scope === "all" ? "all agents" : (block.bot_name || block.bot_id);
+  function handleUnblock(block: ActiveBlock) {
     setModal({
       title: "Confirm Unblock",
-      description: `Unblock "${block.user_display_name || block.user_id}" from ${scopeLabel}?`,
+      description: `Unblock "${block.user_display_name || block.user_id}" from ${block.bot_name || block.bot_id}?`,
       reason: "",
       onConfirm: (reason) => executeUnblock(block, reason),
     });
   }
 
-  async function executeUnblock(block: Block, reason: string) {
+  async function executeUnblock(block: ActiveBlock, reason: string) {
     setSubmitting(true);
     setBlockError(null);
+    const trimmedReason = reason.trim() || null;
     try {
       const res = await fetch("/api/agents/access-blocks", {
         method: "POST",
@@ -218,8 +240,13 @@ export default function DataverseTableClient() {
         body: JSON.stringify({
           action: "unblock",
           user_id: block.user_id,
+          user_display_name: block.user_display_name,
+          user_principal_name: block.user_principal_name,
           bot_id: block.bot_id,
-          unblock_reason: reason.trim() || null,
+          bot_name: block.bot_name,
+          block_scope: block.block_scope,
+          unblock_reason: trimmedReason,
+          dv_row_id: block.dv_row_id,
         }),
       });
       const data = await res.json();
@@ -227,22 +254,8 @@ export default function DataverseTableClient() {
         setBlockError(data.error || "Unblock failed");
         setBlockErrorType(data.dv_error_type || "unknown");
       } else {
-        const dvRow = rows.find(
-          (r) =>
-            r.cr6c3_agentname === (block.bot_name || block.bot_id) &&
-            r.cr6c3_username === (block.user_principal_name || block.user_display_name || block.user_id),
-        );
-        if (dvRow) {
-          await fetch("/api/agents/dataverse", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              row_id: dvRow.cr6c3_table11id,
-              data: { cr6c3_disableflagcopilot: false, cr6c3_copilotflagchangereason: reason.trim() || null },
-            }),
-          });
-        }
-        await Promise.all([fetchDv(), fetchBlocks()]);
+        setRows((prev) => patchDvState(prev, block.dv_row_id, false, trimmedReason));
+        await fetchDv();
       }
     } catch {
       setBlockError("Request failed");
@@ -271,7 +284,6 @@ export default function DataverseTableClient() {
         </Link>
       </div>
 
-      {/* ── Agent Access Records ── */}
       <Card>
         <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
@@ -308,7 +320,7 @@ export default function DataverseTableClient() {
                 </TableHeader>
                 <TableBody>
                   {rows.map((row, i) => (
-                    <TableRow key={i}>
+                    <TableRow key={row.cr6c3_table11id || i}>
                       <TableCell className="text-muted-foreground">{i + 1}</TableCell>
                       {COLUMNS.map((col) => {
                         const val = row[col.key];
@@ -338,11 +350,10 @@ export default function DataverseTableClient() {
         </CardContent>
       </Card>
 
-      {/* ── Block form ── */}
       <Card>
         <CardHeader>
           <CardTitle>Block User from Agent</CardTitle>
-          <CardDescription>Block an individual user from accessing a specific agent</CardDescription>
+          <CardDescription>Update the Dataverse access record for a specific agent-user assignment</CardDescription>
         </CardHeader>
         <CardContent>
           {blockError && (
@@ -412,75 +423,70 @@ export default function DataverseTableClient() {
         </CardContent>
       </Card>
 
-      {/* ── Active blocks ── */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Active Blocks</CardTitle>
-          <CardDescription>Users currently blocked from one or more agents</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {blocksLoading ? (
-            <p className="text-sm text-muted-foreground">Loading...</p>
-          ) : blocks.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No active blocks.</p>
-          ) : (
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>User</TableHead>
-                    <TableHead>Agent</TableHead>
-                    <TableHead>Scope</TableHead>
-                    <TableHead>Reason</TableHead>
-                    <TableHead>Blocked By</TableHead>
-                    <TableHead>Blocked At</TableHead>
-                    <TableHead className="w-24">Action</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {blocks.map((b) => {
-                    const scopeBadge = SCOPE_BADGE[b.block_scope] || SCOPE_BADGE.agent;
-                    return (
-                      <TableRow key={b.id}>
+      {!dvLoading && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Active Blocks</CardTitle>
+            <CardDescription>Derived from Dataverse rows where the disable flag is true</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {activeBlocks.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No active blocks.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>User</TableHead>
+                      <TableHead>Agent</TableHead>
+                      <TableHead>Scope</TableHead>
+                      <TableHead>Reason</TableHead>
+                      <TableHead>Blocked By</TableHead>
+                      <TableHead>Blocked At</TableHead>
+                      <TableHead className="w-24">Action</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {activeBlocks.map((block) => (
+                      <TableRow key={block.id}>
                         <TableCell>
                           <span className="font-medium">
-                            {b.user_principal_name || b.user_display_name || b.user_id}
+                            {block.user_principal_name || block.user_display_name || block.user_id}
                           </span>
                         </TableCell>
-                        <TableCell>{b.bot_name || b.bot_id}</TableCell>
+                        <TableCell>{block.bot_name || block.bot_id}</TableCell>
                         <TableCell>
-                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${scopeBadge.className}`}>
-                            {scopeBadge.label}
+                          <span className="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800 dark:bg-blue-900/40 dark:text-blue-300">
+                            This Agent
                           </span>
                         </TableCell>
-                        <TableCell className="max-w-[160px] truncate text-muted-foreground" title={b.block_reason || ""}>
-                          {b.block_reason || <span className="text-muted-foreground/50">—</span>}
+                        <TableCell className="max-w-[160px] truncate text-muted-foreground" title={block.block_reason || ""}>
+                          {block.block_reason || <span className="text-muted-foreground/50">—</span>}
                         </TableCell>
-                        <TableCell className="text-muted-foreground">{b.blocked_by}</TableCell>
+                        <TableCell className="text-muted-foreground">{block.blocked_by}</TableCell>
                         <TableCell className="text-muted-foreground">
-                          {new Date(b.blocked_at).toLocaleDateString()}
+                          <LocalDateTime value={block.blocked_at} fallback="—" />
                         </TableCell>
                         <TableCell>
                           <Button
                             variant="outline"
                             size="sm"
                             disabled={submitting}
-                            onClick={() => handleUnblock(b)}
+                            onClick={() => handleUnblock(block)}
                           >
                             Unblock
                           </Button>
                         </TableCell>
                       </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
-      {/* ── Confirmation modal ── */}
       {modal && (
         <ConfirmModal
           title={modal.title}
