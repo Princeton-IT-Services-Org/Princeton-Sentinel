@@ -180,7 +180,7 @@ test("shouldRedirectImmediatelyForDisabledFeature redirects when a gated route s
   assert.equal(
     shouldRedirectImmediatelyForDisabledFeature(
       { agents_dashboard: false, test_mode: false },
-      "/dashboard/agents/dataverse"
+      "/dashboard/agents/agent-access-control"
     ),
     true
   );

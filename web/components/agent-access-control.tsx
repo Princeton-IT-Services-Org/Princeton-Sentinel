@@ -5,7 +5,7 @@ import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/ca
 
 export default function AgentAccessControl() {
   return (
-    <Link href="/dashboard/agents/dataverse">
+    <Link href="/dashboard/agents/agent-access-control">
       <Card className="cursor-pointer transition-colors hover:bg-muted/50">
         <CardHeader>
           <CardTitle>Agent Access Control</CardTitle>
