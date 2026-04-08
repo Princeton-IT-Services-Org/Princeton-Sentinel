@@ -1,10 +1,5 @@
-import { redirectIfFeatureDisabled } from "@/app/lib/feature-flags";
-import { withPageRequestTiming } from "@/app/lib/request-timing";
-import DataverseTableClient from "./dataverse-table-client";
+import { redirect } from "next/navigation";
 
-async function DataverseTablePage() {
-  await redirectIfFeatureDisabled("agents_dashboard");
-  return <DataverseTableClient />;
+export default function LegacyDataversePage() {
+  redirect("/dashboard/agents/agent-access-control");
 }
-
-export default withPageRequestTiming("/dashboard/agents/dataverse", DataverseTablePage);

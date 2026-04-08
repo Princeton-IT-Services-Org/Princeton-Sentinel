@@ -28,6 +28,8 @@ type DvRow = {
   cr6c3_userlastmodifiedby?: string | null;
   cr6c3_lastseeninsync?: string | null;
   modifiedon?: string | null;
+  _modifiedby_value?: string | null;
+  "_modifiedby_value@OData.Community.Display.V1.FormattedValue"?: string | null;
   [key: string]: any;
 };
 
@@ -41,6 +43,7 @@ type ActiveBlock = {
   bot_name: string | null;
   block_scope: "agent";
   blocked_by: string;
+  system_modified_by: string;
   blocked_at: string;
   block_reason: string | null;
 };
@@ -74,6 +77,14 @@ function patchDvState(rows: DvRow[], rowId: string | null | undefined, disabled:
   );
 }
 
+function getSystemModifiedBy(row: DvRow): string {
+  return (
+    row["_modifiedby_value@OData.Community.Display.V1.FormattedValue"] ||
+    row._modifiedby_value ||
+    "—"
+  );
+}
+
 function deriveActiveBlocks(rows: DvRow[]): ActiveBlock[] {
   return rows
     .filter((row) => row.cr6c3_disableflagcopilot === true && row.cr6c3_table11id && row.cr6c3_agentname && row.cr6c3_username)
@@ -87,6 +98,7 @@ function deriveActiveBlocks(rows: DvRow[]): ActiveBlock[] {
       bot_name: row.cr6c3_agentname || null,
       block_scope: "agent" as const,
       blocked_by: row.cr6c3_userlastmodifiedby || "unknown",
+      system_modified_by: getSystemModifiedBy(row),
       blocked_at: row.modifiedon || row.cr6c3_lastseeninsync || new Date().toISOString(),
       block_reason: row.cr6c3_copilotflagchangereason || null,
     }))
@@ -113,7 +125,7 @@ export default function DataverseTableClient() {
 
   const fetchDv = React.useCallback(async () => {
     try {
-      const res = await fetch("/api/agents/dataverse");
+      const res = await fetch("/api/agents/agent-access-control");
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         setDvError(data.error || `Failed to load (${res.status})`);
@@ -272,7 +284,7 @@ export default function DataverseTableClient() {
     <main className="mx-auto max-w-[1400px] space-y-4 px-4 py-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Agent Access Control</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Agent-User Information</h1>
           <p className="text-sm text-muted-foreground">
             Live data from Dataverse - agent access assignments
           </p>
@@ -439,9 +451,9 @@ export default function DataverseTableClient() {
                     <TableRow>
                       <TableHead>User</TableHead>
                       <TableHead>Agent</TableHead>
-                      <TableHead>Scope</TableHead>
                       <TableHead>Reason</TableHead>
                       <TableHead>Blocked By</TableHead>
+                      <TableHead>System Modified By</TableHead>
                       <TableHead>Blocked At</TableHead>
                       <TableHead className="w-24">Action</TableHead>
                     </TableRow>
@@ -455,15 +467,11 @@ export default function DataverseTableClient() {
                           </span>
                         </TableCell>
                         <TableCell>{block.bot_name || block.bot_id}</TableCell>
-                        <TableCell>
-                          <span className="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800 dark:bg-blue-900/40 dark:text-blue-300">
-                            This Agent
-                          </span>
-                        </TableCell>
                         <TableCell className="max-w-[160px] truncate text-muted-foreground" title={block.block_reason || ""}>
                           {block.block_reason || <span className="text-muted-foreground/50">—</span>}
                         </TableCell>
                         <TableCell className="text-muted-foreground">{block.blocked_by}</TableCell>
+                        <TableCell className="text-muted-foreground">{block.system_modified_by}</TableCell>
                         <TableCell className="text-muted-foreground">
                           <LocalDateTime value={block.blocked_at} fallback="—" />
                         </TableCell>

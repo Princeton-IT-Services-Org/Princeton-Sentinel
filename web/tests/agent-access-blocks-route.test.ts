@@ -43,7 +43,7 @@ function getNonEmptyString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-test("all-scope unblock keeps block active when worker cleanup fails", async () => {
+test("block updates dataverse directly and preserves audit logging", async () => {
   const operations: string[] = [];
   const auditCalls: any[] = [];
 
@@ -55,81 +55,6 @@ test("all-scope unblock keeps block active when worker cleanup fails", async () 
     },
     "@/app/lib/db": {
       query: async (sql: string) => {
-        if (sql.includes("SELECT id, block_scope")) {
-          operations.push("select");
-          return [{
-            id: 42,
-            block_scope: "all",
-            bot_name: "Agent",
-            user_display_name: "User",
-            user_principal_name: "user@example.com",
-          }];
-        }
-        operations.push("unexpected-query");
-        throw new Error(`unexpected query: ${sql}`);
-      },
-    },
-    "@/app/lib/audit": {
-      writeAuditEvent: async (payload: any) => {
-        operations.push("audit");
-        auditCalls.push(payload);
-      },
-    },
-    "@/app/lib/worker-api": {
-      callWorker: async () => {
-        operations.push("worker");
-        return { res: { ok: false }, text: "graph_cleanup_failed" };
-      },
-      isWorkerTimeoutError: () => false,
-      parseWorkerErrorText: (text: string) => text,
-    },
-    "@/app/lib/request-body": {
-      parseRequestBody: async () => ({
-        invalidJson: false,
-        body: { action: "unblock", user_id: "user-1", bot_id: "bot-1" },
-      }),
-      getNonEmptyString,
-    },
-    "@/app/lib/request-timing": {
-      withApiRequestTiming: (_path: string, handler: Function) => handler,
-    },
-  });
-
-  const res = await POST(new Request("http://localhost/api/agents/access-blocks", { method: "POST" }));
-  const payload = await res.json();
-
-  assert.equal(res.status, 502);
-  assert.equal(payload.error, "graph_cleanup_failed");
-  assert.deepEqual(operations, ["select", "worker", "audit"]);
-  assert.equal(auditCalls[0]?.action, "copilot_user_unblock_failed");
-});
-
-test("all-scope unblock updates the row only after worker cleanup succeeds", async () => {
-  const operations: string[] = [];
-  const auditCalls: any[] = [];
-
-  const { POST } = loadRoute({
-    "@/app/lib/auth": {
-      requireAdmin: async () => ({
-        session: { user: { oid: "oid-1", upn: "admin@example.com", name: "Admin" } },
-      }),
-    },
-    "@/app/lib/db": {
-      query: async (sql: string) => {
-        if (sql.includes("SELECT id, block_scope")) {
-          operations.push("select");
-          return [{
-            id: 42,
-            block_scope: "all",
-            bot_name: "Agent",
-            user_display_name: "User",
-            user_principal_name: "user@example.com",
-          }];
-        }
-        if (sql.includes("UPDATE copilot_access_blocks")) {
-          operations.push("update");
-          return [{ id: 42 }];
-        }
         if (sql.includes("INSERT INTO agent_access_revoke_log")) {
           operations.push("revoke-log");
           return [];
@@ -144,17 +69,142 @@ test("all-scope unblock updates the row only after worker cleanup succeeds", asy
       },
     },
     "@/app/lib/worker-api": {
-      callWorker: async () => {
-        operations.push("worker");
-        return { res: { ok: true }, text: "" };
+      callWorker: async (path: string) => {
+        if (path.startsWith("/dataverse/table")) {
+          operations.push("dv-fetch");
+          return {
+            res: { ok: true },
+            text: JSON.stringify({
+              rows: [
+                {
+                  cr6c3_table11id: "row-1",
+                  cr6c3_agentname: "Agent A",
+                  cr6c3_username: "user@example.com",
+                  cr6c3_disableflagcopilot: false,
+                },
+              ],
+            }),
+          };
+        }
+        if (path === "/dataverse/patch") {
+          operations.push("dv-patch");
+          return { res: { ok: true }, text: "" };
+        }
+        if (path === "/conditional-access/block") {
+          operations.push("worker");
+          return { res: { ok: true }, text: "" };
+        }
+        throw new Error(`unexpected worker path: ${path}`);
       },
+      callWorkerJson: async () => ({
+        rows: [
+          {
+            cr6c3_table11id: "row-1",
+            cr6c3_agentname: "Agent A",
+            cr6c3_username: "user@example.com",
+            cr6c3_disableflagcopilot: false,
+          },
+        ],
+      }),
       isWorkerTimeoutError: () => false,
       parseWorkerErrorText: (text: string) => text,
     },
     "@/app/lib/request-body": {
       parseRequestBody: async () => ({
         invalidJson: false,
-        body: { action: "unblock", user_id: "user-1", bot_id: "bot-1" },
+        body: {
+          action: "block",
+          user_id: "user@example.com",
+          user_display_name: "user@example.com",
+          user_principal_name: "user@example.com",
+          bot_id: "Agent A",
+          bot_name: "Agent A",
+          dv_row_id: "row-1",
+          block_scope: "agent",
+          block_reason: "Policy",
+        },
+      }),
+      getNonEmptyString,
+    },
+    "@/app/lib/request-timing": {
+      withApiRequestTiming: (_path: string, handler: Function) => handler,
+    },
+  });
+
+  const res = await POST(new Request("http://localhost/api/agents/access-blocks", { method: "POST" }));
+  const payload = await res.json();
+
+  assert.equal(res.status, 200);
+  assert.equal(payload.status, "blocked");
+  assert.deepEqual(operations, ["dv-patch", "revoke-log", "worker", "audit"]);
+  assert.equal(auditCalls[0]?.action, "copilot_user_blocked");
+});
+
+test("unblock requires an active disabled dataverse row and does not touch local blocks table", async () => {
+  const operations: string[] = [];
+
+  const { POST } = loadRoute({
+    "@/app/lib/auth": {
+      requireAdmin: async () => ({
+        session: { user: { oid: "oid-1", upn: "admin@example.com", name: "Admin" } },
+      }),
+    },
+    "@/app/lib/db": {
+      query: async (sql: string) => {
+        if (sql.includes("copilot_access_blocks")) {
+          operations.push("local-block-query");
+        }
+        if (sql.includes("INSERT INTO agent_access_revoke_log")) {
+          operations.push("revoke-log");
+          return [];
+        }
+        throw new Error(`unexpected query: ${sql}`);
+      },
+    },
+    "@/app/lib/audit": {
+      writeAuditEvent: async () => {
+        operations.push("audit");
+      },
+    },
+    "@/app/lib/worker-api": {
+      callWorker: async (path: string) => {
+        if (path === "/dataverse/patch") {
+          operations.push("dv-patch");
+          return { res: { ok: true }, text: "" };
+        }
+        if (path === "/conditional-access/unblock") {
+          operations.push("worker");
+          return { res: { ok: true }, text: "" };
+        }
+        throw new Error(`unexpected worker path: ${path}`);
+      },
+      callWorkerJson: async () => ({
+        rows: [
+          {
+            cr6c3_table11id: "row-1",
+            cr6c3_agentname: "Agent A",
+            cr6c3_username: "user@example.com",
+            cr6c3_disableflagcopilot: true,
+          },
+        ],
+      }),
+      isWorkerTimeoutError: () => false,
+      parseWorkerErrorText: (text: string) => text,
+    },
+    "@/app/lib/request-body": {
+      parseRequestBody: async () => ({
+        invalidJson: false,
+        body: {
+          action: "unblock",
+          user_id: "user@example.com",
+          user_display_name: "user@example.com",
+          user_principal_name: "user@example.com",
+          bot_id: "Agent A",
+          bot_name: "Agent A",
+          dv_row_id: "row-1",
+          block_scope: "agent",
+          unblock_reason: "Resolved",
+        },
       }),
       getNonEmptyString,
     },
@@ -168,6 +218,5 @@ test("all-scope unblock updates the row only after worker cleanup succeeds", asy
 
   assert.equal(res.status, 200);
   assert.equal(payload.status, "unblocked");
-  assert.deepEqual(operations, ["select", "worker", "update", "revoke-log", "audit"]);
-  assert.equal(auditCalls[0]?.action, "copilot_user_unblocked");
+  assert.deepEqual(operations, ["worker", "dv-patch", "revoke-log", "audit"]);
 });
