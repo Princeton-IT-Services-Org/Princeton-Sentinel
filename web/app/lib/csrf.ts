@@ -5,7 +5,6 @@ import { shouldUseSecureAuthCookies } from "./auth-cookies";
 import {
   CSRF_FORM_FIELD_NAME,
   CSRF_HEADER_NAME,
-  CSRF_REQUEST_TOKEN_HEADER,
   LOCAL_CSRF_COOKIE_NAME,
   parseCookieValue,
   SECURE_CSRF_COOKIE_NAME,
