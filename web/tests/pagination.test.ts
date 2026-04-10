@@ -22,8 +22,8 @@ test("compact pagination only keeps the current page and immediate neighbors", (
 
 test("buildHref drops empty values and preserves provided params", () => {
   assert.equal(
-    buildHref("/dashboard/users", { q: "alice", page: 4, pageSize: 25, sort: "email", dir: "asc", empty: "" }),
-    "/dashboard/users?q=alice&page=4&pageSize=25&sort=email&dir=asc"
+    buildHref("/dashboard/users", { q: "alice", status: "inactive", page: 4, pageSize: 25, sort: "email", dir: "asc", empty: "" }),
+    "/dashboard/users?q=alice&status=inactive&page=4&pageSize=25&sort=email&dir=asc"
   );
 });
 
@@ -33,12 +33,12 @@ test("pagination model exposes summary text and bounded desktop links", () => {
     page: 10,
     pageSize: 10,
     totalItems: 200,
-    extraParams: { q: "alice", sort: "email", dir: "asc" },
+    extraParams: { q: "alice", status: "inactive", sort: "email", dir: "asc" },
   });
 
   assert.equal(model.summary, "Page 10 of 20 • 200 items");
-  assert.equal(model.prevHref, "/dashboard/users?q=alice&sort=email&dir=asc&page=9&pageSize=10");
-  assert.equal(model.nextHref, "/dashboard/users?q=alice&sort=email&dir=asc&page=11&pageSize=10");
+  assert.equal(model.prevHref, "/dashboard/users?q=alice&status=inactive&sort=email&dir=asc&page=9&pageSize=10");
+  assert.equal(model.nextHref, "/dashboard/users?q=alice&status=inactive&sort=email&dir=asc&page=11&pageSize=10");
   assert.equal(model.showCompactJump, true);
   assert.equal(model.jumpOptions.length, 20);
   assert.equal(model.jumpOptions[0], 1);

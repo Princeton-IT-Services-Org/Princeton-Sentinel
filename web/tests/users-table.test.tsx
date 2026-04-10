@@ -64,3 +64,14 @@ test("users table renders directory columns and row links without days params", 
   assert.match(markup, /href="\/dashboard\/users\/user-123"/);
   assert.doesNotMatch(markup, /days=/);
 });
+
+test("users table renders a custom empty message", () => {
+  const markup = renderToStaticMarkup(
+    React.createElement(UsersTable, {
+      items: [],
+      emptyMessage: "No inactive users matched your search.",
+    })
+  );
+
+  assert.match(markup, /No inactive users matched your search\./);
+});

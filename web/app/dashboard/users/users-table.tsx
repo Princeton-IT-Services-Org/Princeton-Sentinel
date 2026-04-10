@@ -23,7 +23,7 @@ function parseIsoToTs(value: string | null | undefined): number | null {
   return Number.isFinite(ts) ? ts : null;
 }
 
-export function UsersTable({ items }: { items: UserRow[] }) {
+export function UsersTable({ items, emptyMessage }: { items: UserRow[]; emptyMessage?: React.ReactNode }) {
   const columns = React.useMemo(
     () => [
       {
@@ -74,7 +74,7 @@ export function UsersTable({ items }: { items: UserRow[] }) {
       items={items}
       columns={columns}
       getRowKey={(u) => u.user_id}
-      emptyMessage="No users matched your search."
+      emptyMessage={emptyMessage ?? "No users matched your search."}
     />
   );
 }
