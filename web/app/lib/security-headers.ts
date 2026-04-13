@@ -9,28 +9,23 @@ export const NONCE_HEADER = "x-nonce";
 
 type ContentSecurityPolicyOptions = {
   nonce?: string;
-  isDevelopment?: boolean;
 };
 
-function buildScriptSrcDirective(nonce: string | undefined, isDevelopment: boolean) {
+function buildScriptSrcDirective(nonce: string | undefined) {
   const directives = ["'self'"];
   if (nonce) {
     directives.push(`'nonce-${nonce}'`, "'strict-dynamic'");
-  }
-  if (isDevelopment) {
-    directives.push("'unsafe-eval'");
   }
   return `script-src ${directives.join(" ")}`;
 }
 
 export function buildContentSecurityPolicy({
   nonce,
-  isDevelopment = process.env.NODE_ENV === "development",
 }: ContentSecurityPolicyOptions = {}) {
   return [
     "default-src 'self'",
-    buildScriptSrcDirective(nonce, isDevelopment),
-    "style-src 'self' 'unsafe-inline'",
+    buildScriptSrcDirective(nonce),
+    "style-src 'self'",
     "img-src 'self' data: blob:",
     "font-src 'self'",
     "object-src 'none'",
