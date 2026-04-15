@@ -1,10 +1,12 @@
 import { redirectIfFeatureDisabled } from "@/app/lib/feature-flags";
+import { requireAdmin } from "@/app/lib/auth";
 import { getCsrfRenderToken } from "@/app/lib/csrf-server";
 import { getCurrentLicenseSummary } from "@/app/lib/license";
 import { withPageRequestTiming } from "@/app/lib/request-timing";
 import AgentAccessControlClient from "./agent-access-control-client";
 
 async function AgentAccessControlPage() {
+  await requireAdmin();
   await redirectIfFeatureDisabled("agents_dashboard");
   const [csrfToken, licenseSummary] = await Promise.all([
     getCsrfRenderToken(),
