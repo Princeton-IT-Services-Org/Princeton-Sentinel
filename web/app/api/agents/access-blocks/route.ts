@@ -4,70 +4,75 @@ import { validateCsrfRequest } from "@/app/lib/csrf";
 import { query } from "@/app/lib/db";
 import { writeAuditEvent } from "@/app/lib/audit";
 import {
+  fetchDataverseTable,
+  getDataverseErrorResponse,
+  patchDataverseRow,
+} from "@/app/lib/dataverse";
+import {
   callWorker,
-  callWorkerJson,
   isWorkerTimeoutError,
   parseWorkerErrorText,
 } from "@/app/lib/worker-api";
 import { getNonEmptyString, parseRequestBody } from "@/app/lib/request-body";
 import { withApiRequestTiming } from "@/app/lib/request-timing";
+import { getDvColumns, getDvEntitySet, type DvColumns } from "@/app/lib/dv-columns";
+import { LicenseFeatureError, requireLicenseFeature } from "@/app/lib/license";
 
 export const dynamic = "force-dynamic";
 
-const DV_ENTITY_SET = "cr6c3_table11s";
-const DV_SELECT_COLS = [
-  "cr6c3_table11id",
-  "cr6c3_agentname",
-  "cr6c3_username",
-  "cr6c3_disableflagcopilot",
-  "cr6c3_copilotflagchangereason",
-  "cr6c3_userlastmodifiedby",
-  "cr6c3_lastseeninsync",
-  "modifiedon",
-].join(",");
+type DvRow = Record<string, any>;
 
-type DvRow = {
-  cr6c3_table11id?: string;
-  cr6c3_agentname?: string | null;
-  cr6c3_username?: string | null;
-  cr6c3_disableflagcopilot?: boolean | null;
-  cr6c3_copilotflagchangereason?: string | null;
-  cr6c3_userlastmodifiedby?: string | null;
-  cr6c3_lastseeninsync?: string | null;
-  modifiedon?: string | null;
-};
+function getDvConfig() {
+  const prefix = process.env.DATAVERSE_COLUMN_PREFIX || "";
+  const cols = getDvColumns(prefix);
+  const entitySet = getDvEntitySet(process.env.DATAVERSE_TABLE_URL || "");
+  const selectCols = [
+    cols.id, cols.agentname, cols.username, cols.disableflag,
+    cols.reason, cols.lastmodifiedby, cols.lastseeninsync, "modifiedon",
+  ].join(",");
+  return { entitySet, cols, selectCols };
+}
 
 function normalizeValue(value: string | null | undefined): string {
   return (value || "").trim().toLowerCase();
 }
 
-function mapDvRowToBlock(row: DvRow) {
+function mapDvRowToBlock(row: DvRow, cols: DvColumns) {
   return {
-    id: row.cr6c3_table11id || `${row.cr6c3_agentname || ""}:${row.cr6c3_username || ""}`,
-    dv_row_id: row.cr6c3_table11id || null,
-    user_id: row.cr6c3_username || "",
-    user_display_name: row.cr6c3_username || null,
-    user_principal_name: row.cr6c3_username || null,
-    bot_id: row.cr6c3_agentname || "",
-    bot_name: row.cr6c3_agentname || null,
+    id: row[cols.id] || `${row[cols.agentname] || ""}:${row[cols.username] || ""}`,
+    dv_row_id: row[cols.id] || null,
+    user_id: row[cols.username] || "",
+    user_display_name: row[cols.username] || null,
+    user_principal_name: row[cols.username] || null,
+    bot_id: row[cols.agentname] || "",
+    bot_name: row[cols.agentname] || null,
     block_scope: "agent" as const,
-    blocked_by: row.cr6c3_userlastmodifiedby || "unknown",
-    blocked_at: row.modifiedon || row.cr6c3_lastseeninsync || new Date().toISOString(),
-    block_reason: row.cr6c3_copilotflagchangereason || null,
+    blocked_by: row[cols.lastmodifiedby] || "unknown",
+    blocked_at: row.modifiedon || row[cols.lastseeninsync] || new Date().toISOString(),
+    block_reason: row[cols.reason] || null,
   };
 }
 
-async function fetchDataverseRows(): Promise<DvRow[]> {
-  const qs = new URLSearchParams({ entity_set: DV_ENTITY_SET, select: DV_SELECT_COLS });
-  const data = await callWorkerJson(`/dataverse/table?${qs.toString()}`);
-  return Array.isArray(data?.rows) ? data.rows : [];
+async function fetchDataverseRows(entitySet: string, selectCols: string): Promise<DvRow[]> {
+  return fetchDataverseTable(entitySet, { select: selectCols });
 }
 
 const getHandler = async function GET() {
   await requireAdmin();
+  const { entitySet, cols, selectCols } = getDvConfig();
 
-  const [rows, users, agents, registrations] = await Promise.all([
-    fetchDataverseRows(),
+  let rows: DvRow[];
+  try {
+    rows = await fetchDataverseRows(entitySet, selectCols);
+  } catch (err: unknown) {
+    const response = getDataverseErrorResponse(err, "dataverse_fetch_failed");
+    return NextResponse.json(
+      { error: response.error, dv_error_type: response.dv_error_type },
+      { status: response.status }
+    );
+  }
+
+  const [users, agents, registrations] = await Promise.all([
     query(
       `SELECT DISTINCT user_id, MAX(bot_name) AS last_agent
        FROM copilot_sessions
@@ -88,10 +93,9 @@ const getHandler = async function GET() {
        ORDER BY bot_name`
     ),
   ]);
-
   const blocks = rows
-    .filter((row) => row.cr6c3_disableflagcopilot === true)
-    .map(mapDvRowToBlock)
+    .filter((row) => row[cols.disableflag] === true)
+    .map((row) => mapDvRowToBlock(row, cols))
     .sort((a, b) => Date.parse(b.blocked_at) - Date.parse(a.blocked_at));
 
   return NextResponse.json({ blocks, users, agents, registrations });
@@ -99,6 +103,21 @@ const getHandler = async function GET() {
 
 const postHandler = async function POST(req: Request) {
   const { session } = await requireAdmin();
+  try {
+    await requireLicenseFeature("job_control");
+  } catch (error) {
+    if (error instanceof LicenseFeatureError) {
+      return NextResponse.json(
+        {
+          error: error.message,
+          feature: error.featureKey,
+          license: error.summary,
+        },
+        { status: 403 }
+      );
+    }
+    throw error;
+  }
   const parsed = await parseRequestBody(req);
 
   if (parsed.invalidJson) {
@@ -220,30 +239,48 @@ const postHandler = async function POST(req: Request) {
     return NextResponse.json({ error: "block_scope must be 'agent' or 'all'" }, { status: 400 });
   }
 
-  const rows = await fetchDataverseRows();
-  const dvRow = rows.find((row) => row.cr6c3_table11id === dvRowId);
+  const { entitySet: dvEntitySet, cols, selectCols } = getDvConfig();
+  let rows: DvRow[];
+  try {
+    rows = await fetchDataverseRows(dvEntitySet, selectCols);
+  } catch (err: unknown) {
+    const response = getDataverseErrorResponse(err, "dataverse_fetch_failed");
+    return NextResponse.json(
+      { error: response.error, dv_error_type: response.dv_error_type },
+      { status: response.status }
+    );
+  }
+  const dvRow = rows.find((row) => row[cols.id] === dvRowId);
   if (!dvRow) {
     return NextResponse.json({ error: "dv_row_not_found" }, { status: 404 });
   }
 
   const matchesActionTarget =
-    normalizeValue(dvRow.cr6c3_agentname) === normalizeValue(botName || botId) &&
-    normalizeValue(dvRow.cr6c3_username) === normalizeValue(userPrincipalName || userDisplayName || userId);
+    normalizeValue(dvRow[cols.agentname]) === normalizeValue(botName || botId) &&
+    normalizeValue(dvRow[cols.username]) === normalizeValue(userPrincipalName || userDisplayName || userId);
 
   if (!matchesActionTarget) {
     return NextResponse.json({ error: "dv_row_mismatch" }, { status: 409 });
   }
 
   if (action === "block") {
-    if (dvRow.cr6c3_disableflagcopilot === true) {
+    if (dvRow[cols.disableflag] === true) {
       return NextResponse.json({ error: "user_already_blocked" }, { status: 409 });
     }
 
-    await updateDvRow(dvRowId, {
-      cr6c3_disableflagcopilot: true,
-      cr6c3_copilotflagchangereason: blockReason,
-      cr6c3_userlastmodifiedby: adminUpn,
-    });
+    try {
+      await updateDvRow(dvRowId, dvEntitySet, {
+        [cols.disableflag]: true,
+        [cols.reason]: blockReason,
+        [cols.lastmodifiedby]: adminUpn,
+      });
+    } catch (err: unknown) {
+      const response = getDataverseErrorResponse(err, "dataverse_patch_failed");
+      return NextResponse.json(
+        { error: response.error, dv_error_type: response.dv_error_type },
+        { status: response.status }
+      );
+    }
 
     await query(
       `INSERT INTO agent_access_revoke_log
@@ -283,7 +320,7 @@ const postHandler = async function POST(req: Request) {
     });
   }
 
-  if (dvRow.cr6c3_disableflagcopilot !== true) {
+  if (dvRow[cols.disableflag] !== true) {
     return NextResponse.json({ error: "no_active_block_found" }, { status: 404 });
   }
 
@@ -311,11 +348,19 @@ const postHandler = async function POST(req: Request) {
     return NextResponse.json({ error: workerResult.error || "unblock_failed" }, { status: 502 });
   }
 
-  await updateDvRow(dvRowId, {
-    cr6c3_disableflagcopilot: false,
-    cr6c3_copilotflagchangereason: unblockReason,
-    cr6c3_userlastmodifiedby: adminUpn,
-  });
+  try {
+    await updateDvRow(dvRowId, dvEntitySet, {
+      [cols.disableflag]: false,
+      [cols.reason]: unblockReason,
+      [cols.lastmodifiedby]: adminUpn,
+    });
+  } catch (err: unknown) {
+    const response = getDataverseErrorResponse(err, "dataverse_patch_failed");
+    return NextResponse.json(
+      { error: response.error, dv_error_type: response.dv_error_type },
+      { status: response.status }
+    );
+  }
 
   await query(
     `INSERT INTO agent_access_revoke_log
@@ -347,23 +392,8 @@ const postHandler = async function POST(req: Request) {
   });
 };
 
-async function updateDvRow(rowId: string, data: Record<string, unknown>): Promise<void> {
-  try {
-    const { res, text } = await callWorker("/dataverse/patch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ entity_set: DV_ENTITY_SET, row_id: rowId, data }),
-    });
-    if (!res.ok) {
-      throw new Error(parseWorkerErrorText(text));
-    }
-  } catch (err: unknown) {
-    if (isWorkerTimeoutError(err)) {
-      throw new Error("dataverse_patch_timeout");
-    }
-    const message = err instanceof Error ? err.message : "dataverse_patch_failed";
-    throw new Error(message);
-  }
+async function updateDvRow(rowId: string, entitySet: string, data: Record<string, unknown>): Promise<void> {
+  await patchDataverseRow(entitySet, rowId, data);
 }
 
 async function callWorkerCA(

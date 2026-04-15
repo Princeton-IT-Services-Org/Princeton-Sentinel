@@ -184,10 +184,16 @@ class DeployClientEnvironmentTests(unittest.TestCase):
         state["runtime"]["ENTRA_CLIENT_SECRET"] = "secret"
         state["runtime"]["ADMIN_GROUP_ID"] = "admins"
         state["runtime"]["USER_GROUP_ID"] = "users"
+        state["runtime"]["DATAVERSE_BASE_URL"] = "https://org.crm.dynamics.com"
+        state["runtime"]["DATAVERSE_TABLE_URL"] = "https://org.crm.dynamics.com/api/data/v9.2/cr6c3_table11s"
+        state["runtime"]["DATAVERSE_COLUMN_PREFIX"] = "cr6c3"
         row = deployment_lib.csv_row_from_state(state)
         self.assertEqual(row["client_name"], "Acme District")
         self.assertEqual(row["acr_name"], "sharedacr")
         self.assertEqual(row["database_url"], "postgresql://example")
+        self.assertEqual(row["dataverse_base_url"], "https://org.crm.dynamics.com")
+        self.assertEqual(row["dataverse_table_url"], "https://org.crm.dynamics.com/api/data/v9.2/cr6c3_table11s")
+        self.assertEqual(row["dataverse_column_prefix"], "cr6c3")
         self.assertEqual(row["entra_client_secret"], "secret")
         self.assertEqual(row["postgres_location"], "eastus")
 
@@ -289,6 +295,53 @@ class DeployClientEnvironmentTests(unittest.TestCase):
         snapshot = deployment_lib.build_runtime_env_snapshot(state)
         self.assertEqual(snapshot["AZ_ACR_ACCESS_MODE"], "managed-identity")
         self.assertEqual(snapshot["AZ_ACR_PROVISIONING_MODE"], "create-basic")
+
+    def test_runtime_env_for_scripts_includes_split_dataverse_variables(self):
+        source = {
+            "app_version": "3.3.0",
+            "staging_version_source": ".github/workflows/deploy-staging.yml",
+            "git_branch": "main",
+            "git_commit_sha": "abcdef1234567890",
+            "image_tag": "abcdef123456",
+        }
+        state = deployment_lib.build_default_state("Acme District", source, "sub-123", "eastus", "sharedacr")
+        state["runtime"]["DATABASE_URL"] = "postgresql://example"
+        state["runtime"]["DATAVERSE_BASE_URL"] = "https://org.crm.dynamics.com"
+        state["runtime"]["DATAVERSE_TABLE_URL"] = "https://org.crm.dynamics.com/api/data/v9.2/cr6c3_table11s"
+        state["runtime"]["DATAVERSE_COLUMN_PREFIX"] = "cr6c3"
+        state["runtime"]["ENTRA_TENANT_ID"] = "tenant"
+        state["runtime"]["ENTRA_CLIENT_ID"] = "client"
+        state["runtime"]["ENTRA_CLIENT_SECRET"] = "secret"
+        state["runtime"]["ADMIN_GROUP_ID"] = "admins"
+        state["runtime"]["USER_GROUP_ID"] = "users"
+        state["runtime"]["NEXTAUTH_URL"] = "https://web.example.com"
+        state["runtime"]["NEXTAUTH_SECRET"] = "nextauth-secret"
+        state["runtime"]["WORKER_API_URL"] = "https://worker.example.com"
+        state["runtime"]["WORKER_INTERNAL_API_TOKEN"] = "worker-token"
+        state["runtime"]["WORKER_HEARTBEAT_TOKEN"] = "heartbeat-token"
+        state["runtime"]["WORKER_HEARTBEAT_URL"] = "https://web.example.com/api/internal/worker-heartbeat"
+
+        env = deploy_client_environment.runtime_env_for_scripts(state)
+
+        self.assertEqual(env["STG_DATAVERSE_BASE_URL"], "https://org.crm.dynamics.com")
+        self.assertEqual(env["STG_DATAVERSE_TABLE_URL"], "https://org.crm.dynamics.com/api/data/v9.2/cr6c3_table11s")
+        self.assertEqual(env["STG_DATAVERSE_COLUMN_PREFIX"], "cr6c3")
+
+    def test_deploy_staging_workflow_exports_dataverse_base_url_for_web_steps(self):
+        workflow = (ROOT / ".github" / "workflows" / "deploy-staging.yml").read_text()
+
+        validate_block = workflow.split("      - name: Validate web staging runtime config", maxsplit=1)[1].split(
+            "      - name: Sync web staging runtime config",
+            maxsplit=1,
+        )[0]
+        self.assertIn("STG_DATAVERSE_BASE_URL: ${{ vars.STG_DATAVERSE_BASE_URL }}", validate_block)
+        self.assertIn("STG_DATAVERSE_BASE_URL \\", validate_block)
+
+        sync_block = workflow.split("      - name: Sync web staging runtime config", maxsplit=1)[1].split(
+            "      - name: Build and push web image to ACR",
+            maxsplit=1,
+        )[0]
+        self.assertIn("STG_DATAVERSE_BASE_URL: ${{ vars.STG_DATAVERSE_BASE_URL }}", sync_block)
 
     def test_build_summary_markdown_mentions_smoke_checks(self):
         source = {

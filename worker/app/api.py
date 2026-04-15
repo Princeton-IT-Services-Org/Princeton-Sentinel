@@ -5,7 +5,6 @@ from flask import Flask, g, jsonify, request
 from app import db
 from app.auth import require_internal_token
 from app.conditional_access import ConditionalAccessManager, CAResult
-from app.dataverse_client import DataverseClient
 from app.heartbeat import get_heartbeat_status, is_heartbeat_healthy
 from app.license import (
     LicenseFeatureError,
@@ -68,20 +67,6 @@ def _safe_license_summary(context: str):
             text = text[:217] + "..."
         emit("ERROR", "FLASK_API", f"{context} license lookup failed: error={text}")
         return get_license_lookup_failure_summary(text)
-
-
-def _classify_dv_error(exc: Exception) -> str:
-    msg = str(exc)
-    msg_lower = msg.lower()
-    if "dataverse_url must be set" in msg_lower or "entra_" in msg_lower:
-        return "not_configured"
-    if "failed to acquire" in msg_lower or "(401)" in msg or "unauthorized" in msg_lower:
-        return "auth_failed"
-    if "(403)" in msg or "forbidden" in msg_lower:
-        return "permission_denied"
-    if "timed out" in msg_lower or "connectionerror" in msg_lower or "failed to establish" in msg_lower or "(503)" in msg:
-        return "unreachable"
-    return "unknown"
 
 
 def create_app():
@@ -451,48 +436,5 @@ def create_app():
             return jsonify({"status": "enabled"})
 
         return jsonify({"error": result.error, "status": "enable_failed"}), 502
-
-    # ── Dataverse: fetch table data ────────────────────────────────
-
-    @app.get("/dataverse/table")
-    @require_internal_token
-    def dataverse_table():
-        entity_set = request.args.get("entity_set", "").strip()
-        if not entity_set:
-            return jsonify({"error": "entity_set query param is required"}), 400
-
-        select = request.args.get("select", "").strip() or None
-        odata_filter = request.args.get("filter", "").strip() or None
-        top_str = request.args.get("top", "").strip()
-        top = int(top_str) if top_str.isdigit() else None
-
-        try:
-            dv = DataverseClient()
-            rows = dv.fetch_table(entity_set, select=select, filter=odata_filter, top=top)
-            return jsonify({"rows": rows, "count": len(rows)})
-        except Exception as exc:
-            emit("ERROR", "DATAVERSE", f"Dataverse fetch failed: {exc}")
-            return jsonify({"error": str(exc), "dv_error_type": _classify_dv_error(exc)}), 502
-
-    @app.post("/dataverse/patch")
-    @require_internal_token
-    def dataverse_patch():
-        body = request.get_json(silent=True) or {}
-        entity_set = (body.get("entity_set") or "").strip()
-        row_id = (body.get("row_id") or "").strip()
-        data = body.get("data") or {}
-
-        if not entity_set or not row_id:
-            return jsonify({"error": "entity_set and row_id are required"}), 400
-        if not isinstance(data, dict) or not data:
-            return jsonify({"error": "data must be a non-empty object"}), 400
-
-        try:
-            dv = DataverseClient()
-            dv.patch_row(entity_set, row_id, data)
-            return jsonify({"status": "updated"})
-        except Exception as exc:
-            emit("ERROR", "DATAVERSE", f"Dataverse patch failed: {exc}")
-            return jsonify({"error": str(exc), "dv_error_type": _classify_dv_error(exc)}), 502
 
     return app

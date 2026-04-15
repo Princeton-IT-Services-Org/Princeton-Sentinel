@@ -229,7 +229,7 @@ These routes are admin-only and authenticate to the worker with `WORKER_INTERNAL
 - `GET /api/agents`
   summary data for the agents dashboard
 - `GET|POST /api/agents/agent-access-control`
-  direct Dataverse table read/write proxy
+  direct Dataverse table read/write integration from the web server
 - `GET|POST /api/agents/dataverse`
   alias/export of the access-control route
 - `GET|POST /api/agents/access-blocks`

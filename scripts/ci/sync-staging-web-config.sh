@@ -27,6 +27,9 @@ az containerapp update \
   --set-env-vars \
     APP_VERSION="${APP_VERSION}" \
     DATABASE_URL=secretref:dburl \
+    DATAVERSE_BASE_URL="${STG_DATAVERSE_BASE_URL}" \
+    DATAVERSE_TABLE_URL="${STG_DATAVERSE_TABLE_URL}" \
+    DATAVERSE_COLUMN_PREFIX="${STG_DATAVERSE_COLUMN_PREFIX}" \
     WORKER_API_URL="${WORKER_API_URL}" \
     WORKER_INTERNAL_API_TOKEN=secretref:workerinternaltoken \
     WORKER_HEARTBEAT_TOKEN=secretref:workerheartbeattoken \

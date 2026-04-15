@@ -44,6 +44,8 @@ function getNonEmptyString(value: unknown) {
 }
 
 test("block updates dataverse directly and preserves audit logging", async () => {
+  process.env.DATAVERSE_COLUMN_PREFIX = "cr6c3";
+  process.env.DATAVERSE_TABLE_URL = "https://org.crm.dynamics.com/api/data/v9.2/cr6c3_table11s";
   const operations: string[] = [];
   const auditCalls: any[] = [];
 
@@ -71,44 +73,32 @@ test("block updates dataverse directly and preserves audit logging", async () =>
         auditCalls.push(payload);
       },
     },
+    "@/app/lib/dataverse": {
+      fetchDataverseTable: async () => [
+        {
+          cr6c3_table11id: "row-1",
+          cr6c3_agentname: "Agent A",
+          cr6c3_username: "user@example.com",
+          cr6c3_disableflagcopilot: false,
+        },
+      ],
+      patchDataverseRow: async () => {
+        operations.push("dv-patch");
+      },
+      getDataverseErrorResponse: (error: Error) => ({
+        error: error.message,
+        dv_error_type: "unknown",
+        status: 502,
+      }),
+    },
     "@/app/lib/worker-api": {
       callWorker: async (path: string) => {
-        if (path.startsWith("/dataverse/table")) {
-          operations.push("dv-fetch");
-          return {
-            res: { ok: true },
-            text: JSON.stringify({
-              rows: [
-                {
-                  cr6c3_table11id: "row-1",
-                  cr6c3_agentname: "Agent A",
-                  cr6c3_username: "user@example.com",
-                  cr6c3_disableflagcopilot: false,
-                },
-              ],
-            }),
-          };
-        }
-        if (path === "/dataverse/patch") {
-          operations.push("dv-patch");
-          return { res: { ok: true }, text: "" };
-        }
         if (path === "/conditional-access/block") {
           operations.push("worker");
           return { res: { ok: true }, text: "" };
         }
         throw new Error(`unexpected worker path: ${path}`);
       },
-      callWorkerJson: async () => ({
-        rows: [
-          {
-            cr6c3_table11id: "row-1",
-            cr6c3_agentname: "Agent A",
-            cr6c3_username: "user@example.com",
-            cr6c3_disableflagcopilot: false,
-          },
-        ],
-      }),
       isWorkerTimeoutError: () => false,
       parseWorkerErrorText: (text: string) => text,
     },
@@ -132,6 +122,10 @@ test("block updates dataverse directly and preserves audit logging", async () =>
     "@/app/lib/request-timing": {
       withApiRequestTiming: (_path: string, handler: Function) => handler,
     },
+    "@/app/lib/license": {
+      requireLicenseFeature: async () => undefined,
+      LicenseFeatureError: class LicenseFeatureError extends Error {},
+    },
   });
 
   const res = await POST(new Request("http://localhost/api/agents/access-blocks", { method: "POST" }));
@@ -144,6 +138,8 @@ test("block updates dataverse directly and preserves audit logging", async () =>
 });
 
 test("unblock requires an active disabled dataverse row and does not touch local blocks table", async () => {
+  process.env.DATAVERSE_COLUMN_PREFIX = "cr6c3";
+  process.env.DATAVERSE_TABLE_URL = "https://org.crm.dynamics.com/api/data/v9.2/cr6c3_table11s";
   const operations: string[] = [];
 
   const { POST } = loadRoute({
@@ -172,28 +168,32 @@ test("unblock requires an active disabled dataverse row and does not touch local
         operations.push("audit");
       },
     },
+    "@/app/lib/dataverse": {
+      fetchDataverseTable: async () => [
+        {
+          cr6c3_table11id: "row-1",
+          cr6c3_agentname: "Agent A",
+          cr6c3_username: "user@example.com",
+          cr6c3_disableflagcopilot: true,
+        },
+      ],
+      patchDataverseRow: async () => {
+        operations.push("dv-patch");
+      },
+      getDataverseErrorResponse: (error: Error) => ({
+        error: error.message,
+        dv_error_type: "unknown",
+        status: 502,
+      }),
+    },
     "@/app/lib/worker-api": {
       callWorker: async (path: string) => {
-        if (path === "/dataverse/patch") {
-          operations.push("dv-patch");
-          return { res: { ok: true }, text: "" };
-        }
         if (path === "/conditional-access/unblock") {
           operations.push("worker");
           return { res: { ok: true }, text: "" };
         }
         throw new Error(`unexpected worker path: ${path}`);
       },
-      callWorkerJson: async () => ({
-        rows: [
-          {
-            cr6c3_table11id: "row-1",
-            cr6c3_agentname: "Agent A",
-            cr6c3_username: "user@example.com",
-            cr6c3_disableflagcopilot: true,
-          },
-        ],
-      }),
       isWorkerTimeoutError: () => false,
       parseWorkerErrorText: (text: string) => text,
     },
@@ -216,6 +216,10 @@ test("unblock requires an active disabled dataverse row and does not touch local
     },
     "@/app/lib/request-timing": {
       withApiRequestTiming: (_path: string, handler: Function) => handler,
+    },
+    "@/app/lib/license": {
+      requireLicenseFeature: async () => undefined,
+      LicenseFeatureError: class LicenseFeatureError extends Error {},
     },
   });
 
@@ -247,12 +251,22 @@ test("route rejects missing csrf token before side effects", async () => {
         throw new Error("audit should not be called");
       },
     },
+    "@/app/lib/dataverse": {
+      fetchDataverseTable: async () => {
+        throw new Error("dataverse should not be called");
+      },
+      patchDataverseRow: async () => {
+        throw new Error("dataverse should not be called");
+      },
+      getDataverseErrorResponse: (error: Error) => ({
+        error: error.message,
+        dv_error_type: "unknown",
+        status: 502,
+      }),
+    },
     "@/app/lib/worker-api": {
       callWorker: async () => {
         throw new Error("worker should not be called");
-      },
-      callWorkerJson: async () => {
-        throw new Error("worker json should not be called");
       },
       isWorkerTimeoutError: () => false,
       parseWorkerErrorText: (text: string) => text,
@@ -266,6 +280,10 @@ test("route rejects missing csrf token before side effects", async () => {
     },
     "@/app/lib/request-timing": {
       withApiRequestTiming: (_path: string, handler: Function) => handler,
+    },
+    "@/app/lib/license": {
+      requireLicenseFeature: async () => undefined,
+      LicenseFeatureError: class LicenseFeatureError extends Error {},
     },
   });
 
