@@ -327,6 +327,22 @@ class DeployClientEnvironmentTests(unittest.TestCase):
         self.assertEqual(env["STG_DATAVERSE_TABLE_URL"], "https://org.crm.dynamics.com/api/data/v9.2/cr6c3_table11s")
         self.assertEqual(env["STG_DATAVERSE_COLUMN_PREFIX"], "cr6c3")
 
+    def test_deploy_staging_workflow_exports_dataverse_base_url_for_web_steps(self):
+        workflow = (ROOT / ".github" / "workflows" / "deploy-staging.yml").read_text()
+
+        validate_block = workflow.split("      - name: Validate web staging runtime config", maxsplit=1)[1].split(
+            "      - name: Sync web staging runtime config",
+            maxsplit=1,
+        )[0]
+        self.assertIn("STG_DATAVERSE_BASE_URL: ${{ vars.STG_DATAVERSE_BASE_URL }}", validate_block)
+        self.assertIn("STG_DATAVERSE_BASE_URL \\", validate_block)
+
+        sync_block = workflow.split("      - name: Sync web staging runtime config", maxsplit=1)[1].split(
+            "      - name: Build and push web image to ACR",
+            maxsplit=1,
+        )[0]
+        self.assertIn("STG_DATAVERSE_BASE_URL: ${{ vars.STG_DATAVERSE_BASE_URL }}", sync_block)
+
     def test_build_summary_markdown_mentions_smoke_checks(self):
         source = {
             "app_version": "3.3.0",
