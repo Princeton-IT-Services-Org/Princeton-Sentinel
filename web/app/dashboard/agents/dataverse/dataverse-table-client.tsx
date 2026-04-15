@@ -6,30 +6,18 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import LocalDateTime from "@/components/local-date-time";
+import { getDvColumns, type DvColumns } from "@/app/lib/dv-columns";
 
-const TIMESTAMP_KEYS = new Set(["cr6c3_lastseeninsync", "modifiedon"]);
+const TIMESTAMP_KEYS = new Set(["modifiedon"]);
 
-const COLUMNS: { key: string; label: string }[] = [
-  { key: "cr6c3_agentname", label: "Agent Name" },
-  { key: "cr6c3_username", label: "User Name" },
-  { key: "cr6c3_disableflagcopilot", label: "Disable Flag" },
-  { key: "cr6c3_copilotflagchangereason", label: "Flag Change Reason" },
-  { key: "cr6c3_userlastmodifiedby", label: "Last Modified By" },
-  { key: "cr6c3_lastseeninsync", label: "Last Seen In Sync" },
-  { key: "modifiedon", label: "Modified On" },
-];
+type SortDirection = "asc" | "desc";
 
-type DvRow = {
-  cr6c3_table11id?: string;
-  cr6c3_agentname?: string | null;
-  cr6c3_username?: string | null;
-  cr6c3_disableflagcopilot?: boolean | null;
-  cr6c3_copilotflagchangereason?: string | null;
-  cr6c3_userlastmodifiedby?: string | null;
-  cr6c3_lastseeninsync?: string | null;
-  modifiedon?: string | null;
-  [key: string]: any;
+type SortConfig = {
+  key: string;
+  direction: SortDirection;
 };
+
+type DvRow = Record<string, any>;
 
 type ActiveBlock = {
   id: string;
@@ -49,52 +37,96 @@ function normalizeValue(value: string | null | undefined): string {
   return (value || "").trim().toLowerCase();
 }
 
-function findDvRow(rows: DvRow[], agentName: string, userName: string): DvRow | undefined {
+function getSortableValue(value: unknown): number | string {
+  if (value == null) return "";
+  if (typeof value === "boolean") return value ? 1 : 0;
+  if (typeof value === "number") return value;
+  const asString = String(value).trim();
+  const asDate = Date.parse(asString);
+  if (!Number.isNaN(asDate)) return asDate;
+  return asString.toLowerCase();
+}
+
+function getSortIndicator(sortConfig: SortConfig, key: string): string {
+  if (sortConfig.key !== key) return "↕";
+  return sortConfig.direction === "asc" ? "↑" : "↓";
+}
+
+function isUserDeleteFlagAllowed(value: unknown): boolean {
+  if (typeof value === "number") return value === 4;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "4" || normalized === "allowed";
+  }
+  return false;
+}
+
+function findDvRow(rows: DvRow[], agentName: string, userName: string, cols: DvColumns): DvRow | undefined {
   const normalizedAgent = normalizeValue(agentName);
   const normalizedUser = normalizeValue(userName);
 
   return rows.find((row) =>
-    normalizeValue(row.cr6c3_agentname) === normalizedAgent &&
-    normalizeValue(row.cr6c3_username) === normalizedUser
+    normalizeValue(row[cols.agentname]) === normalizedAgent &&
+    normalizeValue(row[cols.username]) === normalizedUser
   );
 }
 
-function patchDvState(rows: DvRow[], rowId: string | null | undefined, disabled: boolean, reason: string | null, modifiedBy?: string | null): DvRow[] {
+function patchDvState(
+  rows: DvRow[],
+  rowId: string | null | undefined,
+  disabled: boolean,
+  reason: string | null,
+  cols: DvColumns,
+  modifiedBy?: string | null,
+): DvRow[] {
   if (!rowId) return rows;
   return rows.map((row) =>
-    row.cr6c3_table11id === rowId
+    row[cols.id] === rowId
       ? {
           ...row,
-          cr6c3_disableflagcopilot: disabled,
-          cr6c3_copilotflagchangereason: reason,
-          cr6c3_userlastmodifiedby: modifiedBy ?? row.cr6c3_userlastmodifiedby,
+          [cols.disableflag]: disabled,
+          [cols.reason]: reason,
+          [cols.lastmodifiedby]: modifiedBy ?? row[cols.lastmodifiedby],
           modifiedon: new Date().toISOString(),
         }
       : row
   );
 }
 
-function deriveActiveBlocks(rows: DvRow[]): ActiveBlock[] {
+function deriveActiveBlocks(rows: DvRow[], cols: DvColumns): ActiveBlock[] {
   return rows
-    .filter((row) => row.cr6c3_disableflagcopilot === true && row.cr6c3_table11id && row.cr6c3_agentname && row.cr6c3_username)
+    .filter((row) => row[cols.disableflag] === true && row[cols.id] && row[cols.agentname] && row[cols.username])
     .map((row) => ({
-      id: row.cr6c3_table11id as string,
-      dv_row_id: row.cr6c3_table11id as string,
-      user_id: row.cr6c3_username as string,
-      user_display_name: row.cr6c3_username || null,
-      user_principal_name: row.cr6c3_username || null,
-      bot_id: row.cr6c3_agentname as string,
-      bot_name: row.cr6c3_agentname || null,
+      id: row[cols.id] as string,
+      dv_row_id: row[cols.id] as string,
+      user_id: row[cols.username] as string,
+      user_display_name: row[cols.username] || null,
+      user_principal_name: row[cols.username] || null,
+      bot_id: row[cols.agentname] as string,
+      bot_name: row[cols.agentname] || null,
       block_scope: "agent" as const,
-      blocked_by: row.cr6c3_userlastmodifiedby || "unknown",
-      blocked_at: row.modifiedon || row.cr6c3_lastseeninsync || new Date().toISOString(),
-      block_reason: row.cr6c3_copilotflagchangereason || null,
+      blocked_by: row[cols.lastmodifiedby] || "unknown",
+      blocked_at: row.modifiedon || row[cols.lastseeninsync] || new Date().toISOString(),
+      block_reason: row[cols.reason] || null,
     }))
     .sort((a, b) => Date.parse(b.blocked_at) - Date.parse(a.blocked_at));
 }
 
-export default function DataverseTableClient() {
+export default function DataverseTableClient({ columnPrefix }: { columnPrefix: string }) {
+  const cols = React.useMemo(() => getDvColumns(columnPrefix), [columnPrefix]);
+  const columns = React.useMemo(
+    () => [
+      { key: cols.agentname, label: "Agent Name" },
+      { key: cols.username, label: "User Name" },
+      { key: cols.disableflag, label: "Disable Flag" },
+      { key: cols.reason, label: "Flag Change Reason" },
+      { key: cols.lastmodifiedby, label: "Last Modified By" },
+      { key: "modifiedon", label: "Modified On" },
+    ],
+    [cols],
+  );
   const [rows, setRows] = React.useState<DvRow[]>([]);
+  const [sortConfig, setSortConfig] = React.useState<SortConfig>(() => ({ key: getDvColumns(columnPrefix).agentname, direction: "asc" }));
   const [dvLoading, setDvLoading] = React.useState(true);
   const [dvError, setDvError] = React.useState<string | null>(null);
   const [dvErrorType, setDvErrorType] = React.useState<string | null>(null);
@@ -121,7 +153,10 @@ export default function DataverseTableClient() {
         return;
       }
       const data = await res.json();
-      setRows(data.rows || []);
+      const nextRows = Array.isArray(data.rows)
+        ? data.rows.filter((row: DvRow) => isUserDeleteFlagAllowed(row[cols.userdeleteflag]))
+        : [];
+      setRows(nextRows);
       setDvError(null);
       setDvErrorType(null);
     } catch {
@@ -130,7 +165,7 @@ export default function DataverseTableClient() {
     } finally {
       setDvLoading(false);
     }
-  }, []);
+  }, [cols]);
 
   React.useEffect(() => {
     fetchDv();
@@ -139,9 +174,9 @@ export default function DataverseTableClient() {
   const dvAgents = React.useMemo(() => {
     const seen = new Set<string>();
     return rows
-      .filter((r) => r.cr6c3_agentname)
+      .filter((r) => r[cols.agentname])
       .reduce<string[]>((acc, r) => {
-        const name = r.cr6c3_agentname as string;
+        const name = r[cols.agentname] as string;
         if (!seen.has(name)) {
           seen.add(name);
           acc.push(name);
@@ -149,15 +184,15 @@ export default function DataverseTableClient() {
         return acc;
       }, [])
       .sort();
-  }, [rows]);
+  }, [rows, cols]);
 
   const dvUsersForAgent = React.useMemo(() => {
     if (!selectedAgent) return [];
     const seen = new Set<string>();
     return rows
-      .filter((r) => normalizeValue(r.cr6c3_agentname) === normalizeValue(selectedAgent) && r.cr6c3_username)
+      .filter((r) => normalizeValue(r[cols.agentname]) === normalizeValue(selectedAgent) && r[cols.username])
       .reduce<string[]>((acc, r) => {
-        const name = r.cr6c3_username as string;
+        const name = r[cols.username] as string;
         if (!seen.has(name)) {
           seen.add(name);
           acc.push(name);
@@ -165,9 +200,28 @@ export default function DataverseTableClient() {
         return acc;
       }, [])
       .sort();
-  }, [rows, selectedAgent]);
+  }, [rows, selectedAgent, cols]);
 
-  const activeBlocks = React.useMemo(() => deriveActiveBlocks(rows), [rows]);
+  const activeBlocks = React.useMemo(() => deriveActiveBlocks(rows, cols), [rows, cols]);
+  const sortedRows = React.useMemo(() => {
+    const { key, direction } = sortConfig;
+    const multiplier = direction === "asc" ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      const left = getSortableValue(a[key]);
+      const right = getSortableValue(b[key]);
+      if (left < right) return -1 * multiplier;
+      if (left > right) return 1 * multiplier;
+      return 0;
+    });
+  }, [rows, sortConfig]);
+
+  function toggleSort(key: string) {
+    setSortConfig((current) =>
+      current.key === key
+        ? { key, direction: current.direction === "asc" ? "desc" : "asc" }
+        : { key, direction: "asc" }
+    );
+  }
 
   function handleBlock() {
     if (!selectedUser || !selectedAgent) return;
@@ -183,7 +237,7 @@ export default function DataverseTableClient() {
     setSubmitting(true);
     setBlockError(null);
     const trimmedReason = reason.trim() || null;
-    const dvRow = findDvRow(rows, selectedAgent, selectedUser);
+    const dvRow = findDvRow(rows, selectedAgent, selectedUser, cols);
     try {
       const res = await fetch("/api/agents/access-blocks", {
         method: "POST",
@@ -197,7 +251,7 @@ export default function DataverseTableClient() {
           bot_name: selectedAgent,
           block_scope: "agent",
           block_reason: trimmedReason,
-          dv_row_id: dvRow?.cr6c3_table11id ?? null,
+          dv_row_id: dvRow?.[cols.id] ?? null,
         }),
       });
       const data = await res.json();
@@ -207,7 +261,7 @@ export default function DataverseTableClient() {
       } else {
         setBlockError(null);
         setBlockErrorType(null);
-        setRows((prev) => patchDvState(prev, dvRow?.cr6c3_table11id, true, trimmedReason));
+        setRows((prev) => patchDvState(prev, dvRow?.[cols.id], true, trimmedReason, cols));
         setSelectedUser("");
         setSelectedAgent("");
         setBlockReason("");
@@ -254,7 +308,7 @@ export default function DataverseTableClient() {
         setBlockError(data.error || "Unblock failed");
         setBlockErrorType(data.dv_error_type || "unknown");
       } else {
-        setRows((prev) => patchDvState(prev, block.dv_row_id, false, trimmedReason));
+        setRows((prev) => patchDvState(prev, block.dv_row_id, false, trimmedReason, cols));
         await fetchDv();
       }
     } catch {
@@ -291,7 +345,7 @@ export default function DataverseTableClient() {
               Agent Access Records
               {!dvLoading && !dvError && (
                 <span className="ml-2 text-sm font-normal text-muted-foreground">
-                  ({rows.length} row{rows.length !== 1 ? "s" : ""})
+                  ({sortedRows.length} row{sortedRows.length !== 1 ? "s" : ""})
                 </span>
               )}
             </CardTitle>
@@ -303,7 +357,7 @@ export default function DataverseTableClient() {
             <p className="text-sm text-muted-foreground">Loading...</p>
           ) : dvError ? (
             <DvErrorBanner errorType={dvErrorType} rawError={dvError} />
-          ) : rows.length === 0 ? (
+          ) : sortedRows.length === 0 ? (
             <p className="text-sm text-muted-foreground">No rows found.</p>
           ) : (
             <div className="max-h-[600px] overflow-x-auto overflow-y-auto">
@@ -311,20 +365,27 @@ export default function DataverseTableClient() {
                 <TableHeader className="sticky top-0 bg-background">
                   <TableRow>
                     <TableHead className="w-12">#</TableHead>
-                    {COLUMNS.map((col) => (
+                    {columns.map((col) => (
                       <TableHead key={col.key} className="whitespace-nowrap">
-                        {col.label}
+                        <button
+                          type="button"
+                          onClick={() => toggleSort(col.key)}
+                          className="inline-flex items-center gap-1 text-left font-medium hover:text-foreground"
+                        >
+                          <span>{col.label}</span>
+                          <span className="text-xs text-muted-foreground">{getSortIndicator(sortConfig, col.key)}</span>
+                        </button>
                       </TableHead>
                     ))}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {rows.map((row, i) => (
-                    <TableRow key={row.cr6c3_table11id || i}>
+                  {sortedRows.map((row, i) => (
+                    <TableRow key={row[cols.id] || i}>
                       <TableCell className="text-muted-foreground">{i + 1}</TableCell>
-                      {COLUMNS.map((col) => {
+                      {columns.map((col) => {
                         const val = row[col.key];
-                        const isDisableFlag = col.key === "cr6c3_disableflagcopilot";
+                        const isDisableFlag = col.key === cols.disableflag;
                         const isTimestamp = TIMESTAMP_KEYS.has(col.key);
                         const isTrue = isDisableFlag && val === true;
                         const display =
@@ -509,7 +570,7 @@ function DvErrorBanner({ errorType, rawError }: { errorType: string | null; rawE
       case "not_configured":
         return {
           message: "Dataverse integration is not configured on this server.",
-          hint: "Check that DATAVERSE_URL and ENTRA_TENANT_ID / ENTRA_CLIENT_ID / ENTRA_CLIENT_SECRET are set in the worker environment.",
+          hint: "Check that DATAVERSE_BASE_URL and ENTRA_TENANT_ID / ENTRA_CLIENT_ID / ENTRA_CLIENT_SECRET are set in the worker environment.",
         };
       case "auth_failed":
         return {
@@ -524,7 +585,7 @@ function DvErrorBanner({ errorType, rawError }: { errorType: string | null; rawE
       case "unreachable":
         return {
           message: "Dataverse environment is unreachable.",
-          hint: "The environment may be down, paused, or blocked by a firewall. Verify the DATAVERSE_URL and check the Power Platform admin center for environment status.",
+          hint: "The environment may be down, paused, or blocked by a firewall. Verify the DATAVERSE_BASE_URL and check the Power Platform admin center for environment status.",
         };
       default:
         return {

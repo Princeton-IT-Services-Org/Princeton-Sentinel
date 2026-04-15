@@ -13,9 +13,9 @@ class DataverseClient:
     """Client for querying Dataverse tables using MSAL client-credentials."""
 
     def __init__(self):
-        self._base_url = os.getenv("DATAVERSE_URL", "").rstrip("/")
+        self._base_url = os.getenv("DATAVERSE_BASE_URL", "").rstrip("/")
         if not self._base_url:
-            raise RuntimeError("DATAVERSE_URL must be set")
+            raise RuntimeError("DATAVERSE_BASE_URL must be set")
 
         tenant_id = os.getenv("ENTRA_TENANT_ID")
         client_id = os.getenv("ENTRA_CLIENT_ID")

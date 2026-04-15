@@ -3,12 +3,30 @@ import { requireUser, isAdmin } from "@/app/lib/auth";
 import { validateCsrfRequest } from "@/app/lib/csrf";
 import { callWorkerJson } from "@/app/lib/worker-api";
 import { withApiRequestTiming } from "@/app/lib/request-timing";
+import { getDvColumns, getDvEntitySet } from "@/app/lib/dv-columns";
 
 export const dynamic = "force-dynamic";
 
-const ENTITY_SET = "cr6c3_table11s";
-const SELECT_COLS =
-  "cr6c3_table11id,cr6c3_agentname,cr6c3_username,cr6c3_disableflagcopilot,cr6c3_copilotflagchangereason,cr6c3_lastseeninsync,cr6c3_userlastmodifiedby,modifiedon,_modifiedby_value";
+function getDvConfig() {
+  const prefix = process.env.DATAVERSE_COLUMN_PREFIX || "";
+  const cols = getDvColumns(prefix);
+  const entitySet = getDvEntitySet(process.env.DATAVERSE_TABLE_URL || "");
+  const selectCols = [
+    cols.id, cols.agentname, cols.username, cols.disableflag,
+    cols.reason, cols.lastseeninsync, cols.lastmodifiedby,
+    cols.userdeleteflag, "modifiedon", "_modifiedby_value",
+  ].join(",");
+  return { entitySet, cols, selectCols };
+}
+
+function isUserDeleteFlagAllowed(value: unknown): boolean {
+  if (typeof value === "number") return value === 4;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "4" || normalized === "allowed";
+  }
+  return false;
+}
 
 /**
  * GET /api/agents/agent-access-control
@@ -20,11 +38,15 @@ async function getHandler(req: NextRequest) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  const qs = new URLSearchParams({ entity_set: ENTITY_SET, select: SELECT_COLS });
+  const { entitySet, cols, selectCols } = getDvConfig();
+  const qs = new URLSearchParams({ entity_set: entitySet, select: selectCols });
 
   try {
     const data = await callWorkerJson(`/dataverse/table?${qs.toString()}`);
-    return NextResponse.json(data);
+    const rows = Array.isArray(data?.rows)
+      ? data.rows.filter((row: Record<string, unknown>) => isUserDeleteFlagAllowed(row?.[cols.userdeleteflag]))
+      : [];
+    return NextResponse.json({ ...data, rows });
   } catch (err: any) {
     const status = err?.status || 502;
     const message = err?.bodyText || err?.message || "dataverse_fetch_failed";
@@ -65,7 +87,7 @@ async function postHandler(req: NextRequest) {
     const result = await callWorkerJson("/dataverse/patch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ entity_set: ENTITY_SET, row_id, data }),
+      body: JSON.stringify({ entity_set: getDvConfig().entitySet, row_id, data }),
     });
     return NextResponse.json(result);
   } catch (err: any) {
