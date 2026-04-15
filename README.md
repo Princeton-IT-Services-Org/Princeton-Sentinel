@@ -16,7 +16,7 @@ The top-level README is the repo entrypoint. It summarizes what is in the reposi
 - `web/`
   Next.js 16 app that handles sign-in, route protection, dashboards, admin UI, license management, schedule management, worker proxy routes, and live Graph drill-down/revoke actions.
 - `worker/`
-  Python 3.11 Flask service, served by Gunicorn, that runs the in-process scheduler, Microsoft Graph ingestion, materialized view refreshes, Copilot telemetry ingestion, Dataverse proxy helpers, and the worker heartbeat.
+  Python 3.11 Flask service, served by Gunicorn, that runs the in-process scheduler, Microsoft Graph ingestion, materialized view refreshes, Copilot telemetry ingestion, Conditional Access actions, and the worker heartbeat.
 
 ## What Is In The Repo
 
@@ -99,8 +99,8 @@ The current Graph read and revoke flows expect these application permissions:
 
 ### Optional integrations
 
-- `DATAVERSE_URL`
-  Enables the worker's Dataverse-backed agent access helpers used by the agents pages and admin tooling.
+- `DATAVERSE_BASE_URL`, `DATAVERSE_TABLE_URL`, and `DATAVERSE_COLUMN_PREFIX`
+  Enable the web app's Dataverse-backed agent access helpers used by the agents pages and admin tooling.
 - `APPINSIGHTS_APP_ID` and `APPINSIGHTS_API_KEY`
   Enable the `copilot_telemetry` worker job. The job is seeded by default but skips cleanly when Application Insights is not configured.
 - `LICENSE_PUBLIC_KEY_PATH`
@@ -136,7 +136,7 @@ Common variables by area:
 - worker/runtime tuning:
   `SCHEDULER_POLL_SECONDS`, `RECOVER_INTERRUPTED_RUNS_ON_STARTUP`, `FLUSH_EVERY`, `MV_REFRESH_MAX_VIEWS_PER_RUN`
 - optional integrations:
-  `DATAVERSE_URL`, `COPILOT_APP_ID`, `APPINSIGHTS_APP_ID`, `APPINSIGHTS_API_KEY`
+  `DATAVERSE_BASE_URL`, `DATAVERSE_TABLE_URL`, `DATAVERSE_COLUMN_PREFIX`, `COPILOT_APP_ID`, `APPINSIGHTS_APP_ID`, `APPINSIGHTS_API_KEY`
 
 ## Developer Workflows
 

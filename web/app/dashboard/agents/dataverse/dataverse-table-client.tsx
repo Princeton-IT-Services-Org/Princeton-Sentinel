@@ -570,7 +570,7 @@ function DvErrorBanner({ errorType, rawError }: { errorType: string | null; rawE
       case "not_configured":
         return {
           message: "Dataverse integration is not configured on this server.",
-          hint: "Check that DATAVERSE_BASE_URL and ENTRA_TENANT_ID / ENTRA_CLIENT_ID / ENTRA_CLIENT_SECRET are set in the worker environment.",
+          hint: "Check that DATAVERSE_BASE_URL and ENTRA_TENANT_ID / ENTRA_CLIENT_ID / ENTRA_CLIENT_SECRET are set in the web environment.",
         };
       case "auth_failed":
         return {
@@ -590,7 +590,7 @@ function DvErrorBanner({ errorType, rawError }: { errorType: string | null; rawE
       default:
         return {
           message: "An unexpected Dataverse error occurred.",
-          hint: "Check the worker logs for the full stack trace.",
+          hint: "Check the web logs for the full stack trace.",
         };
     }
   }, [errorType]);

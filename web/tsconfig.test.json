@@ -17,8 +17,12 @@
     "app/lib/security-headers.ts",
     "app/lib/runtime.ts",
     "app/lib/local-testing-state.ts",
+    "app/lib/http.ts",
+    "app/lib/dv-columns.ts",
+    "app/lib/dataverse.ts",
     "app/api/internal/worker-heartbeat/route.ts",
     "app/api/local-testing/license/route.ts",
+    "app/api/agents/**/*.ts",
     "app/testing/page.tsx",
     "app/lib/version.ts",
     "app/admin/AdminVersionBadge.tsx"

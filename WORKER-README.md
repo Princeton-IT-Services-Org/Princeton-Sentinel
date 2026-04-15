@@ -7,7 +7,6 @@ The worker is the execution plane of Princeton Sentinel. It is a Python 3.11 ser
 - Microsoft Graph ingestion
 - materialized-view refresh execution
 - Copilot telemetry ingestion from Application Insights
-- Dataverse proxy helpers for the agents area
 - Conditional Access-backed control actions
 - heartbeat reporting back to the web app
 
@@ -71,13 +70,6 @@ Job-control endpoints are license-gated. `run-now` also checks the job-type-spec
 - `POST /conditional-access/enable-agent`
 
 These endpoints support the admin agent access workflows exposed through the web app.
-
-### Dataverse proxy helpers
-
-- `GET /dataverse/table`
-- `POST /dataverse/patch`
-
-The web app uses these routes to query and patch Dataverse-backed agent access data without exposing Dataverse credentials to the browser.
 
 ## Scheduler
 
@@ -200,7 +192,7 @@ Controls:
 
 Health degrades when failures cross the configured threshold.
 
-## Graph And Dataverse Clients
+## Graph Client
 
 ### Graph client
 
@@ -210,16 +202,6 @@ Health degrades when failures cross the configured threshold.
 - retry/backoff for transient HTTP failures
 - `Retry-After` handling
 - pagination helpers for `@odata.nextLink`
-
-### Dataverse client
-
-[worker/app/dataverse_client.py](/Users/garrick-mac/Documents/GitHub/Princeton-Sentinel/worker/app/dataverse_client.py) handles:
-
-- client-credentials auth against `DATAVERSE_URL`
-- paged Dataverse table reads
-- single-row patch operations
-
-It is used by the worker API, not directly by browser clients.
 
 ## Licensing Behavior
 
@@ -312,7 +294,6 @@ Common worker-relevant variables:
   - `DB_WRITE_RETRY_MAX_MS`
   - `DB_WRITE_RETRY_JITTER_MS`
 - optional integrations:
-  - `DATAVERSE_URL`
   - `APPINSIGHTS_APP_ID`
   - `APPINSIGHTS_API_KEY`
   - `LICENSE_PUBLIC_KEY_PATH`
@@ -339,6 +320,6 @@ docker compose up --build
 ## Operational Notes
 
 - the worker is intentionally stateful in-memory for scheduler and heartbeat status, so those counters reset on restart
-- Dataverse and Conditional Access functionality are optional integrations; the internal API returns classified errors when they are not configured correctly
+- Conditional Access functionality is an optional integration; the internal API returns classified errors when it is not configured correctly
 - `copilot_telemetry` is a supported job type now and should be treated like the other worker jobs in operational docs and tooling
 - the worker is the authoritative writer for most runtime state transitions visible in the admin UI

@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireUser, isAdmin } from "@/app/lib/auth";
 import { validateCsrfRequest } from "@/app/lib/csrf";
-import { callWorkerJson } from "@/app/lib/worker-api";
+import {
+  fetchDataverseTable,
+  getDataverseErrorResponse,
+  patchDataverseRow,
+} from "@/app/lib/dataverse";
 import { withApiRequestTiming } from "@/app/lib/request-timing";
 import { getDvColumns, getDvEntitySet } from "@/app/lib/dv-columns";
 
@@ -39,18 +43,17 @@ async function getHandler(req: NextRequest) {
   }
 
   const { entitySet, cols, selectCols } = getDvConfig();
-  const qs = new URLSearchParams({ entity_set: entitySet, select: selectCols });
 
   try {
-    const data = await callWorkerJson(`/dataverse/table?${qs.toString()}`);
-    const rows = Array.isArray(data?.rows)
-      ? data.rows.filter((row: Record<string, unknown>) => isUserDeleteFlagAllowed(row?.[cols.userdeleteflag]))
-      : [];
-    return NextResponse.json({ ...data, rows });
-  } catch (err: any) {
-    const status = err?.status || 502;
-    const message = err?.bodyText || err?.message || "dataverse_fetch_failed";
-    return NextResponse.json({ error: message }, { status });
+    const data = await fetchDataverseTable(entitySet, { select: selectCols });
+    const rows = data.filter((row: Record<string, unknown>) => isUserDeleteFlagAllowed(row?.[cols.userdeleteflag]));
+    return NextResponse.json({ rows, count: rows.length });
+  } catch (err: unknown) {
+    const response = getDataverseErrorResponse(err, "dataverse_fetch_failed");
+    return NextResponse.json(
+      { error: response.error, dv_error_type: response.dv_error_type },
+      { status: response.status }
+    );
   }
 }
 
@@ -84,16 +87,14 @@ async function postHandler(req: NextRequest) {
   if (!data || typeof data !== "object") return NextResponse.json({ error: "data is required" }, { status: 400 });
 
   try {
-    const result = await callWorkerJson("/dataverse/patch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ entity_set: getDvConfig().entitySet, row_id, data }),
-    });
-    return NextResponse.json(result);
-  } catch (err: any) {
-    const status = err?.status || 502;
-    const message = err?.bodyText || err?.message || "dataverse_patch_failed";
-    return NextResponse.json({ error: message }, { status });
+    await patchDataverseRow(getDvConfig().entitySet, row_id, data);
+    return NextResponse.json({ status: "updated" });
+  } catch (err: unknown) {
+    const response = getDataverseErrorResponse(err, "dataverse_patch_failed");
+    return NextResponse.json(
+      { error: response.error, dv_error_type: response.dv_error_type },
+      { status: response.status }
+    );
   }
 }
 

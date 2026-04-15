@@ -4,8 +4,12 @@ import { validateCsrfRequest } from "@/app/lib/csrf";
 import { query } from "@/app/lib/db";
 import { writeAuditEvent } from "@/app/lib/audit";
 import {
+  fetchDataverseTable,
+  getDataverseErrorResponse,
+  patchDataverseRow,
+} from "@/app/lib/dataverse";
+import {
   callWorker,
-  callWorkerJson,
   isWorkerTimeoutError,
   parseWorkerErrorText,
 } from "@/app/lib/worker-api";
@@ -50,17 +54,25 @@ function mapDvRowToBlock(row: DvRow, cols: DvColumns) {
 }
 
 async function fetchDataverseRows(entitySet: string, selectCols: string): Promise<DvRow[]> {
-  const qs = new URLSearchParams({ entity_set: entitySet, select: selectCols });
-  const data = await callWorkerJson(`/dataverse/table?${qs.toString()}`);
-  return Array.isArray(data?.rows) ? data.rows : [];
+  return fetchDataverseTable(entitySet, { select: selectCols });
 }
 
 const getHandler = async function GET() {
   await requireAdmin();
   const { entitySet, cols, selectCols } = getDvConfig();
 
-  const [rows, users, agents, registrations] = await Promise.all([
-    fetchDataverseRows(entitySet, selectCols),
+  let rows: DvRow[];
+  try {
+    rows = await fetchDataverseRows(entitySet, selectCols);
+  } catch (err: unknown) {
+    const response = getDataverseErrorResponse(err, "dataverse_fetch_failed");
+    return NextResponse.json(
+      { error: response.error, dv_error_type: response.dv_error_type },
+      { status: response.status }
+    );
+  }
+
+  const [users, agents, registrations] = await Promise.all([
     query(
       `SELECT DISTINCT user_id, MAX(bot_name) AS last_agent
        FROM copilot_sessions
@@ -81,7 +93,6 @@ const getHandler = async function GET() {
        ORDER BY bot_name`
     ),
   ]);
-
   const blocks = rows
     .filter((row) => row[cols.disableflag] === true)
     .map((row) => mapDvRowToBlock(row, cols))
@@ -229,7 +240,16 @@ const postHandler = async function POST(req: Request) {
   }
 
   const { entitySet: dvEntitySet, cols, selectCols } = getDvConfig();
-  const rows = await fetchDataverseRows(dvEntitySet, selectCols);
+  let rows: DvRow[];
+  try {
+    rows = await fetchDataverseRows(dvEntitySet, selectCols);
+  } catch (err: unknown) {
+    const response = getDataverseErrorResponse(err, "dataverse_fetch_failed");
+    return NextResponse.json(
+      { error: response.error, dv_error_type: response.dv_error_type },
+      { status: response.status }
+    );
+  }
   const dvRow = rows.find((row) => row[cols.id] === dvRowId);
   if (!dvRow) {
     return NextResponse.json({ error: "dv_row_not_found" }, { status: 404 });
@@ -248,11 +268,19 @@ const postHandler = async function POST(req: Request) {
       return NextResponse.json({ error: "user_already_blocked" }, { status: 409 });
     }
 
-    await updateDvRow(dvRowId, dvEntitySet, {
-      [cols.disableflag]: true,
-      [cols.reason]: blockReason,
-      [cols.lastmodifiedby]: adminUpn,
-    });
+    try {
+      await updateDvRow(dvRowId, dvEntitySet, {
+        [cols.disableflag]: true,
+        [cols.reason]: blockReason,
+        [cols.lastmodifiedby]: adminUpn,
+      });
+    } catch (err: unknown) {
+      const response = getDataverseErrorResponse(err, "dataverse_patch_failed");
+      return NextResponse.json(
+        { error: response.error, dv_error_type: response.dv_error_type },
+        { status: response.status }
+      );
+    }
 
     await query(
       `INSERT INTO agent_access_revoke_log
@@ -320,11 +348,19 @@ const postHandler = async function POST(req: Request) {
     return NextResponse.json({ error: workerResult.error || "unblock_failed" }, { status: 502 });
   }
 
-  await updateDvRow(dvRowId, dvEntitySet, {
-    [cols.disableflag]: false,
-    [cols.reason]: unblockReason,
-    [cols.lastmodifiedby]: adminUpn,
-  });
+  try {
+    await updateDvRow(dvRowId, dvEntitySet, {
+      [cols.disableflag]: false,
+      [cols.reason]: unblockReason,
+      [cols.lastmodifiedby]: adminUpn,
+    });
+  } catch (err: unknown) {
+    const response = getDataverseErrorResponse(err, "dataverse_patch_failed");
+    return NextResponse.json(
+      { error: response.error, dv_error_type: response.dv_error_type },
+      { status: response.status }
+    );
+  }
 
   await query(
     `INSERT INTO agent_access_revoke_log
@@ -357,22 +393,7 @@ const postHandler = async function POST(req: Request) {
 };
 
 async function updateDvRow(rowId: string, entitySet: string, data: Record<string, unknown>): Promise<void> {
-  try {
-    const { res, text } = await callWorker("/dataverse/patch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ entity_set: entitySet, row_id: rowId, data }),
-    });
-    if (!res.ok) {
-      throw new Error(parseWorkerErrorText(text));
-    }
-  } catch (err: unknown) {
-    if (isWorkerTimeoutError(err)) {
-      throw new Error("dataverse_patch_timeout");
-    }
-    const message = err instanceof Error ? err.message : "dataverse_patch_failed";
-    throw new Error(message);
-  }
+  await patchDataverseRow(entitySet, rowId, data);
 }
 
 async function callWorkerCA(

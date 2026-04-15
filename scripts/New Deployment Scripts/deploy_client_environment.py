@@ -1245,7 +1245,9 @@ def runtime_env_for_scripts(state: dict[str, Any]) -> dict[str, str]:
         "AZ_WEB_APP_NAME": azure["web_app_name"],
         "AZ_WORKER_APP_NAME": azure["worker_app_name"],
         "STG_DATABASE_URL": runtime["DATABASE_URL"],
-        "STG_DATAVERSE_URL": runtime["DATAVERSE_URL"],
+        "STG_DATAVERSE_BASE_URL": runtime["DATAVERSE_BASE_URL"],
+        "STG_DATAVERSE_TABLE_URL": runtime["DATAVERSE_TABLE_URL"],
+        "STG_DATAVERSE_COLUMN_PREFIX": runtime["DATAVERSE_COLUMN_PREFIX"],
         "STG_ENTRA_CLIENT_SECRET": runtime["ENTRA_CLIENT_SECRET"],
         "STG_NEXTAUTH_SECRET": runtime["NEXTAUTH_SECRET"],
         "STG_WORKER_INTERNAL_API_TOKEN": runtime["WORKER_INTERNAL_API_TOKEN"],
@@ -1709,7 +1711,9 @@ def phase_capture_runtime(state: dict[str, Any], *, io: BaseIO) -> dict[str, Any
     prompt_or_default(io, state, "runtime", "NEXTAUTH_URL", "NEXTAUTH_URL", validator=validate_non_empty)
     prompt_or_default(io, state, "runtime", "WORKER_API_URL", "WORKER_API_URL", validator=validate_non_empty)
     prompt_or_default(io, state, "runtime", "WORKER_HEARTBEAT_URL", "WORKER_HEARTBEAT_URL", validator=validate_non_empty)
-    prompt_or_default(io, state, "runtime", "DATAVERSE_URL", "DATAVERSE_URL", validator=validate_non_empty)
+    prompt_or_default(io, state, "runtime", "DATAVERSE_BASE_URL", "DATAVERSE_BASE_URL", validator=validate_non_empty)
+    prompt_or_default(io, state, "runtime", "DATAVERSE_TABLE_URL", "DATAVERSE_TABLE_URL", validator=validate_non_empty)
+    prompt_or_default(io, state, "runtime", "DATAVERSE_COLUMN_PREFIX", "DATAVERSE_COLUMN_PREFIX", validator=validate_non_empty)
     prompt_or_default(io, state, "runtime", "APPINSIGHTS_APP_ID", "APPINSIGHTS_APP_ID", allow_empty=True, validator=None)
     prompt_or_default(io, state, "runtime", "APPINSIGHTS_API_KEY", "APPINSIGHTS_API_KEY", secret=True, allow_empty=True, validator=None)
     prompt_or_default(io, state, "runtime", "NEXTAUTH_SECRET", "NEXTAUTH_SECRET", secret=True)
