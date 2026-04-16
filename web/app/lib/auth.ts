@@ -3,6 +3,7 @@ import type { NextAuthOptions } from "next-auth";
 import { getServerSession } from "next-auth/next";
 import { getAuthCookiePolicies } from "./auth-cookies";
 import { buildPostAuthBridgeUrl } from "./callback-url";
+import { saveDelegatedAuthState } from "./delegated-auth-store";
 
 type RequireAuthResult = {
   session: any;
@@ -21,6 +22,15 @@ function getAuthEnv() {
   }
   return { tenantId, clientId, clientSecret };
 }
+
+const AUTHORIZATION_SCOPES = [
+  "openid",
+  "profile",
+  "email",
+  "offline_access",
+  "https://graph.microsoft.com/Directory.Read.All",
+  "https://api.powerplatform.com/CopilotStudio.AdminActions.Invoke",
+];
 
 function decodeJwtPayload(token?: string): Record<string, any> | null {
   if (!token) return null;
@@ -46,7 +56,7 @@ export function getAuthOptions(): NextAuthOptions {
         checks: ["pkce", "state"],
         authorization: {
           params: {
-            scope: ["openid", "profile", "email"].join(" "),
+            scope: AUTHORIZATION_SCOPES.join(" "),
           },
         },
         profile(profile) {
@@ -86,6 +96,16 @@ export function getAuthOptions(): NextAuthOptions {
           if (payload?.preferred_username) {
             token.upn = payload.preferred_username;
           }
+        }
+        if (account?.refresh_token || account?.access_token) {
+          saveDelegatedAuthState({
+            oid: typeof token.oid === "string" ? token.oid : null,
+            upn: typeof token.upn === "string" ? token.upn : null,
+            accessToken: typeof account.access_token === "string" ? account.access_token : null,
+            accessTokenExpiresAt: typeof account.expires_at === "number" ? account.expires_at * 1000 : null,
+            refreshToken: typeof account.refresh_token === "string" ? account.refresh_token : null,
+            scope: typeof account.scope === "string" ? account.scope : null,
+          });
         }
         return token;
       },

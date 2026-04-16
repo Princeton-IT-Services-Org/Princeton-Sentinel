@@ -36,6 +36,7 @@ const ADMIN_PREFIXES = [
   "/api/runs",
   "/api/analytics",
   "/api/agents/access-blocks",
+  "/api/copilot-quarantine",
 ];
 const USER_PREFIXES = ["/dashboard", "/sites", "/testing", "/api/graph", "/api/feature-flags", "/api/local-testing"];
 

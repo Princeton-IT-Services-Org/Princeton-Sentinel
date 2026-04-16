@@ -8,6 +8,10 @@ const testEnv = process.env as Record<string, string | undefined>;
 
 const { getAuthOptions } = require("../app/lib/auth") as typeof import("../app/lib/auth");
 const {
+  getDelegatedAuthState,
+  resetDelegatedAuthStateForTests,
+} = require("../app/lib/delegated-auth-store") as typeof import("../app/lib/delegated-auth-store");
+const {
   getAuthCookiePolicies,
   getSessionCookieName,
   shouldUseSecureAuthCookies,
@@ -21,6 +25,9 @@ test("getAuthOptions configures Azure AD with PKCE", () => {
   assert.equal(provider?.id, "azure-ad");
   assert.deepEqual((provider as any)?.options?.checks, ["pkce", "state"]);
   assert.equal((provider as any)?.options?.authorization?.params?.response_mode, undefined);
+  assert.match((provider as any)?.options?.authorization?.params?.scope, /offline_access/);
+  assert.match((provider as any)?.options?.authorization?.params?.scope, /Directory\.Read\.All/);
+  assert.match((provider as any)?.options?.authorization?.params?.scope, /CopilotStudio\.AdminActions\.Invoke/);
 });
 
 test("getAuthOptions hardens auth cookies without breaking OAuth callbacks", () => {
@@ -84,6 +91,7 @@ test("post-auth bridge bypasses sign-in and sign-out destinations", () => {
 });
 
 test("jwt callback derives claims without persisting provider tokens", async () => {
+  resetDelegatedAuthStateForTests();
   const options = getAuthOptions();
   const jwt = options.callbacks?.jwt;
   assert.ok(jwt);
@@ -94,6 +102,9 @@ test("jwt callback derives claims without persisting provider tokens", async () 
       id_token:
         "header.eyJvaWQiOiJvaWQtMSIsInByZWZlcnJlZF91c2VybmFtZSI6InVzZXJAZXhhbXBsZS5jb20iLCJncm91cHMiOlsiZ3JvdXAtMSJdfQ.signature",
       access_token: "provider-access-token",
+      refresh_token: "provider-refresh-token",
+      scope: "openid offline_access https://graph.microsoft.com/Directory.Read.All https://api.powerplatform.com/CopilotStudio.AdminActions.Invoke",
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
     } as any,
     profile: {
       oid: "profile-oid",
@@ -113,6 +124,17 @@ test("jwt callback derives claims without persisting provider tokens", async () 
   });
   assert.equal("accessToken" in (token as object), false);
   assert.equal("idToken" in (token as object), false);
+  assert.deepEqual(getDelegatedAuthState("oid-1", "user@example.com"), {
+    key: "oid:oid-1",
+    oid: "oid-1",
+    upn: "user@example.com",
+    accessToken: "provider-access-token",
+    accessTokenExpiresAt: (getDelegatedAuthState("oid-1", "user@example.com") as any)?.accessTokenExpiresAt,
+    refreshToken: "provider-refresh-token",
+    scope: "openid offline_access https://graph.microsoft.com/Directory.Read.All https://api.powerplatform.com/CopilotStudio.AdminActions.Invoke",
+    updatedAt: (getDelegatedAuthState("oid-1", "user@example.com") as any)?.updatedAt,
+  });
+  assert.equal((getDelegatedAuthState("oid-1", "user@example.com") as any)?.refreshToken, "provider-refresh-token");
 });
 
 test("session callback does not expose provider access tokens", async () => {

@@ -35,6 +35,31 @@ type ActiveBlock = {
   block_reason: string | null;
 };
 
+type QuarantineAgent = {
+  botId: string;
+  botName: string;
+  lastUpdateTimeUtc: string | null;
+  isQuarantined: boolean | null;
+  state: string;
+  actionLabel: "Block" | "Unblock";
+  error: string | null;
+};
+
+type QuarantineContext = {
+  canView: boolean;
+  canAct: boolean;
+  needsConsent: boolean;
+  hasRequiredScope: boolean;
+  roleCheck?: {
+    allowed: boolean;
+    matchedRoles: string[];
+    roleNames: string[];
+    checkedAt: string;
+    error: string | null;
+  };
+  agents: QuarantineAgent[];
+};
+
 function normalizeValue(value: string | null | undefined): string {
   return (value || "").trim().toLowerCase();
 }
@@ -149,6 +174,10 @@ export default function DataverseTableClient({
   const [selectedAgent, setSelectedAgent] = React.useState("");
   const [selectedUser, setSelectedUser] = React.useState("");
   const [blockReason, setBlockReason] = React.useState("");
+  const [quarantineContext, setQuarantineContext] = React.useState<QuarantineContext | null>(null);
+  const [quarantineLoading, setQuarantineLoading] = React.useState(true);
+  const [quarantineError, setQuarantineError] = React.useState<string | null>(null);
+  const [quarantineSubmittingBotId, setQuarantineSubmittingBotId] = React.useState<string | null>(null);
   const [modal, setModal] = React.useState<{
     title: string;
     description: string;
@@ -183,6 +212,34 @@ export default function DataverseTableClient({
   React.useEffect(() => {
     fetchDv();
   }, [fetchDv]);
+
+  const fetchQuarantineContext = React.useCallback(async () => {
+    try {
+      const res = await fetch("/api/copilot-quarantine/context");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setQuarantineError(data.error || `Failed to load (${res.status})`);
+        return;
+      }
+      setQuarantineContext({
+        canView: Boolean(data.canView),
+        canAct: Boolean(data.canAct),
+        needsConsent: Boolean(data.needsConsent),
+        hasRequiredScope: Boolean(data.hasRequiredScope),
+        roleCheck: data.roleCheck,
+        agents: Array.isArray(data.agents) ? data.agents : [],
+      });
+      setQuarantineError(null);
+    } catch {
+      setQuarantineError("Failed to load quarantine data");
+    } finally {
+      setQuarantineLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    fetchQuarantineContext();
+  }, [fetchQuarantineContext]);
 
   const dvAgents = React.useMemo(() => {
     const seen = new Set<string>();
@@ -343,6 +400,40 @@ export default function DataverseTableClient({
   const inputClass = "rounded-md border border-input bg-background px-3 py-1.5 text-sm";
   const formReady = selectedUser && selectedAgent && blockReason.trim() && !submitting;
 
+  async function handleQuarantineAction(agent: QuarantineAgent) {
+    if (!canManageAccess || !quarantineContext?.canAct) return;
+    setQuarantineSubmittingBotId(agent.botId);
+    setQuarantineError(null);
+    const actionPath = agent.isQuarantined ? "/api/copilot-quarantine/unquarantine" : "/api/copilot-quarantine/quarantine";
+    try {
+      const res = await fetch(actionPath, {
+        method: "POST",
+        headers: getCsrfFetchHeaders({ "Content-Type": "application/json", "X-CSRF-Token": csrfToken }),
+        body: JSON.stringify({ botId: agent.botId, botName: agent.botName }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setQuarantineError(data.error || "Quarantine action failed");
+        return;
+      }
+      if (data?.agent) {
+        setQuarantineContext((current) =>
+          current
+            ? {
+                ...current,
+                agents: current.agents.map((row) => (row.botId === agent.botId ? data.agent : row)),
+              }
+            : current
+        );
+      }
+      await fetchQuarantineContext();
+    } catch {
+      setQuarantineError("Quarantine action failed");
+    } finally {
+      setQuarantineSubmittingBotId(null);
+    }
+  }
+
   return (
     <main className="mx-auto max-w-[1400px] space-y-4 px-4 py-6">
       <div className="flex items-center justify-between">
@@ -358,6 +449,81 @@ export default function DataverseTableClient({
           </Button>
         </Link>
       </div>
+
+      {(quarantineLoading || quarantineError || quarantineContext?.canView) && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Copilot Agent Quarantine</CardTitle>
+            <CardDescription>
+              Live quarantine state for agents from the Agent Security-Group Mapping table
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {!canManageAccess && controlsDisabledReason ? (
+              <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-100">
+                {controlsDisabledReason}
+              </div>
+            ) : null}
+            {quarantineLoading ? (
+              <p className="text-sm text-muted-foreground">Loading...</p>
+            ) : quarantineError ? (
+              <DvErrorBanner errorType="unknown" rawError={quarantineError} />
+            ) : quarantineContext && !quarantineContext.canAct ? (
+              <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-100">
+                {quarantineContext.needsConsent
+                  ? "Power Platform delegated consent is required before block and unblock actions can run."
+                  : "Your current session does not include the required Power Platform delegated scope for quarantine actions."}
+              </div>
+            ) : null}
+            {quarantineContext && quarantineContext.agents.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No agents found in the mapping table.</p>
+            ) : quarantineContext ? (
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Bot Name</TableHead>
+                      <TableHead>Last Modified</TableHead>
+                      <TableHead>Current State</TableHead>
+                      <TableHead className="w-28">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {quarantineContext.agents.map((agent) => (
+                      <TableRow key={agent.botId}>
+                        <TableCell>
+                          <div className="font-medium">{agent.botName}</div>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">
+                          <LocalDateTime value={agent.lastUpdateTimeUtc} fallback="—" />
+                        </TableCell>
+                        <TableCell>
+                          <span className={agent.isQuarantined ? "font-medium text-red-600 dark:text-red-400" : "font-medium text-green-700 dark:text-green-400"}>
+                            {agent.state}
+                          </span>
+                          {agent.error ? (
+                            <div className="text-xs text-muted-foreground">{agent.error}</div>
+                          ) : null}
+                        </TableCell>
+                        <TableCell>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={!canManageAccess || !quarantineContext.canAct || quarantineSubmittingBotId === agent.botId || Boolean(agent.error)}
+                            onClick={() => handleQuarantineAction(agent)}
+                          >
+                            {quarantineSubmittingBotId === agent.botId ? `${agent.actionLabel}ing...` : agent.actionLabel}
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            ) : null}
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader className="gap-3 sm:flex-row sm:items-start sm:justify-between">

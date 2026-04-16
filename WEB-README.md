@@ -234,6 +234,10 @@ These routes are admin-only and authenticate to the worker with `WORKER_INTERNAL
   alias/export of the access-control route
 - `GET|POST /api/agents/access-blocks`
   higher-level block/unblock, disable/enable, and register-agent operations
+- `GET /api/copilot-quarantine/context`
+- `POST /api/copilot-quarantine/quarantine`
+- `POST /api/copilot-quarantine/unquarantine`
+  delegated Power Platform quarantine state and action routes for the agent access-control page
 
 ### Export APIs
 

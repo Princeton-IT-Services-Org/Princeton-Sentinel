@@ -86,9 +86,13 @@ docker compose up --build
 - The worker API is internal-only and is protected by `WORKER_INTERNAL_API_TOKEN`.
 - The worker heartbeat endpoint is protected by `WORKER_HEARTBEAT_TOKEN`.
 
-### Graph application permissions
+### Entra, Graph, Dataverse, and Power Platform permissions
 
-The current Graph read and revoke flows expect these application permissions:
+The current implementation uses a mix of application permissions, delegated user scopes, group-based access, and Dataverse application-user access.
+
+#### Graph application permissions
+
+The shared app registration needs these Microsoft Graph application permissions for inventory, revoke, and agent-control worker flows:
 
 - `Directory.Read.All`
 - `Files.Read.All`
@@ -96,11 +100,58 @@ The current Graph read and revoke flows expect these application permissions:
 - `Group.Read.All`
 - `Sites.Read.All`
 - `User.Read.All`
+- `Policy.ReadWrite.ConditionalAccess`
+  Required for the worker's per-agent Conditional Access block/unblock flows.
+- `Application.ReadWrite.All`
+  Required for the worker's agent disable/enable flow that updates service principal `accountEnabled`.
+
+#### Delegated user scopes
+
+The web sign-in flow now requests delegated scopes needed by the quarantine feature:
+
+- `openid`
+- `profile`
+- `email`
+- `offline_access`
+  Required so the web server can retain refresh capability for later delegated Graph and Power Platform calls.
+- `https://graph.microsoft.com/Directory.Read.All`
+  Required for the signed-in admin role check against `me/transitiveMemberOf/microsoft.graph.directoryRole`.
+- `https://api.powerplatform.com/CopilotStudio.AdminActions.Invoke`
+  Required for Copilot quarantine status reads and quarantine/unquarantine actions.
+
+#### User access requirements
+
+A signed-in user must satisfy all of these to use the new quarantine controls:
+
+- membership in `ADMIN_GROUP_ID`
+- one of these Entra admin roles:
+  - `Global Administrator`
+  - `AI Administrator`
+  - `Power Platform Administrator`
+
+#### Dataverse application-user access
+
+The app-only Dataverse client uses the shared Entra app registration as a Dataverse application user. That application user needs table access in the target environment for:
+
+- the existing table behind `DATAVERSE_TABLE_URL`
+  Read/write access is required because the existing agent access-control flow still patches rows.
+- the new `Agent Security-Group Mapping` table behind `DATAVERSE_AGENT_SECURITY_GROUP_MAPPING_TABLE_URL`
+  Read access is required for the Copilot quarantine table at the top of `/dashboard/agents/agent-access-control`.
+
+#### Power Platform prerequisites
+
+For the quarantine feature to work in a tenant:
+
+- the signed-in admin must successfully consent to `CopilotStudio.AdminActions.Invoke`
+- the target bot must support the Copilot quarantine API
+- the app must be able to resolve the Power Platform environment from the configured `DATAVERSE_BASE_URL`
 
 ### Optional integrations
 
 - `DATAVERSE_BASE_URL`, `DATAVERSE_TABLE_URL`, and `DATAVERSE_COLUMN_PREFIX`
   Enable the web app's Dataverse-backed agent access helpers used by the agents pages and admin tooling.
+- `DATAVERSE_AGENT_SECURITY_GROUP_MAPPING_TABLE_URL`
+  Enables the Copilot quarantine table at the top of `/dashboard/agents/agent-access-control`.
 - `APPINSIGHTS_APP_ID` and `APPINSIGHTS_API_KEY`
   Enable the `copilot_telemetry` worker job. The job is seeded by default but skips cleanly when Application Insights is not configured.
 - `LICENSE_PUBLIC_KEY_PATH`
@@ -136,7 +187,7 @@ Common variables by area:
 - worker/runtime tuning:
   `SCHEDULER_POLL_SECONDS`, `RECOVER_INTERRUPTED_RUNS_ON_STARTUP`, `FLUSH_EVERY`, `MV_REFRESH_MAX_VIEWS_PER_RUN`
 - optional integrations:
-  `DATAVERSE_BASE_URL`, `DATAVERSE_TABLE_URL`, `DATAVERSE_COLUMN_PREFIX`, `COPILOT_APP_ID`, `APPINSIGHTS_APP_ID`, `APPINSIGHTS_API_KEY`
+  `DATAVERSE_BASE_URL`, `DATAVERSE_TABLE_URL`, `DATAVERSE_COLUMN_PREFIX`, `DATAVERSE_AGENT_SECURITY_GROUP_MAPPING_TABLE_URL`, `COPILOT_APP_ID`, `APPINSIGHTS_APP_ID`, `APPINSIGHTS_API_KEY`
 
 ## Developer Workflows
 
