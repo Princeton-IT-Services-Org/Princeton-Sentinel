@@ -330,6 +330,10 @@ function readRoleCache(session: Session | any): RoleCheckResult | null {
 
 function writeRoleCache(session: Session | any, result: RoleCheckResult) {
   const cacheKey = buildRoleCacheKey(session);
+  if (result.error && result.error !== "graph_consent_required" && result.error !== "graph_token_unavailable") {
+    roleCache.delete(cacheKey);
+    return;
+  }
   roleCache.set(cacheKey, {
     ...result,
     cacheKey,
