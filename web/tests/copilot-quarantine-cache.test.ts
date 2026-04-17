@@ -37,6 +37,7 @@ const {
 const {
   resetDelegatedAuthStateForTests,
   saveDelegatedAuthState,
+  getDelegatedAuthState,
 } = require("../app/lib/delegated-auth-store") as typeof import("../app/lib/delegated-auth-store");
 
 function buildJwt(payload: Record<string, unknown>) {
@@ -188,6 +189,117 @@ test("transient graph role check failures are not cached across retries", async 
     assert.equal(second.error, null);
     assert.equal(tokenRequests, 2);
     assert.equal(roleRequests, 2);
+  } finally {
+    global.fetch = originalFetch;
+    resetCopilotQuarantineCachesForTests();
+    resetDelegatedAuthStateForTests();
+  }
+});
+
+test("delegated auth refresh persists rotated refresh tokens from Entra", async () => {
+  resetCopilotQuarantineCachesForTests();
+  resetDelegatedAuthStateForTests();
+
+  saveDelegatedAuthState({
+    oid: "oid-1",
+    upn: "admin@example.com",
+    refreshToken: "refresh-token-old",
+  });
+
+  const originalFetch = global.fetch;
+
+  global.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+
+    if (url.includes("/oauth2/v2.0/token")) {
+      return new Response(
+        JSON.stringify({
+          access_token: buildJwt({
+            scp: "Directory.Read.All",
+            exp: Math.floor(Date.now() / 1000) + 3600,
+          }),
+          refresh_token: "refresh-token-new",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    if (url.includes("graph.microsoft.com")) {
+      return new Response(
+        JSON.stringify({
+          value: [{ displayName: "Power Platform Administrator" }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    throw new Error(`unexpected fetch url: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const session = { user: { oid: "oid-1", upn: "admin@example.com" } };
+
+    const result = await evaluateCopilotQuarantineRoles(session);
+    assert.equal(result.allowed, true);
+    assert.equal(
+      getDelegatedAuthState("oid-1", "admin@example.com")?.refreshToken,
+      "refresh-token-new"
+    );
+  } finally {
+    global.fetch = originalFetch;
+    resetCopilotQuarantineCachesForTests();
+    resetDelegatedAuthStateForTests();
+  }
+});
+
+test("delegated auth refresh retains the prior refresh token when Entra omits a new one", async () => {
+  resetCopilotQuarantineCachesForTests();
+  resetDelegatedAuthStateForTests();
+
+  saveDelegatedAuthState({
+    oid: "oid-1",
+    upn: "admin@example.com",
+    refreshToken: "refresh-token-old",
+  });
+
+  const originalFetch = global.fetch;
+
+  global.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+
+    if (url.includes("/oauth2/v2.0/token")) {
+      return new Response(
+        JSON.stringify({
+          access_token: buildJwt({
+            scp: "Directory.Read.All",
+            exp: Math.floor(Date.now() / 1000) + 3600,
+          }),
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    if (url.includes("graph.microsoft.com")) {
+      return new Response(
+        JSON.stringify({
+          value: [{ displayName: "Power Platform Administrator" }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    throw new Error(`unexpected fetch url: ${url}`);
+  }) as typeof fetch;
+
+  try {
+    const session = { user: { oid: "oid-1", upn: "admin@example.com" } };
+
+    const result = await evaluateCopilotQuarantineRoles(session);
+    assert.equal(result.allowed, true);
+    assert.equal(
+      getDelegatedAuthState("oid-1", "admin@example.com")?.refreshToken,
+      "refresh-token-old"
+    );
   } finally {
     global.fetch = originalFetch;
     resetCopilotQuarantineCachesForTests();

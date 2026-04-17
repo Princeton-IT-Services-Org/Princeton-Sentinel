@@ -31,6 +31,7 @@ type CachedEnvironment = {
 
 type PowerPlatformTokenResult = {
   accessToken: string;
+  refreshToken: string | null;
   scopes: string[];
   needsConsent: boolean;
 };
@@ -183,18 +184,20 @@ async function refreshAccessToken(refreshToken: string, scopes: string[]): Promi
           ? payload.error
           : `entra_token_refresh_failed_${response.status}`;
     if (/consent|required|interaction_required|invalid_grant/i.test(description)) {
-      return { accessToken: "", scopes: [], needsConsent: true };
+      return { accessToken: "", refreshToken: null, scopes: [], needsConsent: true };
     }
     throw new Error(description);
   }
 
   const accessToken = typeof payload.access_token === "string" ? payload.access_token : "";
+  const nextRefreshToken = typeof payload.refresh_token === "string" ? payload.refresh_token : null;
   if (!accessToken) {
     throw new Error("entra_token_missing_access_token");
   }
 
   return {
     accessToken,
+    refreshToken: nextRefreshToken,
     scopes: getTokenScopes(accessToken),
     needsConsent: false,
   };
@@ -204,7 +207,7 @@ async function getDelegatedAccessToken(session: Session | any, scopes: string[])
   const identity = getSessionIdentity(session);
   const state = getDelegatedAuthState(identity.oid, identity.upn);
   if (!state?.refreshToken) {
-    return { accessToken: "", scopes: [], needsConsent: true };
+    return { accessToken: "", refreshToken: null, scopes: [], needsConsent: true };
   }
 
   const result = await refreshAccessToken(state.refreshToken, scopes);
@@ -217,7 +220,7 @@ async function getDelegatedAccessToken(session: Session | any, scopes: string[])
       upn: identity.upn,
       accessToken: result.accessToken,
       accessTokenExpiresAt: expiresAt,
-      refreshToken: state.refreshToken,
+      refreshToken: result.refreshToken ?? state.refreshToken,
       scope: result.scopes.join(" "),
     });
   }
