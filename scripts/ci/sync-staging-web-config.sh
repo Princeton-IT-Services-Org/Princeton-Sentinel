@@ -17,7 +17,6 @@ az containerapp secret set \
   --secrets \
     dburl="${STG_DATABASE_URL}" \
     entrasecret="${STG_ENTRA_CLIENT_SECRET}" \
-    nextauthsecret="${STG_NEXTAUTH_SECRET}" \
     workerinternaltoken="${STG_WORKER_INTERNAL_API_TOKEN}" \
     workerheartbeattoken="${STG_WORKER_HEARTBEAT_TOKEN}"
 
@@ -36,7 +35,6 @@ az containerapp update \
     WORKER_INTERNAL_API_TOKEN=secretref:workerinternaltoken \
     WORKER_HEARTBEAT_TOKEN=secretref:workerheartbeattoken \
     NEXTAUTH_URL="${NEXTAUTH_URL}" \
-    NEXTAUTH_SECRET=secretref:nextauthsecret \
     ENTRA_TENANT_ID="${STG_ENTRA_TENANT_ID}" \
     ENTRA_CLIENT_ID="${STG_ENTRA_CLIENT_ID}" \
     ENTRA_CLIENT_SECRET=secretref:entrasecret \

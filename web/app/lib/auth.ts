@@ -2,6 +2,7 @@ import AzureADProvider from "next-auth/providers/azure-ad";
 import type { NextAuthOptions } from "next-auth";
 import { getServerSession } from "next-auth/next";
 import { getAuthCookiePolicies } from "./auth-cookies";
+import { getBootScopedAuthSecret } from "./auth-secret";
 import { buildPostAuthBridgeUrl } from "./callback-url";
 import { clearDelegatedAuthState, saveDelegatedAuthState } from "./delegated-auth-store";
 
@@ -56,6 +57,7 @@ function decodeJwtPayload(token?: string): Record<string, any> | null {
 export function getAuthOptions(): NextAuthOptions {
   const { tenantId, clientId, clientSecret } = getAuthEnv();
   return {
+    secret: getBootScopedAuthSecret(),
     providers: [
       AzureADProvider({
         tenantId,

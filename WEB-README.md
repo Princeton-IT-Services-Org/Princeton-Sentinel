@@ -55,6 +55,7 @@ Current behavior:
   - `ENTRA_TENANT_ID`
   - `ENTRA_CLIENT_ID`
   - `ENTRA_CLIENT_SECRET`
+- the web app generates a boot-scoped auth secret automatically on each server boot
 - authorization is group-based:
   - `ADMIN_GROUP_ID`
   - `USER_GROUP_ID`
@@ -287,7 +288,6 @@ Common web-relevant variables:
 - required:
   - `DATABASE_URL`
   - `NEXTAUTH_URL`
-  - `NEXTAUTH_SECRET`
   - `ENTRA_TENANT_ID`
   - `ENTRA_CLIENT_ID`
   - `ENTRA_CLIENT_SECRET`

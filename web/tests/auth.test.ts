@@ -6,6 +6,11 @@ process.env.ENTRA_CLIENT_ID = "client-id";
 process.env.ENTRA_CLIENT_SECRET = "client-secret";
 const testEnv = process.env as Record<string, string | undefined>;
 
+const {
+  getBootScopedAuthSecret,
+  resetBootScopedAuthSecretForTests,
+  setBootScopedAuthSecretForTests,
+} = require("../app/lib/auth-secret") as typeof import("../app/lib/auth-secret");
 const { getAuthOptions } = require("../app/lib/auth") as typeof import("../app/lib/auth");
 const {
   clearDelegatedAuthState,
@@ -30,6 +35,21 @@ test("getAuthOptions configures Azure AD with PKCE", () => {
   assert.match((provider as any)?.options?.authorization?.params?.scope, /offline_access/);
   assert.match((provider as any)?.options?.authorization?.params?.scope, /Directory\.Read\.All/);
   assert.match((provider as any)?.options?.authorization?.params?.scope, /CopilotStudio\.AdminActions\.Invoke/);
+});
+
+test("getAuthOptions uses the boot-scoped auth secret", () => {
+  resetBootScopedAuthSecretForTests();
+
+  try {
+    setBootScopedAuthSecretForTests("test-auth-secret");
+
+    const options = getAuthOptions();
+
+    assert.equal(options.secret, "test-auth-secret");
+    assert.equal(getBootScopedAuthSecret(), "test-auth-secret");
+  } finally {
+    resetBootScopedAuthSecretForTests();
+  }
 });
 
 test("getAuthOptions redeems Azure auth codes with a single-resource Graph scope", async () => {

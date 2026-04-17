@@ -328,7 +328,6 @@ class DeployClientEnvironmentTests(unittest.TestCase):
         state["runtime"]["ADMIN_GROUP_ID"] = "admins"
         state["runtime"]["USER_GROUP_ID"] = "users"
         state["runtime"]["NEXTAUTH_URL"] = "https://web.example.com"
-        state["runtime"]["NEXTAUTH_SECRET"] = "nextauth-secret"
         state["runtime"]["WORKER_API_URL"] = "https://worker.example.com"
         state["runtime"]["WORKER_INTERNAL_API_TOKEN"] = "worker-token"
         state["runtime"]["WORKER_HEARTBEAT_TOKEN"] = "heartbeat-token"
@@ -347,6 +346,7 @@ class DeployClientEnvironmentTests(unittest.TestCase):
 
     def test_deploy_staging_workflow_exports_dataverse_base_url_for_web_steps(self):
         workflow = (ROOT / ".github" / "workflows" / "deploy-staging.yml").read_text()
+        removed_staging_secret = "STG_" + "NEXTAUTH" + "_SECRET"
 
         validate_block = workflow.split("      - name: Validate web staging runtime config", maxsplit=1)[1].split(
             "      - name: Sync web staging runtime config",
@@ -354,6 +354,7 @@ class DeployClientEnvironmentTests(unittest.TestCase):
         )[0]
         self.assertIn("STG_DATAVERSE_BASE_URL: ${{ vars.STG_DATAVERSE_BASE_URL }}", validate_block)
         self.assertIn("STG_DATAVERSE_BASE_URL \\", validate_block)
+        self.assertNotIn(removed_staging_secret, validate_block)
 
         sync_block = workflow.split("      - name: Sync web staging runtime config", maxsplit=1)[1].split(
             "      - name: Build and push web image to ACR",
@@ -365,6 +366,16 @@ class DeployClientEnvironmentTests(unittest.TestCase):
             "STG_DATAVERSE_AGENT_SECURITY_GROUP_MAPPING_TABLE_URL: ${{ vars.STG_DATAVERSE_AGENT_SECURITY_GROUP_MAPPING_TABLE_URL }}",
             sync_block,
         )
+        self.assertNotIn(removed_staging_secret, sync_block)
+
+    def test_package_web_runtime_entrypoint_does_not_export_auth_secret_env(self):
+        package_script = (ROOT / "scripts" / "ci" / "package-web-runtime.sh").read_text()
+        removed_runtime_secret = "NEXTAUTH" + "_SECRET"
+
+        self.assertIn('cat > "${runtime_dir}/entrypoint.sh"', package_script)
+        self.assertIn('CMD ["./entrypoint.sh"]', package_script)
+        self.assertIn('exec node server.js', package_script)
+        self.assertNotIn(removed_runtime_secret, package_script)
 
     def test_build_summary_markdown_mentions_smoke_checks(self):
         source = {

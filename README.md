@@ -52,7 +52,6 @@ The top-level shortcuts `/analytics`, `/jobs`, and `/runs` currently redirect to
 
 1. Copy [`.env.example`](/Users/garrick-mac/Documents/GitHub/Princeton-Sentinel/.env.example) to `.env`.
 2. Fill in the required Entra and security values:
-   - `NEXTAUTH_SECRET`
    - `ENTRA_TENANT_ID`
    - `ENTRA_CLIENT_ID`
    - `ENTRA_CLIENT_SECRET`
@@ -167,6 +166,7 @@ For the quarantine feature to work in a tenant:
 - The worker scheduler polls `job_schedules.next_run_at` every `SCHEDULER_POLL_SECONDS`.
 - Scheduled and run-now execution use Postgres advisory locks so the same job does not run concurrently.
 - Interrupted runs can be marked and recovered on startup when `RECOVER_INTERRUPTED_RUNS_ON_STARTUP=true`.
+- The web app generates a fresh boot-scoped auth secret on every server boot, so web sessions are intentionally invalidated after web restarts and redeploys.
 - The worker heartbeat posts to `/api/internal/worker-heartbeat` every `WORKER_HEARTBEAT_INTERVAL_SECONDS`; the health state is kept in memory and resets on worker restart.
 - Graph sync behavior is controlled by environment variables such as `GRAPH_SYNC_PULL_PERMISSIONS`, `GRAPH_SYNC_GROUP_MEMBERSHIPS`, `GRAPH_SYNC_GROUP_MEMBERSHIPS_USERS_ONLY`, `GRAPH_SYNC_STAGES`, `GRAPH_SYNC_SKIP_STAGES`, `GRAPH_PERMISSIONS_BATCH_SIZE`, `GRAPH_PERMISSIONS_STALE_AFTER_HOURS`, and `FLUSH_EVERY`.
 - Materialized views are refreshed by the dedicated `mv_refresh` job, with dirty views queued in Postgres.
@@ -178,7 +178,8 @@ Use [`.env.example`](/Users/garrick-mac/Documents/GitHub/Princeton-Sentinel/.env
 Common variables by area:
 
 - auth and access:
-  `NEXTAUTH_URL`, `NEXTAUTH_SECRET`, `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, `ENTRA_CLIENT_SECRET`, `ADMIN_GROUP_ID`, `USER_GROUP_ID`
+  `NEXTAUTH_URL`, `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID`, `ENTRA_CLIENT_SECRET`, `ADMIN_GROUP_ID`, `USER_GROUP_ID`
+  The web app generates its auth secret at startup instead of reading a long-lived configured value.
 - database:
   `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `DATABASE_URL`, `DB_CONNECT_TIMEOUT_SECONDS`
 - internal service auth:

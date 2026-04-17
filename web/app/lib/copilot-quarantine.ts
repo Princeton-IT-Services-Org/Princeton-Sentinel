@@ -510,53 +510,6 @@ function mapStatusPayload(botId: string, botName: string, payload: Record<string
   };
 }
 
-function logCopilotQuarantineStatusAttempt(input: {
-  session: Session | any;
-  botId: string;
-  botName: string;
-  environmentId: string;
-  path: string;
-  hasRequiredScope: boolean;
-  scopes: string[];
-}) {
-  const identity = getSessionIdentity(input.session);
-  console.log("[COPILOT_QUARANTINE] fetch status", {
-    actorOid: identity.oid,
-    actorUpn: identity.upn,
-    botId: input.botId,
-    botName: input.botName,
-    environmentId: input.environmentId,
-    path: input.path,
-    hasRequiredScope: input.hasRequiredScope,
-    scopes: input.scopes,
-  });
-}
-
-function logCopilotQuarantineStatusFailure(input: {
-  session: Session | any;
-  botId: string;
-  botName: string;
-  hasRequiredScope: boolean;
-  scopes: string[];
-  error: unknown;
-}) {
-  const identity = getSessionIdentity(input.session);
-  const error = input.error as PowerPlatformRequestError | undefined;
-  console.error("[COPILOT_QUARANTINE] fetch status failed", {
-    actorOid: identity.oid,
-    actorUpn: identity.upn,
-    botId: input.botId,
-    botName: input.botName,
-    environmentId: error?.environmentId || null,
-    requestPath: error?.path || null,
-    requestMethod: error?.method || null,
-    status: error?.status || null,
-    hasRequiredScope: input.hasRequiredScope,
-    scopes: input.scopes,
-    error: error instanceof Error ? error.message : "power_platform_status_failed",
-  });
-}
-
 function buildCopilotQuarantineStatusPath(environmentId: string, botId: string) {
   return `/copilotstudio/environments/${encodeURIComponent(environmentId)}/bots/${encodeURIComponent(botId)}/api/botQuarantine?api-version=1`;
 }
@@ -624,27 +577,9 @@ export async function fetchCopilotQuarantineContext(session: Session | any) {
       const environmentId = await resolveEnvironmentId(powerPlatform.accessToken);
       agents = await Promise.all(
         mappingRows.map(async (row) => {
-          const path = buildCopilotQuarantineStatusPath(environmentId, row.botId);
-          logCopilotQuarantineStatusAttempt({
-            session,
-            botId: row.botId,
-            botName: row.botName,
-            environmentId,
-            path,
-            hasRequiredScope: powerPlatform.hasRequiredScope,
-            scopes: powerPlatform.scopes,
-          });
           try {
             return await fetchCopilotQuarantineStatus(powerPlatform.accessToken, row.botId, row.botName, environmentId);
           } catch (error) {
-            logCopilotQuarantineStatusFailure({
-              session,
-              botId: row.botId,
-              botName: row.botName,
-              hasRequiredScope: powerPlatform.hasRequiredScope,
-              scopes: powerPlatform.scopes,
-              error,
-            });
             return {
               botId: row.botId,
               botName: row.botName,
@@ -658,13 +593,6 @@ export async function fetchCopilotQuarantineContext(session: Session | any) {
         })
       );
     } catch (error) {
-      console.error("[COPILOT_QUARANTINE] resolve environment failed", {
-        actorOid: getSessionIdentity(session).oid,
-        actorUpn: getSessionIdentity(session).upn,
-        hasRequiredScope: powerPlatform.hasRequiredScope,
-        scopes: powerPlatform.scopes,
-        error: getErrorMessage(error, "power_platform_environment_not_found"),
-      });
       agents = mappingRows.map((row) => ({
         botId: row.botId,
         botName: row.botName,

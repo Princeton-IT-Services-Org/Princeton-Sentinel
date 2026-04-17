@@ -81,7 +81,6 @@ MASTER_CSV_FIELDS = [
     "worker_app_name",
     "worker_fqdn",
     "nextauth_url",
-    "nextauth_secret",
     "entra_tenant_id",
     "entra_client_id",
     "entra_client_secret",
@@ -147,7 +146,6 @@ REQUIRED_RUNTIME_FIELDS = [
     "DATAVERSE_BASE_URL",
     "DATAVERSE_TABLE_URL",
     "DATAVERSE_COLUMN_PREFIX",
-    "NEXTAUTH_SECRET",
     "WORKER_INTERNAL_API_TOKEN",
     "WORKER_HEARTBEAT_TOKEN",
 ]
@@ -558,7 +556,6 @@ def build_runtime_env_snapshot(state: dict[str, Any]) -> dict[str, str]:
             runtime.get("DATAVERSE_AGENT_SECURITY_GROUP_MAPPING_TABLE_URL") or ""
         ),
         "NEXTAUTH_URL": str(runtime.get("NEXTAUTH_URL") or ""),
-        "NEXTAUTH_SECRET": str(runtime.get("NEXTAUTH_SECRET") or ""),
         "ENTRA_TENANT_ID": str(runtime.get("ENTRA_TENANT_ID") or ""),
         "ENTRA_CLIENT_ID": str(runtime.get("ENTRA_CLIENT_ID") or ""),
         "ENTRA_CLIENT_SECRET": str(runtime.get("ENTRA_CLIENT_SECRET") or ""),
@@ -734,7 +731,6 @@ def csv_row_from_state(state: dict[str, Any]) -> dict[str, str]:
         "worker_app_name": str(azure.get("worker_app_name") or ""),
         "worker_fqdn": str(azure.get("worker_fqdn") or ""),
         "nextauth_url": str(runtime.get("NEXTAUTH_URL") or ""),
-        "nextauth_secret": str(runtime.get("NEXTAUTH_SECRET") or ""),
         "entra_tenant_id": str(runtime.get("ENTRA_TENANT_ID") or ""),
         "entra_client_id": str(runtime.get("ENTRA_CLIENT_ID") or ""),
         "entra_client_secret": str(runtime.get("ENTRA_CLIENT_SECRET") or ""),
