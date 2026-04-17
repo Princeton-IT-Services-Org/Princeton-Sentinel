@@ -23,6 +23,7 @@ import MetricGrid from "@/components/metric-grid";
 import { MetricCard } from "@/components/metric-card";
 import { UniqueUsersCard, TotalConversationsCard, EscalatedOutcomeCard } from "@/components/unique-users-card";
 import { InfoTooltip } from "@/components/info-tooltip";
+import { ErrorDetailsTable } from "./error-details-table";
 
 export const dynamic = "force-dynamic";
 
@@ -745,40 +746,13 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
       <Card>
         <CardHeader>
           <CardTitle>Error details</CardTitle>
-          <CardDescription>Recent errors with timestamp and conversation ID (latest 100)</CardDescription>
+          <CardDescription>Recent errors (latest 100). Click a column header to sort.</CardDescription>
         </CardHeader>
         <CardContent>
           {errorDetails.length === 0 ? (
             <p className="text-sm text-muted-foreground">No errors in this time range.</p>
           ) : (
-            <div className="overflow-x-auto max-h-96 overflow-y-auto">
-              <table className="ps-table">
-                <thead className="sticky top-0 bg-background">
-                  <tr className="border-b text-left">
-                    <th className="pb-2 pr-4 font-medium">Timestamp</th>
-                    <th className="pb-2 pr-4 font-medium">Agent</th>
-                    <th className="pb-2 pr-4 font-medium">Channel</th>
-                    <th className="pb-2 pr-4 font-medium">User</th>
-                    <th className="pb-2 pr-4 font-medium">Conversation ID</th>
-                    <th className="pb-2 pr-4 font-medium">Error Code</th>
-                    <th className="pb-2 font-medium">Error Message</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {errorDetails.map((row, i) => (
-                    <tr key={i} className="border-b last:border-0">
-                      <td className="py-2 pr-4 whitespace-nowrap">{formatDate(row.timestamp)}</td>
-                      <td className="py-2 pr-4 whitespace-nowrap">{row.agent}</td>
-                      <td className="py-2 pr-4 whitespace-nowrap">{row.channel || "—"}</td>
-                      <td className="py-2 pr-4 whitespace-nowrap">{row.userName || "—"}</td>
-                      <td className="py-2 pr-4 font-mono text-xs">{row.sessionId || "—"}</td>
-                      <td className="py-2 pr-4 whitespace-nowrap">{row.errorCode || "—"}</td>
-                      <td className="py-2 max-w-md truncate text-red-500" title={row.errorMessage}>{row.errorMessage || "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <ErrorDetailsTable items={errorDetails} />
           )}
         </CardContent>
       </Card>
