@@ -144,12 +144,15 @@ For the quarantine feature to work in a tenant:
 
 - the signed-in admin must successfully consent to `CopilotStudio.AdminActions.Invoke`
 - the target bot must support the Copilot quarantine API
-- the app must be able to resolve the Power Platform environment from the configured `DATAVERSE_BASE_URL`
+- the app must either be able to resolve the Power Platform environment from `DATAVERSE_BASE_URL`
+  or be configured with `POWER_PLATFORM_ENVIRONMENT_ID`
 
 ### Optional integrations
 
 - `DATAVERSE_BASE_URL`, `DATAVERSE_TABLE_URL`, and `DATAVERSE_COLUMN_PREFIX`
   Enable the web app's Dataverse-backed agent access helpers used by the agents pages and admin tooling.
+- `POWER_PLATFORM_ENVIRONMENT_ID`
+  Optional override for Copilot quarantine calls so the web app can skip Power Platform environment discovery.
 - `DATAVERSE_AGENT_SECURITY_GROUP_MAPPING_TABLE_URL`
   Enables the Copilot quarantine table at the top of `/dashboard/agents/agent-access-control`.
 - `APPINSIGHTS_APP_ID` and `APPINSIGHTS_API_KEY`
@@ -187,7 +190,7 @@ Common variables by area:
 - worker/runtime tuning:
   `SCHEDULER_POLL_SECONDS`, `RECOVER_INTERRUPTED_RUNS_ON_STARTUP`, `FLUSH_EVERY`, `MV_REFRESH_MAX_VIEWS_PER_RUN`
 - optional integrations:
-  `DATAVERSE_BASE_URL`, `DATAVERSE_TABLE_URL`, `DATAVERSE_COLUMN_PREFIX`, `DATAVERSE_AGENT_SECURITY_GROUP_MAPPING_TABLE_URL`, `COPILOT_APP_ID`, `APPINSIGHTS_APP_ID`, `APPINSIGHTS_API_KEY`
+  `DATAVERSE_BASE_URL`, `POWER_PLATFORM_ENVIRONMENT_ID`, `DATAVERSE_TABLE_URL`, `DATAVERSE_COLUMN_PREFIX`, `DATAVERSE_AGENT_SECURITY_GROUP_MAPPING_TABLE_URL`, `COPILOT_APP_ID`, `APPINSIGHTS_APP_ID`, `APPINSIGHTS_API_KEY`
 
 ## Developer Workflows
 

@@ -14,6 +14,7 @@ async function insertLog(input: {
   actor: { oid?: string | null; upn?: string | null; name?: string | null };
   botId: string;
   botName: string | null;
+  reason?: string | null;
   resultingIsQuarantined?: boolean | null;
   resultLastUpdateTimeUtc?: string | null;
   errorDetail?: string | null;
@@ -22,8 +23,8 @@ async function insertLog(input: {
   await query(
     `INSERT INTO agent_quarantine_log
        (action, request_status, actor_oid, actor_upn, actor_name, bot_id, bot_name,
-        resulting_is_quarantined, result_last_update_time_utc, error_detail, details)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        reason, resulting_is_quarantined, result_last_update_time_utc, error_detail, details)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
     [
       input.action,
       input.requestStatus,
@@ -32,6 +33,7 @@ async function insertLog(input: {
       input.actor.name || null,
       input.botId,
       input.botName,
+      input.reason ?? null,
       input.resultingIsQuarantined ?? null,
       input.resultLastUpdateTimeUtc ?? null,
       input.errorDetail ?? null,
@@ -76,8 +78,12 @@ export async function handleCopilotQuarantineAction(req: Request, action: "quara
 
   const botId = getNonEmptyString(body.botId);
   const botName = getNonEmptyString(body.botName) || botId;
+  const reason = getNonEmptyString(body.reason);
   if (!botId) {
     return NextResponse.json({ error: "botId is required" }, { status: 400 });
+  }
+  if (!reason) {
+    return NextResponse.json({ error: "reason is required" }, { status: 400 });
   }
 
   const actor = {
@@ -94,6 +100,7 @@ export async function handleCopilotQuarantineAction(req: Request, action: "quara
       actor,
       botId,
       botName,
+      reason,
       errorDetail: roleCheck.error || "copilot_quarantine_role_forbidden",
       details: { roleCheck },
     });
@@ -108,6 +115,7 @@ export async function handleCopilotQuarantineAction(req: Request, action: "quara
       actor,
       botId,
       botName: row.botName,
+      reason,
       resultingIsQuarantined: row.isQuarantined,
       resultLastUpdateTimeUtc: row.lastUpdateTimeUtc,
       details: { state: row.state },
@@ -121,6 +129,7 @@ export async function handleCopilotQuarantineAction(req: Request, action: "quara
       actor,
       botId,
       botName,
+      reason,
       errorDetail: message,
       details: { roleCheck },
     });

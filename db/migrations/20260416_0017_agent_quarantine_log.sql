@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS agent_quarantine_log (
     actor_name                  TEXT,
     bot_id                      TEXT NOT NULL,
     bot_name                    TEXT,
+    reason                      TEXT,
     resulting_is_quarantined    BOOLEAN,
     result_last_update_time_utc TIMESTAMPTZ,
     error_detail                TEXT,

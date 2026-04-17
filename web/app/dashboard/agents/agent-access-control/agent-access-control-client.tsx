@@ -173,7 +173,6 @@ export default function DataverseTableClient({
   const [blockErrorType, setBlockErrorType] = React.useState<string | null>(null);
   const [selectedAgent, setSelectedAgent] = React.useState("");
   const [selectedUser, setSelectedUser] = React.useState("");
-  const [blockReason, setBlockReason] = React.useState("");
   const [quarantineContext, setQuarantineContext] = React.useState<QuarantineContext | null>(null);
   const [quarantineLoading, setQuarantineLoading] = React.useState(true);
   const [quarantineError, setQuarantineError] = React.useState<string | null>(null);
@@ -303,7 +302,7 @@ export default function DataverseTableClient({
     setModal({
       title: "Confirm Block",
       description: `Block "${selectedUser}" from "${selectedAgent}"?`,
-      reason: blockReason,
+      reason: "",
       onConfirm: (reason) => executeBlock(reason),
     });
   }
@@ -340,7 +339,6 @@ export default function DataverseTableClient({
         setRows((prev) => patchDvState(prev, dvRow?.[cols.id], true, trimmedReason, cols));
         setSelectedUser("");
         setSelectedAgent("");
-        setBlockReason("");
         await fetchDv();
       }
     } catch {
@@ -397,11 +395,11 @@ export default function DataverseTableClient({
   }
 
   const selectClass = "rounded-md border border-input bg-background px-3 py-1.5 text-sm";
-  const inputClass = "rounded-md border border-input bg-background px-3 py-1.5 text-sm";
-  const formReady = selectedUser && selectedAgent && blockReason.trim() && !submitting;
+  const formReady = selectedUser && selectedAgent && !submitting;
 
-  async function handleQuarantineAction(agent: QuarantineAgent) {
-    if (!canManageAccess || !quarantineContext?.canAct) return;
+  async function executeQuarantineAction(agent: QuarantineAgent, reason: string) {
+    const trimmedReason = reason.trim();
+    if (!canManageAccess || !quarantineContext?.canAct || !trimmedReason) return;
     setQuarantineSubmittingBotId(agent.botId);
     setQuarantineError(null);
     const actionPath = agent.isQuarantined ? "/api/copilot-quarantine/unquarantine" : "/api/copilot-quarantine/quarantine";
@@ -409,7 +407,7 @@ export default function DataverseTableClient({
       const res = await fetch(actionPath, {
         method: "POST",
         headers: getCsrfFetchHeaders({ "Content-Type": "application/json", "X-CSRF-Token": csrfToken }),
-        body: JSON.stringify({ botId: agent.botId, botName: agent.botName }),
+        body: JSON.stringify({ botId: agent.botId, botName: agent.botName, reason: trimmedReason }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -432,6 +430,17 @@ export default function DataverseTableClient({
     } finally {
       setQuarantineSubmittingBotId(null);
     }
+  }
+
+  function handleQuarantineAction(agent: QuarantineAgent) {
+    if (!canManageAccess || !quarantineContext?.canAct) return;
+    const actionLabel = agent.isQuarantined ? "Unblock" : "Block";
+    setModal({
+      title: `Confirm ${actionLabel}`,
+      description: `${actionLabel} "${agent.botName || agent.botId}" at the agent level?`,
+      reason: "",
+      onConfirm: (reason) => executeQuarantineAction(agent, reason),
+    });
   }
 
   return (
@@ -647,20 +656,6 @@ export default function DataverseTableClient({
                   <option key={name} value={name}>{name}</option>
                 ))}
               </select>
-            </div>
-
-            <div className="flex flex-col gap-1">
-              <label className="text-xs font-medium text-muted-foreground">
-                Reason <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. Security concern, Policy violation..."
-                value={blockReason}
-                onChange={(e) => setBlockReason(e.target.value)}
-                className={inputClass + " w-64"}
-                disabled={!canManageAccess || submitting}
-              />
             </div>
 
             <Button

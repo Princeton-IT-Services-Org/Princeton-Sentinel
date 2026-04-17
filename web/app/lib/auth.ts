@@ -3,7 +3,7 @@ import type { NextAuthOptions } from "next-auth";
 import { getServerSession } from "next-auth/next";
 import { getAuthCookiePolicies } from "./auth-cookies";
 import { buildPostAuthBridgeUrl } from "./callback-url";
-import { saveDelegatedAuthState } from "./delegated-auth-store";
+import { clearDelegatedAuthState, saveDelegatedAuthState } from "./delegated-auth-store";
 
 type RequireAuthResult = {
   session: any;
@@ -32,6 +32,14 @@ const AUTHORIZATION_SCOPES = [
   "https://api.powerplatform.com/CopilotStudio.AdminActions.Invoke",
 ];
 
+const TOKEN_EXCHANGE_SCOPES = [
+  "openid",
+  "profile",
+  "email",
+  "offline_access",
+  "https://graph.microsoft.com/Directory.Read.All",
+];
+
 function decodeJwtPayload(token?: string): Record<string, any> | null {
   if (!token) return null;
   const parts = token.split(".");
@@ -54,9 +62,20 @@ export function getAuthOptions(): NextAuthOptions {
         clientId,
         clientSecret,
         checks: ["pkce", "state"],
+        idToken: true,
         authorization: {
           params: {
             scope: AUTHORIZATION_SCOPES.join(" "),
+          },
+        },
+        token: {
+          async request({ client, provider, params, checks }) {
+            const tokens = await client.callback(provider.callbackUrl, params, checks, {
+              exchangeBody: {
+                scope: TOKEN_EXCHANGE_SCOPES.join(" "),
+              },
+            });
+            return { tokens };
           },
         },
         profile(profile) {
@@ -120,6 +139,28 @@ export function getAuthOptions(): NextAuthOptions {
       },
       async redirect({ url, baseUrl }) {
         return buildPostAuthBridgeUrl(url, baseUrl);
+      },
+    },
+    events: {
+      async signOut(message) {
+        const token = (message as any)?.token;
+        const session = (message as any)?.session;
+        const oid =
+          typeof token?.oid === "string"
+            ? token.oid
+            : typeof session?.user?.oid === "string"
+              ? session.user.oid
+              : null;
+        const upn =
+          typeof token?.upn === "string"
+            ? token.upn
+            : typeof session?.user?.upn === "string"
+              ? session.user.upn
+              : typeof session?.user?.email === "string"
+                ? session.user.email
+                : null;
+
+        clearDelegatedAuthState(oid, upn);
       },
     },
   };

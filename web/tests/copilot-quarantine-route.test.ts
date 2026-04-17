@@ -71,6 +71,7 @@ test("context route returns quarantine context for admins", async () => {
 
 test("quarantine action logs successful requests", async () => {
   const operations: string[] = [];
+  const queryCalls: Array<{ sql: string; params?: unknown[] }> = [];
   const route = loadModule("../app/api/copilot-quarantine/quarantine/route", {
     "@/app/lib/auth": {
       requireAdmin: async () => ({ session: { user: { oid: "oid-1", upn: "admin@example.com", name: "Admin" } } }),
@@ -79,7 +80,8 @@ test("quarantine action logs successful requests", async () => {
       validateCsrfRequest: () => ({ ok: true }),
     },
     "@/app/lib/db": {
-      query: async (sql: string) => {
+      query: async (sql: string, params?: unknown[]) => {
+        queryCalls.push({ sql, params });
         if (sql.includes("INSERT INTO agent_quarantine_log")) {
           operations.push("log");
           return [];
@@ -92,7 +94,7 @@ test("quarantine action logs successful requests", async () => {
       LicenseFeatureError: class LicenseFeatureError extends Error {},
     },
     "@/app/lib/request-body": {
-      parseRequestBody: async () => ({ invalidJson: false, body: { botId: "bot-1", botName: "Agent A" } }),
+      parseRequestBody: async () => ({ invalidJson: false, body: { botId: "bot-1", botName: "Agent A", reason: "Security concern" } }),
       getNonEmptyString: (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : null),
     },
     "@/app/lib/copilot-quarantine": {
@@ -119,7 +121,7 @@ test("quarantine action logs successful requests", async () => {
     new Request("http://localhost/api/copilot-quarantine/quarantine", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ botId: "bot-1", botName: "Agent A" }),
+      body: JSON.stringify({ botId: "bot-1", botName: "Agent A", reason: "Security concern" }),
     })
   );
   const payload = await res.json();
@@ -127,10 +129,12 @@ test("quarantine action logs successful requests", async () => {
   assert.equal(res.status, 200);
   assert.equal(payload.agent.state, "Blocked");
   assert.deepEqual(operations, ["toggle", "log"]);
+  assert.equal(queryCalls[0]?.params?.[7], "Security concern");
 });
 
 test("unquarantine action logs forbidden requests", async () => {
   const operations: string[] = [];
+  const queryCalls: Array<{ sql: string; params?: unknown[] }> = [];
   const route = loadModule("../app/api/copilot-quarantine/unquarantine/route", {
     "@/app/lib/auth": {
       requireAdmin: async () => ({ session: { user: { oid: "oid-1", upn: "admin@example.com", name: "Admin" } } }),
@@ -139,7 +143,8 @@ test("unquarantine action logs forbidden requests", async () => {
       validateCsrfRequest: () => ({ ok: true }),
     },
     "@/app/lib/db": {
-      query: async (sql: string) => {
+      query: async (sql: string, params?: unknown[]) => {
+        queryCalls.push({ sql, params });
         if (sql.includes("INSERT INTO agent_quarantine_log")) {
           operations.push("log");
           return [];
@@ -152,7 +157,7 @@ test("unquarantine action logs forbidden requests", async () => {
       LicenseFeatureError: class LicenseFeatureError extends Error {},
     },
     "@/app/lib/request-body": {
-      parseRequestBody: async () => ({ invalidJson: false, body: { botId: "bot-1", botName: "Agent A" } }),
+      parseRequestBody: async () => ({ invalidJson: false, body: { botId: "bot-1", botName: "Agent A", reason: "Issue resolved" } }),
       getNonEmptyString: (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : null),
     },
     "@/app/lib/copilot-quarantine": {
@@ -170,7 +175,7 @@ test("unquarantine action logs forbidden requests", async () => {
     new Request("http://localhost/api/copilot-quarantine/unquarantine", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ botId: "bot-1", botName: "Agent A" }),
+      body: JSON.stringify({ botId: "bot-1", botName: "Agent A", reason: "Issue resolved" }),
     })
   );
   const payload = await res.json();
@@ -178,4 +183,49 @@ test("unquarantine action logs forbidden requests", async () => {
   assert.equal(res.status, 403);
   assert.equal(payload.error, "copilot_quarantine_role_forbidden");
   assert.deepEqual(operations, ["log"]);
+  assert.equal(queryCalls[0]?.params?.[7], "Issue resolved");
+});
+
+test("quarantine action rejects missing reason", async () => {
+  const route = loadModule("../app/api/copilot-quarantine/quarantine/route", {
+    "@/app/lib/auth": {
+      requireAdmin: async () => ({ session: { user: { oid: "oid-1", upn: "admin@example.com", name: "Admin" } } }),
+    },
+    "@/app/lib/csrf": {
+      validateCsrfRequest: () => ({ ok: true }),
+    },
+    "@/app/lib/db": {
+      query: async () => {
+        throw new Error("should not write logs");
+      },
+    },
+    "@/app/lib/license": {
+      requireLicenseFeature: async () => undefined,
+      LicenseFeatureError: class LicenseFeatureError extends Error {},
+    },
+    "@/app/lib/request-body": {
+      parseRequestBody: async () => ({ invalidJson: false, body: { botId: "bot-1", botName: "Agent A", reason: "   " } }),
+      getNonEmptyString: (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : null),
+    },
+    "@/app/lib/copilot-quarantine": {
+      evaluateCopilotQuarantineRoles: async () => ({ allowed: true, matchedRoles: ["Power Platform Administrator"], roleNames: [], checkedAt: "2026-04-16T00:00:00.000Z", error: null }),
+      toggleCopilotQuarantine: async () => {
+        throw new Error("should not toggle");
+      },
+    },
+    "@/app/lib/request-timing": {
+      withApiRequestTiming: (_path: string, handler: Function) => handler,
+    },
+  }) as typeof import("../app/api/copilot-quarantine/quarantine/route");
+
+  const res = await route.POST(
+    new Request("http://localhost/api/copilot-quarantine/quarantine", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ botId: "bot-1", botName: "Agent A", reason: "   " }),
+    })
+  );
+
+  assert.equal(res.status, 400);
+  assert.deepEqual(await res.json(), { error: "reason is required" });
 });

@@ -82,6 +82,14 @@ export function getDelegatedAuthState(oid: string | null | undefined, upn: strin
   return delegatedAuthState.get(key) || null;
 }
 
+export function clearDelegatedAuthState(oid: string | null | undefined, upn: string | null | undefined) {
+  const key = buildKey(oid, upn);
+  if (!key) {
+    return false;
+  }
+  return delegatedAuthState.delete(key);
+}
+
 export function resetDelegatedAuthStateForTests() {
   delegatedAuthState = new Map<string, DelegatedAuthState>();
 }

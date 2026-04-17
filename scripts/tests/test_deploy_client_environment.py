@@ -185,15 +185,24 @@ class DeployClientEnvironmentTests(unittest.TestCase):
         state["runtime"]["ADMIN_GROUP_ID"] = "admins"
         state["runtime"]["USER_GROUP_ID"] = "users"
         state["runtime"]["DATAVERSE_BASE_URL"] = "https://org.crm.dynamics.com"
+        state["runtime"]["POWER_PLATFORM_ENVIRONMENT_ID"] = "env-123"
         state["runtime"]["DATAVERSE_TABLE_URL"] = "https://org.crm.dynamics.com/api/data/v9.2/cr6c3_table11s"
         state["runtime"]["DATAVERSE_COLUMN_PREFIX"] = "cr6c3"
+        state["runtime"]["DATAVERSE_AGENT_SECURITY_GROUP_MAPPING_TABLE_URL"] = (
+            "https://org.crm.dynamics.com/api/data/v9.2/cr6c3_agentsecuritygroupmappings"
+        )
         row = deployment_lib.csv_row_from_state(state)
         self.assertEqual(row["client_name"], "Acme District")
         self.assertEqual(row["acr_name"], "sharedacr")
         self.assertEqual(row["database_url"], "postgresql://example")
         self.assertEqual(row["dataverse_base_url"], "https://org.crm.dynamics.com")
+        self.assertEqual(row["power_platform_environment_id"], "env-123")
         self.assertEqual(row["dataverse_table_url"], "https://org.crm.dynamics.com/api/data/v9.2/cr6c3_table11s")
         self.assertEqual(row["dataverse_column_prefix"], "cr6c3")
+        self.assertEqual(
+            row["dataverse_agent_security_group_mapping_table_url"],
+            "https://org.crm.dynamics.com/api/data/v9.2/cr6c3_agentsecuritygroupmappings",
+        )
         self.assertEqual(row["entra_client_secret"], "secret")
         self.assertEqual(row["postgres_location"], "eastus")
 
@@ -307,8 +316,12 @@ class DeployClientEnvironmentTests(unittest.TestCase):
         state = deployment_lib.build_default_state("Acme District", source, "sub-123", "eastus", "sharedacr")
         state["runtime"]["DATABASE_URL"] = "postgresql://example"
         state["runtime"]["DATAVERSE_BASE_URL"] = "https://org.crm.dynamics.com"
+        state["runtime"]["POWER_PLATFORM_ENVIRONMENT_ID"] = "env-123"
         state["runtime"]["DATAVERSE_TABLE_URL"] = "https://org.crm.dynamics.com/api/data/v9.2/cr6c3_table11s"
         state["runtime"]["DATAVERSE_COLUMN_PREFIX"] = "cr6c3"
+        state["runtime"]["DATAVERSE_AGENT_SECURITY_GROUP_MAPPING_TABLE_URL"] = (
+            "https://org.crm.dynamics.com/api/data/v9.2/cr6c3_agentsecuritygroupmappings"
+        )
         state["runtime"]["ENTRA_TENANT_ID"] = "tenant"
         state["runtime"]["ENTRA_CLIENT_ID"] = "client"
         state["runtime"]["ENTRA_CLIENT_SECRET"] = "secret"
@@ -324,8 +337,13 @@ class DeployClientEnvironmentTests(unittest.TestCase):
         env = deploy_client_environment.runtime_env_for_scripts(state)
 
         self.assertEqual(env["STG_DATAVERSE_BASE_URL"], "https://org.crm.dynamics.com")
+        self.assertEqual(env["STG_POWER_PLATFORM_ENVIRONMENT_ID"], "env-123")
         self.assertEqual(env["STG_DATAVERSE_TABLE_URL"], "https://org.crm.dynamics.com/api/data/v9.2/cr6c3_table11s")
         self.assertEqual(env["STG_DATAVERSE_COLUMN_PREFIX"], "cr6c3")
+        self.assertEqual(
+            env["STG_DATAVERSE_AGENT_SECURITY_GROUP_MAPPING_TABLE_URL"],
+            "https://org.crm.dynamics.com/api/data/v9.2/cr6c3_agentsecuritygroupmappings",
+        )
 
     def test_deploy_staging_workflow_exports_dataverse_base_url_for_web_steps(self):
         workflow = (ROOT / ".github" / "workflows" / "deploy-staging.yml").read_text()
@@ -342,6 +360,11 @@ class DeployClientEnvironmentTests(unittest.TestCase):
             maxsplit=1,
         )[0]
         self.assertIn("STG_DATAVERSE_BASE_URL: ${{ vars.STG_DATAVERSE_BASE_URL }}", sync_block)
+        self.assertIn("STG_POWER_PLATFORM_ENVIRONMENT_ID: ${{ vars.STG_POWER_PLATFORM_ENVIRONMENT_ID }}", sync_block)
+        self.assertIn(
+            "STG_DATAVERSE_AGENT_SECURITY_GROUP_MAPPING_TABLE_URL: ${{ vars.STG_DATAVERSE_AGENT_SECURITY_GROUP_MAPPING_TABLE_URL }}",
+            sync_block,
+        )
 
     def test_build_summary_markdown_mentions_smoke_checks(self):
         source = {

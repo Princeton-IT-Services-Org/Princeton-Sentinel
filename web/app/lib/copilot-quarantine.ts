@@ -20,6 +20,7 @@ const ALLOWED_ROLE_DISPLAY_NAMES = new Set([
 type CachedRoleCheck = RoleCheckResult & {
   cacheKey: string;
   cachedAtMs: number;
+  authStateUpdatedAt: number | null;
 };
 
 type CachedEnvironment = {
@@ -32,6 +33,15 @@ type PowerPlatformTokenResult = {
   accessToken: string;
   scopes: string[];
   needsConsent: boolean;
+};
+
+type PowerPlatformRequestError = Error & {
+  status?: number;
+  path?: string;
+  method?: "GET" | "POST";
+  environmentId?: string;
+  botId?: string;
+  botName?: string;
 };
 
 export type RoleCheckResult = {
@@ -71,6 +81,10 @@ function getDataverseBaseUrl() {
     throw new Error("DATAVERSE_BASE_URL must be set");
   }
   return baseUrl;
+}
+
+function getConfiguredPowerPlatformEnvironmentId() {
+  return process.env.POWER_PLATFORM_ENVIRONMENT_ID?.trim() || "";
 }
 
 function getMappingTableUrl() {
@@ -278,8 +292,10 @@ async function powerPlatformRequest(
       (typeof payload?.message === "string" && payload.message) ||
       text ||
       `power_platform_error_${response.status}`;
-    const error = new Error(message.slice(0, 500));
-    (error as any).status = response.status;
+    const error = new Error(message.slice(0, 500)) as PowerPlatformRequestError;
+    error.status = response.status;
+    error.path = path;
+    error.method = method;
     throw error;
   }
 
@@ -288,7 +304,13 @@ async function powerPlatformRequest(
 
 function buildRoleCacheKey(session: Session | any) {
   const identity = getSessionIdentity(session);
-  return identity.oid || identity.upn || "unknown";
+  return normalize(identity.oid) || normalize(identity.upn) || "unknown";
+}
+
+function getAuthStateUpdatedAt(session: Session | any) {
+  const identity = getSessionIdentity(session);
+  const state = getDelegatedAuthState(identity.oid, identity.upn);
+  return typeof state?.updatedAt === "number" ? state.updatedAt : null;
 }
 
 function readRoleCache(session: Session | any): RoleCheckResult | null {
@@ -299,12 +321,21 @@ function readRoleCache(session: Session | any): RoleCheckResult | null {
     roleCache.delete(cacheKey);
     return null;
   }
+  if (cached.authStateUpdatedAt !== getAuthStateUpdatedAt(session)) {
+    roleCache.delete(cacheKey);
+    return null;
+  }
   return cached;
 }
 
 function writeRoleCache(session: Session | any, result: RoleCheckResult) {
   const cacheKey = buildRoleCacheKey(session);
-  roleCache.set(cacheKey, { ...result, cacheKey, cachedAtMs: Date.now() });
+  roleCache.set(cacheKey, {
+    ...result,
+    cacheKey,
+    cachedAtMs: Date.now(),
+    authStateUpdatedAt: getAuthStateUpdatedAt(session),
+  });
 }
 
 export async function evaluateCopilotQuarantineRoles(session: Session | any): Promise<RoleCheckResult> {
@@ -405,6 +436,11 @@ async function fetchMappingRows() {
 }
 
 async function resolveEnvironmentId(accessToken: string) {
+  const configuredEnvironmentId = getConfiguredPowerPlatformEnvironmentId();
+  if (configuredEnvironmentId) {
+    return configuredEnvironmentId;
+  }
+
   const dataverseBaseUrl = normalizeDataverseUrl(getDataverseBaseUrl());
   const cached = environmentCache.get(dataverseBaseUrl);
   if (cached && Date.now() - cached.cachedAtMs <= ENVIRONMENT_CACHE_TTL_MS) {
@@ -474,18 +510,87 @@ function mapStatusPayload(botId: string, botName: string, payload: Record<string
   };
 }
 
+function logCopilotQuarantineStatusAttempt(input: {
+  session: Session | any;
+  botId: string;
+  botName: string;
+  environmentId: string;
+  path: string;
+  hasRequiredScope: boolean;
+  scopes: string[];
+}) {
+  const identity = getSessionIdentity(input.session);
+  console.log("[COPILOT_QUARANTINE] fetch status", {
+    actorOid: identity.oid,
+    actorUpn: identity.upn,
+    botId: input.botId,
+    botName: input.botName,
+    environmentId: input.environmentId,
+    path: input.path,
+    hasRequiredScope: input.hasRequiredScope,
+    scopes: input.scopes,
+  });
+}
+
+function logCopilotQuarantineStatusFailure(input: {
+  session: Session | any;
+  botId: string;
+  botName: string;
+  hasRequiredScope: boolean;
+  scopes: string[];
+  error: unknown;
+}) {
+  const identity = getSessionIdentity(input.session);
+  const error = input.error as PowerPlatformRequestError | undefined;
+  console.error("[COPILOT_QUARANTINE] fetch status failed", {
+    actorOid: identity.oid,
+    actorUpn: identity.upn,
+    botId: input.botId,
+    botName: input.botName,
+    environmentId: error?.environmentId || null,
+    requestPath: error?.path || null,
+    requestMethod: error?.method || null,
+    status: error?.status || null,
+    hasRequiredScope: input.hasRequiredScope,
+    scopes: input.scopes,
+    error: error instanceof Error ? error.message : "power_platform_status_failed",
+  });
+}
+
+function buildCopilotQuarantineStatusPath(environmentId: string, botId: string) {
+  return `/copilotstudio/environments/${encodeURIComponent(environmentId)}/bots/${encodeURIComponent(botId)}/api/botQuarantine?api-version=1`;
+}
+
+function getErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
+}
+
 export async function fetchCopilotQuarantineStatus(
   accessToken: string,
   botId: string,
   botName: string,
+  environmentIdInput?: string,
 ): Promise<CopilotQuarantineAgentRow> {
-  const environmentId = await resolveEnvironmentId(accessToken);
-  const payload = await powerPlatformRequest(
-    accessToken,
-    "GET",
-    `/copilotstudio/environments/${encodeURIComponent(environmentId)}/bots/${encodeURIComponent(botId)}/api/botQuarantine?api-version=1`
-  );
-  return mapStatusPayload(botId, botName, payload);
+  const environmentId = environmentIdInput || await resolveEnvironmentId(accessToken);
+  const path = buildCopilotQuarantineStatusPath(environmentId, botId);
+  try {
+    const payload = await powerPlatformRequest(
+      accessToken,
+      "GET",
+      path
+    );
+    return mapStatusPayload(botId, botName, payload);
+  } catch (error) {
+    if (error instanceof Error) {
+      const requestError = error as PowerPlatformRequestError;
+      requestError.environmentId = environmentId;
+      requestError.botId = botId;
+      requestError.botName = botName;
+      requestError.path = requestError.path || path;
+      requestError.method = requestError.method || "GET";
+    }
+    throw error;
+  }
 }
 
 export async function fetchCopilotQuarantineContext(session: Session | any) {
@@ -515,23 +620,61 @@ export async function fetchCopilotQuarantineContext(session: Session | any) {
   }));
 
   if (roleCheck.allowed && powerPlatform.accessToken && powerPlatform.hasRequiredScope) {
-    agents = await Promise.all(
-      mappingRows.map(async (row) => {
-        try {
-          return await fetchCopilotQuarantineStatus(powerPlatform.accessToken, row.botId, row.botName);
-        } catch (error) {
-          return {
+    try {
+      const environmentId = await resolveEnvironmentId(powerPlatform.accessToken);
+      agents = await Promise.all(
+        mappingRows.map(async (row) => {
+          const path = buildCopilotQuarantineStatusPath(environmentId, row.botId);
+          logCopilotQuarantineStatusAttempt({
+            session,
             botId: row.botId,
             botName: row.botName,
-            lastUpdateTimeUtc: null,
-            isQuarantined: null,
-            state: "Unavailable",
-            actionLabel: "Block" as const,
-            error: error instanceof Error ? error.message : "power_platform_status_failed",
-          };
-        }
-      })
-    );
+            environmentId,
+            path,
+            hasRequiredScope: powerPlatform.hasRequiredScope,
+            scopes: powerPlatform.scopes,
+          });
+          try {
+            return await fetchCopilotQuarantineStatus(powerPlatform.accessToken, row.botId, row.botName, environmentId);
+          } catch (error) {
+            logCopilotQuarantineStatusFailure({
+              session,
+              botId: row.botId,
+              botName: row.botName,
+              hasRequiredScope: powerPlatform.hasRequiredScope,
+              scopes: powerPlatform.scopes,
+              error,
+            });
+            return {
+              botId: row.botId,
+              botName: row.botName,
+              lastUpdateTimeUtc: null,
+              isQuarantined: null,
+              state: "Unavailable",
+              actionLabel: "Block" as const,
+              error: getErrorMessage(error, "power_platform_status_failed"),
+            };
+          }
+        })
+      );
+    } catch (error) {
+      console.error("[COPILOT_QUARANTINE] resolve environment failed", {
+        actorOid: getSessionIdentity(session).oid,
+        actorUpn: getSessionIdentity(session).upn,
+        hasRequiredScope: powerPlatform.hasRequiredScope,
+        scopes: powerPlatform.scopes,
+        error: getErrorMessage(error, "power_platform_environment_not_found"),
+      });
+      agents = mappingRows.map((row) => ({
+        botId: row.botId,
+        botName: row.botName,
+        lastUpdateTimeUtc: null,
+        isQuarantined: null,
+        state: "Unavailable",
+        actionLabel: "Block" as const,
+        error: getErrorMessage(error, "power_platform_environment_not_found"),
+      }));
+    }
   }
 
   return {

@@ -10,6 +10,7 @@ export type AgentQuarantineLogRow = {
   actor_name: string | null;
   bot_id: string;
   bot_name: string | null;
+  reason: string | null;
   resulting_is_quarantined: boolean | null;
   result_last_update_time_utc: string | null;
   error_detail: string | null;
@@ -39,7 +40,7 @@ export async function getAgentQuarantineLogsPage(pageSize: number, offset: numbe
 
   return query<AgentQuarantineLogRow>(
     `SELECT id, occurred_at, action, request_status, actor_oid, actor_upn, actor_name,
-            bot_id, bot_name, resulting_is_quarantined, result_last_update_time_utc,
+            bot_id, bot_name, reason, resulting_is_quarantined, result_last_update_time_utc,
             error_detail, details
      FROM agent_quarantine_log
      ORDER BY occurred_at DESC, id DESC
@@ -57,7 +58,7 @@ export async function getAgentQuarantineLogsBatchAfter(
   if (!cursor) {
     return query<AgentQuarantineLogRow>(
       `SELECT id, occurred_at, action, request_status, actor_oid, actor_upn, actor_name,
-              bot_id, bot_name, resulting_is_quarantined, result_last_update_time_utc,
+              bot_id, bot_name, reason, resulting_is_quarantined, result_last_update_time_utc,
               error_detail, details
        FROM agent_quarantine_log
        ORDER BY occurred_at DESC, id DESC
@@ -68,7 +69,7 @@ export async function getAgentQuarantineLogsBatchAfter(
 
   return query<AgentQuarantineLogRow>(
     `SELECT id, occurred_at, action, request_status, actor_oid, actor_upn, actor_name,
-            bot_id, bot_name, resulting_is_quarantined, result_last_update_time_utc,
+            bot_id, bot_name, reason, resulting_is_quarantined, result_last_update_time_utc,
             error_detail, details
      FROM agent_quarantine_log
      WHERE (occurred_at, id) < ($1::timestamptz, $2::bigint)
