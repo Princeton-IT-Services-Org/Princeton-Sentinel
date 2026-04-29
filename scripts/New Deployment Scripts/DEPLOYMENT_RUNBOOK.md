@@ -10,7 +10,9 @@ Database-executing phases require either:
 ## Important Defaults
 
 - Uses the current staging workflow version from `.github/workflows/deploy-staging.yml`.
-- Uses a client-tenant Azure Container Registry wired through Container App managed identity and `AcrPull`.
+- Uses a client-tenant Azure Container Registry.
+- New ACRs created by this suite use ACR admin credentials stored on the Container Apps, matching the staging deployment model.
+- Existing ACRs reused by this suite use Container App managed identity and `AcrPull`.
 - During init, you can either:
   - reuse an existing client-tenant ACR
   - create a new Basic ACR in the deployment resource group
@@ -57,7 +59,7 @@ Prompts for:
 - if creating: new resource group name, defaulting to `rg-ps-<client-slug>`
 - whether to reuse an existing client-tenant ACR
 - if reusing: existing ACR name
-- if creating: new ACR name, with a Basic SKU created during provisioning
+- if creating: new ACR name, with a Basic SKU created during provisioning and ACR admin credentials captured for Container App image pulls
 
 Expected output:
 
@@ -89,7 +91,18 @@ Creates or confirms:
 - PostgreSQL public access plus firewall rules for Azure services and your operator IP
 - placeholder web and worker Container Apps using a simple public image
 - creation of a new Basic ACR when selected during init
-- `AcrPull` role assignment on the selected ACR for the web and worker Container Apps
+- for newly created ACRs: admin credentials enabled and stored on the web and worker Container Apps during deployment
+- for existing managed-identity ACRs: `AcrPull` role assignment on the selected ACR for the web and worker Container Apps
+
+Required Azure access for existing managed-identity ACRs:
+
+- The signed-in identity must be able to create Azure RBAC assignments at the selected ACR scope, resource group scope, or subscription scope.
+- Built-in roles that can do this include `Owner` and `User Access Administrator`.
+- `Contributor` can create resources, but cannot grant `AcrPull` because it lacks `Microsoft.Authorization/roleAssignments/write`.
+
+Required Azure access for newly created ACRs:
+
+- Resource group `Contributor` is sufficient for the ACR setup path because provisioning enables ACR admin credentials instead of creating Azure RBAC role assignments.
 
 Expected output:
 

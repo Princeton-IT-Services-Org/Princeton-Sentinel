@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getGroupsFromSession, getSession, isAdmin } from "@/app/lib/auth";
 import { sanitizeCallbackUrl } from "@/app/lib/callback-url";
+import { getPublicRequestOrigin } from "@/app/lib/request-origin";
 import { withApiRequestTiming } from "@/app/lib/request-timing";
 
 export const dynamic = "force-dynamic";
@@ -37,7 +38,7 @@ const getHandler = async function GET(req: Request) {
   const { tenantId, clientId, nextAuthUrl } = getRequiredEnv();
   const requestUrl = new URL(req.url);
   const callbackUrl = sanitizeCallbackUrl(requestUrl.searchParams.get("callbackUrl"));
-  const redirectUri = `${nextAuthUrl}/api/auth/admin-consent/callback`;
+  const redirectUri = `${getPublicRequestOrigin(req, nextAuthUrl)}/api/auth/admin-consent/callback`;
   const consentUrl = new URL(`https://login.microsoftonline.com/${tenantId}/v2.0/adminconsent`);
   consentUrl.searchParams.set("client_id", clientId);
   consentUrl.searchParams.set("scope", CONSENT_SCOPES.join(" "));

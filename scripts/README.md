@@ -9,7 +9,7 @@ The runtime-capture phase records the shared Dataverse web settings used by stag
 - required Dataverse app settings: `DATAVERSE_BASE_URL`, `DATAVERSE_TABLE_URL`, `DATAVERSE_COLUMN_PREFIX`
 - optional Copilot quarantine settings: `POWER_PLATFORM_ENVIRONMENT_ID`, `DATAVERSE_AGENT_SECURITY_GROUP_MAPPING_TABLE_URL`
 
-The suite uses a client-tenant ACR wired with Container App managed identity plus `AcrPull`.
+The suite uses a client-tenant ACR. Newly created ACRs use ACR admin credentials stored on the Container Apps, matching the staging deployment model. Existing reused ACRs use Container App managed identity plus `AcrPull`.
 
 During init, you can either:
 

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { sanitizeCallbackUrl } from "@/app/lib/callback-url";
+import { getPublicRequestOrigin } from "@/app/lib/request-origin";
 import { withApiRequestTiming } from "@/app/lib/request-timing";
 
 export const dynamic = "force-dynamic";
@@ -20,7 +21,8 @@ function decodeState(value: string | null): string {
 
 const getHandler = async function GET(req: Request) {
   const requestUrl = new URL(req.url);
-  const destination = new URL(decodeState(requestUrl.searchParams.get("state")), req.url);
+  const redirectOrigin = getPublicRequestOrigin(req, process.env.NEXTAUTH_URL || process.env.AUTH_URL);
+  const destination = new URL(decodeState(requestUrl.searchParams.get("state")), redirectOrigin);
   const adminConsent = requestUrl.searchParams.get("admin_consent");
   const error = requestUrl.searchParams.get("error");
 

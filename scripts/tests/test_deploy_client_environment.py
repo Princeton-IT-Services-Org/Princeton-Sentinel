@@ -357,6 +357,96 @@ class DeployClientEnvironmentTests(unittest.TestCase):
         self.assertEqual(row["acr_sku"], "Basic")
         self.assertEqual(row["acr_name"], "acmedistrictacr")
 
+    def test_create_basic_acr_defaults_to_registry_credentials(self):
+        source = {
+            "app_version": "3.3.0",
+            "staging_version_source": ".github/workflows/deploy-staging.yml",
+            "git_branch": "main",
+            "git_commit_sha": "abcdef1234567890",
+            "image_tag": "abcdef123456",
+        }
+        state = deployment_lib.build_default_state(
+            "Acme District",
+            source,
+            "sub-123",
+            "eastus",
+            "acmedistrictacr",
+            acr_access_mode="managed-identity",
+            acr_provisioning_mode="create-basic",
+            acr_sku="Basic",
+        )
+        deploy_client_environment.ensure_acr_defaults(state)
+        self.assertEqual(state["azure"]["acr_access_mode"], "registry-credentials")
+
+    def test_ensure_acr_created_with_registry_credentials_captures_admin_credentials(self):
+        source = {
+            "app_version": "3.3.0",
+            "staging_version_source": ".github/workflows/deploy-staging.yml",
+            "git_branch": "main",
+            "git_commit_sha": "abcdef1234567890",
+            "image_tag": "abcdef123456",
+        }
+        state = deployment_lib.build_default_state(
+            "Acme District",
+            source,
+            "sub-123",
+            "eastus",
+            "acmedistrictacr",
+            acr_access_mode="registry-credentials",
+            acr_provisioning_mode="create-basic",
+            acr_sku="Basic",
+        )
+        io = MagicMock()
+
+        with (
+            patch.object(deploy_client_environment, "run_command") as run_command_mock,
+            patch.object(deploy_client_environment, "run_and_capture_or_default", return_value=""),
+            patch.object(
+                deploy_client_environment,
+                "run_and_capture",
+                side_effect=[
+                    "acmedistrictacr.azurecr.io",
+                    json.dumps({"username": "acmedistrictacr", "passwords": [{"value": "admin-secret"}]}),
+                ],
+            ),
+        ):
+            deploy_client_environment.ensure_acr(state, dry_run=False, io=io)
+
+        commands = [call.args[0] for call in run_command_mock.call_args_list]
+        self.assertIn(
+            [
+                "az",
+                "acr",
+                "create",
+                "--name",
+                "acmedistrictacr",
+                "--resource-group",
+                state["azure"]["resource_group"],
+                "--location",
+                "eastus",
+                "--sku",
+                "Basic",
+            ],
+            commands,
+        )
+        self.assertIn(
+            [
+                "az",
+                "acr",
+                "update",
+                "--name",
+                "acmedistrictacr",
+                "--resource-group",
+                state["azure"]["resource_group"],
+                "--admin-enabled",
+                "true",
+            ],
+            commands,
+        )
+        self.assertEqual(state["azure"]["acr_login_server"], "acmedistrictacr.azurecr.io")
+        self.assertEqual(state["azure"]["acr_username"], "acmedistrictacr")
+        self.assertEqual(state["azure"]["acr_password"], "admin-secret")
+
     def test_parse_args_supports_resume_and_state_dir(self):
         parsed = deployment_lib.parse_args(["deploy-web", "--state-dir", "/tmp/example", "--dry-run", "--resume"])
         self.assertEqual(parsed.phase, "deploy-web")

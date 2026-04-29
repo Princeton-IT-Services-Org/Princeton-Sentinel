@@ -264,11 +264,17 @@ def acr_creates_new_registry(state: dict[str, Any]) -> bool:
     return state["azure"].get("acr_provisioning_mode") == "create-basic"
 
 
+def acr_builds_with_azure_task(state: dict[str, Any]) -> bool:
+    return not acr_uses_registry_credentials(state) or acr_creates_new_registry(state)
+
+
 def ensure_acr_defaults(state: dict[str, Any]) -> None:
     azure = state.setdefault("azure", {})
     azure.setdefault("acr_access_mode", "managed-identity")
     azure.setdefault("acr_provisioning_mode", "external" if acr_uses_registry_credentials(state) else "existing")
     azure.setdefault("acr_sku", "Basic" if acr_creates_new_registry(state) else "")
+    if azure.get("acr_provisioning_mode") == "create-basic":
+        azure["acr_access_mode"] = "registry-credentials"
 
 
 def infer_acr_name(value: str) -> str:
@@ -306,29 +312,145 @@ def validate_existing_acr(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -
     azure["acr_id"] = acr_id
 
 
-def ensure_acr(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> None:
-    ensure_acr_defaults(state)
+def ensure_acr_admin_credentials(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> None:
     azure = state["azure"]
-    if acr_uses_registry_credentials(state) or not acr_creates_new_registry(state):
-        validate_existing_acr(state, dry_run=dry_run, io=io)
+    if dry_run:
+        azure["acr_login_server"] = azure.get("acr_login_server") or f"{azure['acr_name']}.azurecr.io"
+        azure["acr_username"] = azure.get("acr_username") or azure["acr_name"]
+        azure["acr_password"] = azure.get("acr_password") or "***"
+        azure["acr_id"] = ""
+        run_command(
+            [
+                "az",
+                "acr",
+                "update",
+                "--name",
+                azure["acr_name"],
+                "--resource-group",
+                azure["resource_group"],
+                "--admin-enabled",
+                "true",
+            ],
+            dry_run=True,
+            io=io,
+        )
+        run_command(
+            [
+                "az",
+                "acr",
+                "credential",
+                "show",
+                "--name",
+                azure["acr_name"],
+                "--resource-group",
+                azure["resource_group"],
+            ],
+            dry_run=True,
+            io=io,
+        )
         return
+
     run_command(
         [
             "az",
             "acr",
-            "create",
+            "update",
             "--name",
             azure["acr_name"],
             "--resource-group",
             azure["resource_group"],
-            "--location",
-            azure["location"],
-            "--sku",
-            azure.get("acr_sku") or "Basic",
+            "--admin-enabled",
+            "true",
         ],
-        dry_run=dry_run,
         io=io,
     )
+    login_server = run_and_capture(
+        [
+            "az",
+            "acr",
+            "show",
+            "--name",
+            azure["acr_name"],
+            "--resource-group",
+            azure["resource_group"],
+            "--query",
+            "loginServer",
+            "-o",
+            "tsv",
+        ],
+        io=io,
+    )
+    credentials = eval_json(
+        run_and_capture(
+            [
+                "az",
+                "acr",
+                "credential",
+                "show",
+                "--name",
+                azure["acr_name"],
+                "--resource-group",
+                azure["resource_group"],
+                "-o",
+                "json",
+            ],
+            io=io,
+        )
+    )
+    password_entries = credentials.get("passwords") or []
+    password = next((entry.get("value") for entry in password_entries if entry.get("value")), "")
+    if not login_server or not credentials.get("username") or not password:
+        raise DeploymentError(f"Unable to capture admin credentials for ACR {azure['acr_name']}")
+    azure["acr_login_server"] = login_server
+    azure["acr_username"] = credentials["username"]
+    azure["acr_password"] = password
+    azure["acr_id"] = ""
+
+
+def ensure_acr(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> None:
+    ensure_acr_defaults(state)
+    azure = state["azure"]
+    if not acr_creates_new_registry(state):
+        validate_existing_acr(state, dry_run=dry_run, io=io)
+        return
+    create_command = [
+        "az",
+        "acr",
+        "create",
+        "--name",
+        azure["acr_name"],
+        "--resource-group",
+        azure["resource_group"],
+        "--location",
+        azure["location"],
+        "--sku",
+        azure.get("acr_sku") or "Basic",
+    ]
+    if dry_run:
+        run_command(create_command, dry_run=True, io=io)
+    else:
+        existing = run_and_capture_or_default(
+            [
+                "az",
+                "acr",
+                "show",
+                "--name",
+                azure["acr_name"],
+                "--resource-group",
+                azure["resource_group"],
+                "--query",
+                "name",
+                "-o",
+                "tsv",
+            ],
+            io=io,
+            default="",
+        ).strip()
+        if not existing:
+            run_command(create_command, io=io)
+    if acr_uses_registry_credentials(state):
+        ensure_acr_admin_credentials(state, dry_run=dry_run, io=io)
+        return
     validate_existing_acr(state, dry_run=dry_run, io=io)
 
 
@@ -1116,23 +1238,38 @@ def ensure_acrpull_assignment(state: dict[str, Any], app_key: str, *, dry_run: b
         io=io,
     )
     if existing == "0":
-        run_command(
-            [
-                "az",
-                "role",
-                "assignment",
-                "create",
-                "--assignee-object-id",
-                principal_id,
-                "--assignee-principal-type",
-                "ServicePrincipal",
-                "--role",
-                "AcrPull",
-                "--scope",
-                azure["acr_id"],
-            ],
-            io=io,
-        )
+        command = [
+            "az",
+            "role",
+            "assignment",
+            "create",
+            "--assignee-object-id",
+            principal_id,
+            "--assignee-principal-type",
+            "ServicePrincipal",
+            "--role",
+            "AcrPull",
+            "--scope",
+            azure["acr_id"],
+        ]
+        try:
+            run_command(command, io=io)
+        except subprocess.CalledProcessError as exc:
+            details = "\n".join(part for part in [exc.stderr or "", exc.stdout or ""] if part).strip()
+            if "Microsoft.Authorization/roleAssignments/write" in details or "AuthorizationFailed" in details:
+                raise DeploymentError(
+                    f"Unable to grant AcrPull to Container App `{app_name}`.\n"
+                    f"The signed-in Azure identity cannot create role assignments at ACR scope `{azure['acr_id']}`.\n"
+                    "Ask an Azure Owner or User Access Administrator for this subscription/resource group/ACR to run:\n"
+                    f"{shlex.join(command)}\n"
+                    "Then rerun phase 02 with the same --state-dir. If access was just granted to you, run `az logout` "
+                    "and sign in again before retrying.\n"
+                    f"Azure response:\n{details or str(exc)}"
+                ) from exc
+            raise DeploymentError(
+                f"Azure AcrPull role assignment failed for Container App `{app_name}`.\n"
+                f"Azure response:\n{details or str(exc)}"
+            ) from exc
 
 
 def wait_for_database(state: dict[str, Any], *, io: BaseIO) -> None:
@@ -1665,11 +1802,13 @@ def phase_init(args, io: BaseIO) -> dict[str, Any]:
     use_existing_acr = io.confirm("Use an existing ACR in the client's tenant?", default=True)
     if use_existing_acr:
         acr_name = io.prompt("Existing Azure Container Registry name", validator=validate_non_empty)
+        acr_access_mode = "managed-identity"
         acr_provisioning_mode = "existing"
         acr_sku = ""
     else:
         suggested_acr_name = normalize_acr_name(f"acr-{client_name}")
         acr_name = io.prompt("New Azure Container Registry name", default=suggested_acr_name, validator=normalize_acr_name)
+        acr_access_mode = "registry-credentials"
         acr_provisioning_mode = "create-basic"
         acr_sku = "Basic"
     state = build_default_state(
@@ -1680,7 +1819,7 @@ def phase_init(args, io: BaseIO) -> dict[str, Any]:
         acr_name,
         resource_group=resource_group,
         resource_group_provisioning_mode=resource_group_provisioning_mode,
-        acr_access_mode="managed-identity",
+        acr_access_mode=acr_access_mode,
         acr_provisioning_mode=acr_provisioning_mode,
         acr_sku=acr_sku,
     )
@@ -1799,15 +1938,7 @@ def phase_build_web(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> dict
     run_command(["npm", "test"], cwd=ROOT / "web", env={"APP_VERSION": source["app_version"]}, dry_run=dry_run, io=io)
     run_command(["npm", "run", "build"], cwd=ROOT / "web", env={"APP_VERSION": source["app_version"]}, dry_run=dry_run, io=io)
     run_command(["scripts/ci/package-web-runtime.sh"], dry_run=dry_run, io=io)
-    if acr_uses_registry_credentials(state):
-        expected_image = build_and_push_runtime_with_docker(
-            state,
-            image_name="sentinel-web",
-            context_path=ROOT / ".dist" / "web-runtime",
-            dry_run=dry_run,
-            io=io,
-        )
-    else:
+    if acr_builds_with_azure_task(state):
         expected_image = f"{registry_server}/sentinel-web:{source['image_tag']}"
         run_command(
             [
@@ -1822,6 +1953,14 @@ def phase_build_web(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> dict
                 f"sentinel-web:{source['image_tag']}",
                 "./.dist/web-runtime",
             ],
+            dry_run=dry_run,
+            io=io,
+        )
+    else:
+        expected_image = build_and_push_runtime_with_docker(
+            state,
+            image_name="sentinel-web",
+            context_path=ROOT / ".dist" / "web-runtime",
             dry_run=dry_run,
             io=io,
         )
@@ -1887,15 +2026,7 @@ def phase_build_worker(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> d
     run_command([python_bin, "-m", "pip", "install", "-r", "worker/requirements.txt"], dry_run=dry_run, io=io)
     run_command([python_bin, "-m", "unittest", "discover", "-s", "worker/tests", "-p", "test_*.py"], dry_run=dry_run, io=io)
     run_command(["scripts/ci/package-worker-runtime.sh"], dry_run=dry_run, io=io, env={"PYTHON_BIN": python_bin})
-    if acr_uses_registry_credentials(state):
-        expected_image = build_and_push_runtime_with_docker(
-            state,
-            image_name="sentinel-worker",
-            context_path=ROOT / ".dist" / "worker-runtime",
-            dry_run=dry_run,
-            io=io,
-        )
-    else:
+    if acr_builds_with_azure_task(state):
         expected_image = f"{registry_server}/sentinel-worker:{source['image_tag']}"
         run_command(
             [
@@ -1910,6 +2041,14 @@ def phase_build_worker(state: dict[str, Any], *, dry_run: bool, io: BaseIO) -> d
                 f"sentinel-worker:{source['image_tag']}",
                 "./.dist/worker-runtime",
             ],
+            dry_run=dry_run,
+            io=io,
+        )
+    else:
+        expected_image = build_and_push_runtime_with_docker(
+            state,
+            image_name="sentinel-worker",
+            context_path=ROOT / ".dist" / "worker-runtime",
             dry_run=dry_run,
             io=io,
         )
