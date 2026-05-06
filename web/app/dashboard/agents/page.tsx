@@ -27,7 +27,7 @@ import { ErrorDetailsTable } from "./error-details-table";
 
 export const dynamic = "force-dynamic";
 
-const DEFAULT_TIME_RANGE_VALUE = "2160";
+const DEFAULT_TIME_RANGE_VALUE = "720";
 
 const TIME_RANGES = [
   { value: "24", label: "1 day" },
@@ -289,8 +289,7 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
        ) cs ON cs.session_id = e.session_id
        LEFT JOIN msgraph_users u ON u.id = cs.user_id AND u.deleted_at IS NULL
        WHERE ${errorWhereAliased}
-       ORDER BY e.error_ts DESC
-       LIMIT 100`,
+       ORDER BY e.error_ts DESC`,
       errorParams
     ),
     // Conversations per agent (for error rate calculation)
@@ -476,7 +475,7 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
   return (
     <main className="ps-page">
       <PageHeader
-        title="Agents"
+        title="Custom Agents Telemetry and Controls"
         subtitle={`Agent telemetry via Application Insights. Window: ${currentRange.label}.`}
       />
 
@@ -770,7 +769,7 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
       <Card>
         <CardHeader>
           <CardTitle>Error details</CardTitle>
-          <CardDescription>Recent errors (latest 100). Click a column header to sort.</CardDescription>
+          <CardDescription>Recent errors. Click a column header to sort.</CardDescription>
         </CardHeader>
         <CardContent>
           {errorDetails.length === 0 ? (
