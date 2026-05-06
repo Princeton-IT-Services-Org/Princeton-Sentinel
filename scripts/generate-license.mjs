@@ -3,9 +3,13 @@
 import { randomUUID, createPrivateKey, createSign } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const LICENSE_SCHEMA_VERSION = 1;
 const LICENSE_SIGNATURE_DELIMITER = "\n---SIGNATURE---\n";
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(SCRIPT_DIR, "..");
+const LOCAL_DIR = path.join(REPO_ROOT, ".local");
 const FEATURE_DEFAULTS = {
   dashboard_read: true,
   live_graph_read: true,
@@ -17,7 +21,7 @@ const FEATURE_DEFAULTS = {
   copilot_telemetry: false,
   agents_dashboard: true,
   copilot_usage_sync: false,
-  copilot_dashboard: true,
+  copilot_dashboard: false,
 };
 const PRESETS = {
   trial: {
@@ -155,12 +159,14 @@ function parseIso(value, fieldName) {
 }
 
 function defaultOutputPath(licenseId) {
-  return path.resolve(".local/licenses", `${licenseId}.license`);
+  return path.join(LOCAL_DIR, "licenses", `${licenseId}.license`);
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const privateKeyPath = path.resolve(args["private-key"] || ".local/license-keys/private.pem");
+  const privateKeyPath = args["private-key"]
+    ? path.resolve(args["private-key"])
+    : path.join(LOCAL_DIR, "license-keys", "private.pem");
   const licenseType = String(args["license-type"] || "").trim();
   const tenantId = String(args["tenant-id"] || "").trim();
   const expiresAt = args.noExpiry ? null : parseIso(args["expires-at"], "expires-at");

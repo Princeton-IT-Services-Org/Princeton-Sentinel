@@ -76,6 +76,10 @@ def _default_features() -> Dict[str, bool]:
     return dict(LICENSE_FEATURE_DEFAULTS)
 
 
+def _disabled_features() -> Dict[str, bool]:
+    return {key: False for key in LICENSE_FEATURE_DEFAULTS.keys()}
+
+
 def _fully_enabled_features() -> Dict[str, bool]:
     return {key: True for key in LICENSE_FEATURE_DEFAULTS.keys()}
 
@@ -163,7 +167,7 @@ def _parse_required_timestamp(value: Any, field_name: str, allow_null: bool = Fa
 def _derive_features(value: Any) -> Dict[str, bool]:
     if not isinstance(value, dict):
         raise ValueError("license_features_invalid")
-    features = _default_features()
+    features = _disabled_features()
     for key in LICENSE_FEATURE_DEFAULTS.keys():
         if key not in value:
             continue
@@ -230,8 +234,9 @@ def inspect_license_artifact(raw_license_text: str) -> Dict[str, Any]:
         if any(ch.isspace() for ch in signature_text):
             raise ValueError("license_signature_invalid")
 
-        payload = _parse_payload(json.loads(payload_text))
-        canonical_payload = canonicalize_license_payload(payload)
+        raw_payload = json.loads(payload_text)
+        payload = _parse_payload(raw_payload)
+        canonical_payload = canonicalize_license_payload(raw_payload)
         if payload_text != canonical_payload:
             raise ValueError("license_payload_not_canonical")
 

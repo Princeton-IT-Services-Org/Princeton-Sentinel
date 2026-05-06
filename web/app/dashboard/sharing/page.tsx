@@ -12,7 +12,7 @@ import { buildSitePrincipalCountsCte } from "@/app/lib/site-principal-counts";
 import { SharingSummaryBarChartClient, SharingSummaryPieChartClient } from "@/components/sharing-summary-graphs-client";
 import { SharingLinkBreakdownTable, SharingSitesTable } from "./sharing-tables";
 import PageHeader from "@/components/page-header";
-import FilterBar from "@/components/filter-bar";
+import FilterBar, { AppliedFilterTags, FilterField, formatSearchFilterValue } from "@/components/filter-bar";
 import MetricGrid from "@/components/metric-grid";
 import { MetricCard } from "@/components/metric-card";
 
@@ -189,19 +189,28 @@ async function SharingPage({ searchParams }: { searchParams?: Promise<SearchPara
       <PageHeader title="Sharing" subtitle="Sharing links and external access signals." />
       <form action="/dashboard/sharing" method="get">
         <FilterBar>
-          <Input name="q" placeholder="Search sites…" defaultValue={search || ""} className="w-64" />
-          <Input
-            name="pageSize"
-            type="number"
-            min={10}
-            max={200}
-            defaultValue={String(pageSize)}
-            className="w-24"
-            title="Page size"
-          />
+          <FilterField label="Search">
+            <Input name="q" placeholder="Search sites…" defaultValue={search || ""} className="w-64" />
+          </FilterField>
+          <FilterField label="Page size">
+            <Input
+              name="pageSize"
+              type="number"
+              min={10}
+              max={200}
+              defaultValue={String(pageSize)}
+              className="w-24"
+            />
+          </FilterField>
           <Button type="submit" variant="outline">
             Apply
           </Button>
+          <AppliedFilterTags
+            tags={[
+              { label: "Search", value: formatSearchFilterValue(search) },
+              { label: "Page size", value: pageSize },
+            ]}
+          />
         </FilterBar>
       </form>
 

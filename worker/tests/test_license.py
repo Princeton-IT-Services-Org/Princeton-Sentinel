@@ -54,6 +54,15 @@ def build_payload(**overrides):
     return payload
 
 
+def build_legacy_payload_without_m365_copilot_features():
+    payload = build_payload()
+    features = dict(payload["features"])
+    features.pop("copilot_usage_sync")
+    features.pop("copilot_dashboard")
+    payload["features"] = features
+    return payload
+
+
 def sign_artifact(private_key, payload):
     canonical_payload = canonicalize_license_payload(payload)
     signature = private_key.sign(canonical_payload.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
@@ -144,6 +153,34 @@ class WorkerLicenseTests(unittest.TestCase):
         self.assertEqual(summary["verification_status"], "verified")
         self.assertTrue(summary["features"]["job_control"])
 
+    def test_summarize_license_artifact_keeps_legacy_license_active_with_missing_features_disabled(self):
+        artifact = sign_artifact(self.private_key, build_legacy_payload_without_m365_copilot_features())
+
+        summary = summarize_license_artifact(artifact)
+
+        self.assertEqual(summary["status"], "active")
+        self.assertEqual(summary["verification_status"], "verified")
+        self.assertTrue(summary["features"]["job_control"])
+        self.assertTrue(summary["features"]["graph_ingest"])
+        self.assertTrue(summary["features"]["permission_revoke"])
+        self.assertTrue(summary["features"]["agents_dashboard"])
+        self.assertTrue(summary["features"]["copilot_telemetry"])
+        self.assertFalse(summary["features"]["copilot_usage_sync"])
+        self.assertFalse(summary["features"]["copilot_dashboard"])
+
+    def test_summarize_license_artifact_ignores_unknown_feature_keys_for_enforcement(self):
+        payload = build_legacy_payload_without_m365_copilot_features()
+        payload["features"]["future_feature"] = True
+        artifact = sign_artifact(self.private_key, payload)
+
+        summary = summarize_license_artifact(artifact)
+
+        self.assertEqual(summary["status"], "active")
+        self.assertEqual(summary["verification_status"], "verified")
+        self.assertTrue(summary["features"]["graph_ingest"])
+        self.assertNotIn("future_feature", summary["features"])
+        self.assertFalse(summary["features"]["copilot_usage_sync"])
+
     @patch("app.license.db.fetch_one")
     def test_get_current_license_returns_missing_summary_without_unboundlocalerror(self, mock_fetch_one):
         mock_fetch_one.return_value = None
@@ -169,6 +206,24 @@ class WorkerLicenseTests(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.get_json()["error"], "license_feature_job_control_disabled")
 
+    @patch("app.api.db.fetch_one", return_value={"job_id": "job-1", "job_type": "copilot_usage_sync"})
+    @patch("app.api.require_license_feature")
+    def test_run_now_endpoint_returns_403_when_license_blocks_copilot_usage_sync(self, mock_require_license_feature, _mock_fetch_one):
+        summary = {"status": "active", "features": {"job_control": True, "copilot_usage_sync": False}}
+        mock_require_license_feature.side_effect = [
+            summary,
+            LicenseFeatureError("copilot_usage_sync", summary),
+        ]
+
+        response = self.client.post(
+            "/jobs/run-now",
+            json={"job_id": "job-1"},
+            headers={"X-Worker-Internal-Token": "worker-secret-token"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["error"], "license_feature_copilot_usage_sync_disabled")
+
     @patch("app.scheduler.db.get_conn")
     @patch("app.scheduler.log_audit_event")
     @patch("app.scheduler.emit")
@@ -181,6 +236,19 @@ class WorkerLicenseTests(unittest.TestCase):
         mock_get_conn.assert_not_called()
         mock_log_audit_event.assert_called_once()
         self.assertEqual(mock_log_audit_event.call_args.kwargs["action"], "job_run_blocked_license")
+
+    @patch("app.scheduler.db.get_conn")
+    @patch("app.scheduler.log_audit_event")
+    @patch("app.scheduler.emit")
+    @patch("app.scheduler.require_license_feature")
+    def test_run_job_once_skips_copilot_usage_sync_when_license_blocks_feature(self, mock_require_license_feature, _mock_emit, mock_log_audit_event, mock_get_conn):
+        mock_require_license_feature.side_effect = LicenseFeatureError("copilot_usage_sync", {"status": "active"})
+
+        scheduler.run_job_once({"job_id": "job-1", "job_type": "copilot_usage_sync"})
+
+        mock_get_conn.assert_not_called()
+        mock_log_audit_event.assert_called_once()
+        self.assertEqual(mock_log_audit_event.call_args.kwargs["details"]["feature"], "copilot_usage_sync")
 
     @patch("app.license.get_local_testing_state", return_value={"emulate_license_enabled": True, "updated_at": "2026-04-14T12:00:00.000Z"})
     def test_get_current_license_uses_local_enabled_emulation_in_local_docker(self, _get_local_testing_state):
