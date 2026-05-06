@@ -1,4 +1,5 @@
 import { withPageRequestTiming } from "@/app/lib/request-timing";
+import Link from "next/link";
 import type React from "react";
 import { query } from "@/app/lib/db";
 import { requireUser } from "@/app/lib/auth";
@@ -19,40 +20,9 @@ import {
   M365CopilotTimeOfDayChartClient,
   M365CopilotTrendChartClient,
 } from "@/components/m365-copilot-charts-client";
+import { PERIODS, formatAppLabel, normalizePeriod, periodDays, toIso } from "./copilot-utils";
 
 export const dynamic = "force-dynamic";
-
-const PERIODS = [
-  { value: "D7", label: "7 days" },
-  { value: "D30", label: "30 days" },
-  { value: "D90", label: "90 days" },
-  { value: "D180", label: "180 days" },
-  { value: "ALL", label: "All" },
-] as const;
-
-function normalizePeriod(value: string | null | undefined) {
-  return PERIODS.some((period) => period.value === value) ? value! : "D30";
-}
-
-function periodDays(value: string) {
-  if (value === "ALL") return null;
-  const days = Number(value.replace(/^D/, ""));
-  return Number.isFinite(days) ? days : 30;
-}
-
-function toIso(value: unknown): string {
-  if (!value) return "";
-  if (value instanceof Date) return value.toISOString();
-  const parsed = new Date(String(value));
-  return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toISOString();
-}
-
-function formatAppLabel(value: unknown) {
-  const text = String(value || "").trim();
-  if (!text) return "Unknown";
-  const parts = text.split(".").map((part) => part.trim()).filter(Boolean);
-  return parts[parts.length - 1] || text;
-}
 
 async function CopilotPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
   await requireUser();
@@ -149,7 +119,6 @@ async function CopilotPage({ searchParams }: { searchParams?: Promise<SearchPara
       WHERE ($1::int IS NULL OR bucket_start_utc >= now() - ($1::int * interval '1 day'))
       GROUP BY entra_user_id, user_label, user_principal_name, department, office_location
       ORDER BY prompts DESC, user_label ASC
-      LIMIT 10
       `,
       [selectedPeriodDays]
     ),
@@ -313,15 +282,25 @@ async function CopilotPage({ searchParams }: { searchParams?: Promise<SearchPara
       <div className="mt-3 grid gap-3 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>Top users</CardTitle>
-            <CardDescription>{currentRange.label} prompt volume by user</CardDescription>
+            <CardTitle>Users by prompt volume</CardTitle>
+            <CardDescription>{currentRange.label} prompt volume by user, descending</CardDescription>
           </CardHeader>
           <CardContent>
             <SimpleTable
               rows={topUserRows}
               emptyLabel="No user interaction aggregates yet."
               columns={[
-                ["User", (row) => row.user_label || "Unknown"],
+                [
+                  "User",
+                  (row) => (
+                    <Link
+                      className="font-medium hover:underline"
+                      href={`/dashboard/copilot/users/${encodeURIComponent(row.entra_user_id)}?period=${encodeURIComponent(selectedPeriod)}`}
+                    >
+                      {row.user_label || "Unknown"}
+                    </Link>
+                  ),
+                ],
                 ["Department", (row) => row.department || "Unknown"],
                 ["Apps", (row) => formatNumber(row.apps_used)],
                 ["Prompts", (row) => formatNumber(row.prompts)],
