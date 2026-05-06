@@ -16,7 +16,7 @@ import {
   Tooltip,
 } from "chart.js";
 
-import { barColors, commonBarOptions, commonPieOptions, numberLabel, pieColors } from "@/components/chart-config";
+import { commonBarOptions, commonPieOptions, numberLabel, pieColors } from "@/components/chart-config";
 import { formatDate, formatIsoDate } from "@/app/lib/format";
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, PointElement, LineElement, Filler, Title, Tooltip, Legend);
