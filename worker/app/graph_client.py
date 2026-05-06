@@ -89,6 +89,9 @@ class GraphClient:
     def get_json(self, path_or_url: str) -> Dict[str, Any]:
         return self.request_json("GET", path_or_url)
 
+    def get_text(self, path_or_url: str) -> str:
+        return self.request_text("GET", path_or_url)
+
     def request_json(self, method: str, path_or_url: str, *, json: Any = None) -> Dict[str, Any]:
         url = self._build_url(path_or_url)
         backoff = 2.0
@@ -160,6 +163,75 @@ class GraphClient:
             except ValueError as exc:
                 emit("ERROR", "GRAPH", f"Graph response invalid JSON: method={method} url={url}")
                 raise RuntimeError("Graph response was not valid JSON") from exc
+
+        emit("ERROR", "GRAPH", f"Graph request retries exhausted: method={method} url={url}")
+        raise RuntimeError("Graph request retries exhausted")
+
+    def request_text(self, method: str, path_or_url: str, *, json: Any = None) -> str:
+        url = self._build_url(path_or_url)
+        backoff = 2.0
+
+        for attempt in range(self._max_retries + 1):
+            attempt_number = attempt + 1
+            token = self._get_token()
+            headers = {"Authorization": f"Bearer {token}"}
+            try:
+                resp = requests.request(
+                    method,
+                    url,
+                    headers=headers,
+                    json=json,
+                    timeout=(self._connect_timeout, self._read_timeout),
+                )
+            except requests.RequestException as exc:
+                if attempt >= self._max_retries:
+                    emit("ERROR", "GRAPH", f"Graph request failed: method={method} url={url} error={exc}")
+                    raise RuntimeError(f"Graph request failed: {exc}") from exc
+                emit(
+                    "WARN",
+                    "GRAPH",
+                    f"Graph request retrying after transport error: method={method} url={url} attempt={attempt_number}/{self._max_retries + 1} error={exc}",
+                )
+                time.sleep(backoff + random.uniform(0, 0.25))
+                backoff = min(backoff * 2, 60)
+                continue
+
+            if resp.status_code == 401 and attempt < self._max_retries:
+                self._cached_token = None
+                self._cached_token_expires_at = 0.0
+                emit(
+                    "WARN",
+                    "GRAPH",
+                    f"Graph request retrying after 401: method={method} url={url} attempt={attempt_number}/{self._max_retries + 1}",
+                )
+                time.sleep(0.5)
+                continue
+
+            if resp.status_code in (408, 429, 500, 502, 503, 504) and attempt < self._max_retries:
+                retry_after = resp.headers.get("Retry-After")
+                emit(
+                    "WARN",
+                    "GRAPH",
+                    f"Graph request retrying after status={resp.status_code}: method={method} url={url} attempt={attempt_number}/{self._max_retries + 1}",
+                )
+                if retry_after and retry_after.isdigit():
+                    time.sleep(float(retry_after))
+                else:
+                    time.sleep(backoff + random.uniform(0, 0.25))
+                    backoff = min(backoff * 2, 60)
+                continue
+
+            if not resp.ok:
+                text = resp.text or ""
+                message = text[:400] if text else "request_failed"
+                emit(
+                    "ERROR",
+                    "GRAPH",
+                    f"Graph request failed with status={resp.status_code}: method={method} url={url} error={message}",
+                )
+                raise GraphError(resp.status_code, message, url, text)
+
+            return resp.text or ""
 
         emit("ERROR", "GRAPH", f"Graph request retries exhausted: method={method} url={url}")
         raise RuntimeError("Graph request retries exhausted")

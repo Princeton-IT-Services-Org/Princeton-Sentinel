@@ -1,5 +1,6 @@
 export const FEATURE_FLAG_DEFAULTS = {
   agents_dashboard: true,
+  copilot_dashboard: true,
   test_mode: false,
 } as const;
 
@@ -17,6 +18,7 @@ type FeatureFlagRow = {
 
 const FEATURE_ROUTE_PREFIXES: Record<FeatureKey, string[]> = {
   agents_dashboard: ["/dashboard/agents", "/api/agents"],
+  copilot_dashboard: ["/dashboard/copilot"],
   test_mode: [],
 };
 

@@ -62,8 +62,13 @@ function AppShellContent({
     { href: "/dashboard/risk", label: "Risk", active: pathname.startsWith("/dashboard/risk") },
     { href: "/dashboard/users", label: "Users", active: pathname.startsWith("/dashboard/users") },
     { href: "/dashboard/groups", label: "Groups", active: pathname.startsWith("/dashboard/groups") },
+    { href: "/dashboard/copilot", label: "Copilot", active: pathname.startsWith("/dashboard/copilot") },
     { href: "/dashboard/agents", label: "Agents", active: pathname.startsWith("/dashboard/agents") },
-  ].filter((item) => (item.href === "/dashboard/agents" ? flags.agents_dashboard : true));
+  ].filter((item) => {
+    if (item.href === "/dashboard/agents") return flags.agents_dashboard;
+    if (item.href === "/dashboard/copilot") return flags.copilot_dashboard;
+    return true;
+  });
 
   useEffect(() => {
     const previousFlags = previousFlagsRef.current;

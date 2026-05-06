@@ -16,6 +16,8 @@ const FEATURE_DEFAULTS = {
   graph_ingest: false,
   copilot_telemetry: false,
   agents_dashboard: true,
+  copilot_usage_sync: false,
+  copilot_dashboard: true,
 };
 const PRESETS = {
   trial: {
@@ -35,6 +37,8 @@ const PRESETS = {
     permission_revoke: true,
     copilot_telemetry: true,
     agents_dashboard: true,
+    copilot_usage_sync: true,
+    copilot_dashboard: true,
   },
 };
 

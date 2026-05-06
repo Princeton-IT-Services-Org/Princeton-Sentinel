@@ -61,6 +61,7 @@ export async function getFeatureFlags(): Promise<FeatureFlags> {
   return {
     ...flags,
     agents_dashboard: flags.agents_dashboard && license.features.agents_dashboard,
+    copilot_dashboard: flags.copilot_dashboard && license.features.copilot_dashboard,
   };
 }
 

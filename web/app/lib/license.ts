@@ -18,6 +18,8 @@ export const LICENSE_FEATURE_DEFAULTS = {
   graph_ingest: false,
   copilot_telemetry: false,
   agents_dashboard: true,
+  copilot_usage_sync: false,
+  copilot_dashboard: true,
 } as const;
 
 export type LicenseFeatureKey = keyof typeof LICENSE_FEATURE_DEFAULTS;
