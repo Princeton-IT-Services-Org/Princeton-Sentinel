@@ -20,7 +20,8 @@ class InstallClientLicenseTests(unittest.TestCase):
             '{"schema_version":1,"license_id":"lic-123","license_type":"enterprise","tenant_id":"tenant-a",'
             '"issued_at":"2026-04-01T00:00:00Z","expires_at":null,"features":{"dashboard_read":true,'
             '"live_graph_read":true,"admin_view":true,"license_manage":true,"permission_revoke":false,'
-            '"job_control":true,"graph_ingest":true,"copilot_telemetry":false,"agents_dashboard":true}}'
+            '"job_control":true,"graph_ingest":true,"copilot_telemetry":false,"agents_dashboard":true,'
+            '"copilot_usage_sync":false,"copilot_dashboard":true}}'
             "\n---SIGNATURE---\n"
             "ZmFrZVNpZ25hdHVyZQ==\n"
         )

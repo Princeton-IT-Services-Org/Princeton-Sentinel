@@ -10,6 +10,7 @@ from app import db
 from app.jobs.graph_ingest import run_graph_ingest
 from app.jobs.mv_refresh import run_mv_refresh
 from app.jobs.copilot_telemetry import run_copilot_telemetry
+from app.jobs.copilot_usage_sync import run_copilot_usage_sync
 from app.license import LicenseFeatureError, get_job_type_license_feature, require_license_feature
 from app.runtime_logger import emit
 from app.utils import log_audit_event, log_job_run_log
@@ -504,6 +505,9 @@ def _execute_job(job_type, *, run_id: str, job_id: str, actor_claims=None):
         elif job_type == "copilot_telemetry":
             log_job_run_log(run_id=run_id, level="INFO", message="copilot_telemetry_started", context={"job_id": job_id})
             run_copilot_telemetry(run_id=run_id, job_id=job_id, actor=actor_claims)
+        elif job_type == "copilot_usage_sync":
+            log_job_run_log(run_id=run_id, level="INFO", message="copilot_usage_sync_started", context={"job_id": job_id})
+            run_copilot_usage_sync(run_id=run_id, job_id=job_id, actor=actor_claims)
         else:
             raise RuntimeError(f"Unknown job_type: {job_type}")
         return "success", None

@@ -49,7 +49,9 @@ const FEATURE_ORDER: LicenseFeatureKey[] = [
   "job_control",
   "graph_ingest",
   "copilot_telemetry",
+  "copilot_usage_sync",
   "agents_dashboard",
+  "copilot_dashboard",
 ];
 
 async function LicensePage({ searchParams }: LicensePageProps) {

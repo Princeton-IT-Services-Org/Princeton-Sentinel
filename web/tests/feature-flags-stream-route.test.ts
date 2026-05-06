@@ -97,7 +97,7 @@ test("feature-flag stream route emits a snapshot and later updates", async () =>
   });
 
   setSnapshotPayload({
-    flags: { agents_dashboard: true, test_mode: false },
+    flags: { agents_dashboard: true, copilot_dashboard: true, test_mode: false },
     version: "2026-03-20T16:00:00.000Z",
   });
 
@@ -118,7 +118,7 @@ test("feature-flag stream route emits a snapshot and later updates", async () =>
     assert.match(snapshotChunk, /"agents_dashboard":true/);
 
     capturedSubscriber?.({
-      flags: { agents_dashboard: false, test_mode: false },
+      flags: { agents_dashboard: false, copilot_dashboard: true, test_mode: false },
       version: "2026-03-20T16:05:00.000Z",
     });
 

@@ -180,7 +180,7 @@ test("notification broadcast failures are caught and logged", async () => {
   pg.Client = MockClient as typeof pg.Client;
   MockClient.connectBehaviors = [async () => {}];
   setSnapshotPayload({
-    flags: { agents_dashboard: true, test_mode: false },
+    flags: { agents_dashboard: true, copilot_dashboard: true, test_mode: false },
     version: "2026-03-20T16:00:00.000Z",
   });
 

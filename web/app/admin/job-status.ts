@@ -39,6 +39,7 @@ export function formatJobTypeLabel(jobType?: string | null): string {
   if (!jobType) return "Unknown Job";
   if (jobType === "graph_ingest") return "Graph Sync Job";
   if (jobType === "mv_refresh") return "MV Refresh Job";
+  if (jobType === "copilot_usage_sync") return "Copilot Usage Sync";
   return jobType
     .split("_")
     .filter(Boolean)

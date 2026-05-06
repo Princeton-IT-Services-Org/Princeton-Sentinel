@@ -393,6 +393,86 @@ CREATE INDEX IF NOT EXISTS idx_copilot_agent_registrations_disabled
 ON copilot_agent_registrations (bot_id)
 WHERE disabled_at IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS m365_copilot_user_count_summary (
+  source_period text PRIMARY KEY,
+  report_refresh_date date,
+  report_period int,
+  enabled_users int DEFAULT 0,
+  active_users int DEFAULT 0,
+  raw_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  synced_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS m365_copilot_user_count_trend (
+  source_period text NOT NULL,
+  report_date date NOT NULL,
+  report_period int,
+  enabled_users int DEFAULT 0,
+  active_users int DEFAULT 0,
+  raw_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  synced_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (source_period, report_date)
+);
+
+CREATE TABLE IF NOT EXISTS m365_copilot_usage_user_detail (
+  source_period text NOT NULL,
+  report_user_key text NOT NULL,
+  entra_user_id text,
+  user_principal_name text,
+  display_name text,
+  department text,
+  office_location text,
+  last_activity_date date,
+  report_refresh_date date,
+  report_period int,
+  enabled_for_copilot boolean,
+  active_in_period boolean NOT NULL DEFAULT false,
+  raw_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  synced_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (source_period, report_user_key)
+);
+
+CREATE TABLE IF NOT EXISTS m365_copilot_interaction_aggregates (
+  bucket_start_utc timestamptz NOT NULL,
+  entra_user_id text NOT NULL,
+  user_principal_name text NOT NULL DEFAULT '',
+  display_name text NOT NULL DEFAULT '',
+  department text NOT NULL DEFAULT '',
+  office_location text NOT NULL DEFAULT '',
+  source_app text NOT NULL DEFAULT 'Unknown',
+  app_class text NOT NULL DEFAULT '',
+  conversation_type text NOT NULL DEFAULT '',
+  context_type text NOT NULL DEFAULT '',
+  locale text NOT NULL DEFAULT '',
+  prompt_count int NOT NULL DEFAULT 0,
+  request_count int NOT NULL DEFAULT 0,
+  session_count int NOT NULL DEFAULT 0,
+  synced_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (
+    bucket_start_utc,
+    entra_user_id,
+    source_app,
+    app_class,
+    conversation_type,
+    context_type,
+    locale
+  )
+);
+
+CREATE TABLE IF NOT EXISTS m365_copilot_usage_sync_state (
+  state_key text PRIMARY KEY,
+  last_success_at timestamptz,
+  last_reports_synced_at timestamptz,
+  last_interactions_synced_at timestamptz,
+  interaction_window_start timestamptz,
+  interaction_window_end timestamptz,
+  d7_active_users int DEFAULT 0,
+  resolved_users int DEFAULT 0,
+  unresolved_users int DEFAULT 0,
+  prompt_count int DEFAULT 0,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS feature_flags (
   feature_key text PRIMARY KEY,
   enabled boolean NOT NULL,
@@ -422,6 +502,10 @@ FOR EACH ROW EXECUTE FUNCTION set_feature_flags_updated_at();
 
 INSERT INTO feature_flags (feature_key, enabled, description)
 VALUES ('agents_dashboard', true, 'Enable the dashboard agents and copilot experience.')
+ON CONFLICT (feature_key) DO NOTHING;
+
+INSERT INTO feature_flags (feature_key, enabled, description)
+VALUES ('copilot_dashboard', true, 'Enable the Microsoft 365 Copilot usage dashboard.')
 ON CONFLICT (feature_key) DO NOTHING;
 
 INSERT INTO feature_flags (feature_key, enabled, description)
@@ -602,6 +686,70 @@ BEGIN
 END;
 $$;
 
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'trg_touch_m365_copilot_user_count_summary'
+      AND tgrelid = 'm365_copilot_user_count_summary'::regclass
+  ) THEN
+    EXECUTE '
+      CREATE TRIGGER trg_touch_m365_copilot_user_count_summary
+      AFTER INSERT OR UPDATE OR DELETE ON m365_copilot_user_count_summary
+      FOR EACH ROW EXECUTE FUNCTION touch_table_update_log()
+    ';
+  END IF;
+END;
+$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'trg_touch_m365_copilot_user_count_trend'
+      AND tgrelid = 'm365_copilot_user_count_trend'::regclass
+  ) THEN
+    EXECUTE '
+      CREATE TRIGGER trg_touch_m365_copilot_user_count_trend
+      AFTER INSERT OR UPDATE OR DELETE ON m365_copilot_user_count_trend
+      FOR EACH ROW EXECUTE FUNCTION touch_table_update_log()
+    ';
+  END IF;
+END;
+$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'trg_touch_m365_copilot_usage_user_detail'
+      AND tgrelid = 'm365_copilot_usage_user_detail'::regclass
+  ) THEN
+    EXECUTE '
+      CREATE TRIGGER trg_touch_m365_copilot_usage_user_detail
+      AFTER INSERT OR UPDATE OR DELETE ON m365_copilot_usage_user_detail
+      FOR EACH ROW EXECUTE FUNCTION touch_table_update_log()
+    ';
+  END IF;
+END;
+$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'trg_touch_m365_copilot_interaction_aggregates'
+      AND tgrelid = 'm365_copilot_interaction_aggregates'::regclass
+  ) THEN
+    EXECUTE '
+      CREATE TRIGGER trg_touch_m365_copilot_interaction_aggregates
+      AFTER INSERT OR UPDATE OR DELETE ON m365_copilot_interaction_aggregates
+      FOR EACH ROW EXECUTE FUNCTION touch_table_update_log()
+    ';
+  END IF;
+END;
+$$;
+
 -- MV dependency metadata
 CREATE TABLE IF NOT EXISTS mv_dependencies (
   mv_name text,
@@ -699,6 +847,21 @@ CREATE INDEX IF NOT EXISTS idx_copilot_topic_stats_hourly_bot
 ON copilot_topic_stats_hourly (bot_id, time_bucket DESC);
 CREATE INDEX IF NOT EXISTS idx_copilot_topic_stats_hourly_channel
 ON copilot_topic_stats_hourly (channel, time_bucket DESC);
+CREATE INDEX IF NOT EXISTS idx_m365_copilot_summary_refresh
+ON m365_copilot_user_count_summary (report_refresh_date DESC);
+CREATE INDEX IF NOT EXISTS idx_m365_copilot_trend_date
+ON m365_copilot_user_count_trend (report_date DESC);
+CREATE INDEX IF NOT EXISTS idx_m365_copilot_user_detail_period_activity
+ON m365_copilot_usage_user_detail (source_period, last_activity_date DESC);
+CREATE INDEX IF NOT EXISTS idx_m365_copilot_user_detail_entra
+ON m365_copilot_usage_user_detail (entra_user_id)
+WHERE entra_user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_m365_copilot_interactions_bucket
+ON m365_copilot_interaction_aggregates (bucket_start_utc DESC);
+CREATE INDEX IF NOT EXISTS idx_m365_copilot_interactions_app_bucket
+ON m365_copilot_interaction_aggregates (source_app, bucket_start_utc DESC);
+CREATE INDEX IF NOT EXISTS idx_m365_copilot_interactions_user_bucket
+ON m365_copilot_interaction_aggregates (entra_user_id, bucket_start_utc DESC);
 
 -- Triggered MV queue invalidation on base table changes (statement-level)
 CREATE TRIGGER trg_refresh_mvs_users

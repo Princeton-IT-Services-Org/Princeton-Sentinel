@@ -6,9 +6,15 @@ export const FEATURE_DISABLED_REDIRECT_TARGET = "/dashboard";
 export const FEATURE_DISABLED_MESSAGE = "This feature was disabled. Redirecting to Overview.";
 
 export function shouldRedirectImmediatelyForDisabledFeature(flags: FeatureFlags, pathname: string) {
-  return !flags.agents_dashboard && matchesFeaturePath("agents_dashboard", pathname);
+  return (
+    (!flags.agents_dashboard && matchesFeaturePath("agents_dashboard", pathname)) ||
+    (!flags.copilot_dashboard && matchesFeaturePath("copilot_dashboard", pathname))
+  );
 }
 
 export function shouldRedirectForDisabledFeature(previousFlags: FeatureFlags, nextFlags: FeatureFlags, pathname: string) {
-  return previousFlags.agents_dashboard && !nextFlags.agents_dashboard && matchesFeaturePath("agents_dashboard", pathname);
+  return (
+    (previousFlags.agents_dashboard && !nextFlags.agents_dashboard && matchesFeaturePath("agents_dashboard", pathname)) ||
+    (previousFlags.copilot_dashboard && !nextFlags.copilot_dashboard && matchesFeaturePath("copilot_dashboard", pathname))
+  );
 }

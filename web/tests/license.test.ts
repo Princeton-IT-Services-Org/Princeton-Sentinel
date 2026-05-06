@@ -40,6 +40,8 @@ function makePayload(overrides: Record<string, unknown> = {}) {
       graph_ingest: true,
       copilot_telemetry: true,
       agents_dashboard: true,
+      copilot_usage_sync: true,
+      copilot_dashboard: true,
     },
     ...overrides,
   };
@@ -137,6 +139,8 @@ test("expired licenses become read-only", async () => {
         graph_ingest: true,
         copilot_telemetry: true,
         agents_dashboard: true,
+        copilot_usage_sync: true,
+        copilot_dashboard: true,
       },
     })
   );
@@ -203,7 +207,7 @@ test("generator script output verifies end to end", async () => {
     "--expires-at",
     "2026-12-31T23:59:59Z",
     "--features",
-    "graph_ingest=true,job_control=true,permission_revoke=true,agents_dashboard=true,copilot_telemetry=true",
+    "graph_ingest=true,job_control=true,permission_revoke=true,agents_dashboard=true,copilot_telemetry=true,copilot_usage_sync=true,copilot_dashboard=true",
   ]);
 
   setLicensePublicKeyForTests(publicKey);

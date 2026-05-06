@@ -56,6 +56,7 @@ test("mergeFeatureFlags applies defaults when rows are missing", () => {
 
   assert.deepEqual(flags, getDefaultFeatureFlags());
   assert.equal(isFeatureEnabled("agents_dashboard", flags), true);
+  assert.equal(isFeatureEnabled("copilot_dashboard", flags), true);
   assert.equal(isFeatureEnabled("test_mode", flags), false);
 });
 
@@ -69,6 +70,7 @@ test("getFeatureFlags ignores unknown feature rows", async () => {
 
   const flags = await getFeatureFlags();
   assert.equal(flags.agents_dashboard, false);
+  assert.equal(flags.copilot_dashboard, true);
   assert.equal(flags.test_mode, false);
 
   clearMockQuery();
@@ -116,7 +118,7 @@ test("getFeatureFlagsPayload returns both flags and version", async () => {
 
   const payload = await getFeatureFlagsPayload();
   assert.deepEqual(payload, {
-    flags: { agents_dashboard: false, test_mode: false },
+    flags: { agents_dashboard: false, copilot_dashboard: true, test_mode: false },
     version: "2026-03-20T16:00:00.000Z",
   });
 
@@ -139,6 +141,8 @@ test("matchesFeaturePath recognizes all agents feature routes", () => {
   assert.equal(matchesFeaturePath("agents_dashboard", "/api/agents"), true);
   assert.equal(matchesFeaturePath("agents_dashboard", "/dashboard/copilot"), false);
   assert.equal(matchesFeaturePath("agents_dashboard", "/api/copilot"), false);
+  assert.equal(matchesFeaturePath("copilot_dashboard", "/dashboard/copilot"), true);
+  assert.equal(matchesFeaturePath("copilot_dashboard", "/dashboard/agents"), false);
   assert.equal(matchesFeaturePath("agents_dashboard", "/dashboard/sites"), false);
 });
 
@@ -159,6 +163,7 @@ test("getFeatureFlags disables agents dashboard when the license disables it", a
 
   const flags = await getFeatureFlags();
   assert.equal(flags.agents_dashboard, false);
+  assert.equal(flags.copilot_dashboard, true);
   assert.equal(flags.test_mode, false);
 
   clearMockQuery();
@@ -167,24 +172,32 @@ test("getFeatureFlags disables agents dashboard when the license disables it", a
 test("shouldRedirectForDisabledFeature only redirects when a gated route was just disabled", () => {
   assert.equal(
     shouldRedirectForDisabledFeature(
-      { agents_dashboard: true, test_mode: false },
-      { agents_dashboard: false, test_mode: false },
+      { agents_dashboard: true, copilot_dashboard: true, test_mode: false },
+      { agents_dashboard: false, copilot_dashboard: true, test_mode: false },
       "/dashboard/agents"
     ),
     true
   );
   assert.equal(
     shouldRedirectForDisabledFeature(
-      { agents_dashboard: false, test_mode: false },
-      { agents_dashboard: false, test_mode: false },
+      { agents_dashboard: true, copilot_dashboard: true, test_mode: false },
+      { agents_dashboard: true, copilot_dashboard: false, test_mode: false },
+      "/dashboard/copilot"
+    ),
+    true
+  );
+  assert.equal(
+    shouldRedirectForDisabledFeature(
+      { agents_dashboard: false, copilot_dashboard: true, test_mode: false },
+      { agents_dashboard: false, copilot_dashboard: true, test_mode: false },
       "/dashboard/agents"
     ),
     false
   );
   assert.equal(
     shouldRedirectForDisabledFeature(
-      { agents_dashboard: true, test_mode: false },
-      { agents_dashboard: false, test_mode: false },
+      { agents_dashboard: true, copilot_dashboard: true, test_mode: false },
+      { agents_dashboard: false, copilot_dashboard: true, test_mode: false },
       "/dashboard/sites"
     ),
     false
@@ -194,14 +207,21 @@ test("shouldRedirectForDisabledFeature only redirects when a gated route was jus
 test("shouldRedirectImmediatelyForDisabledFeature redirects when a gated route starts disabled", () => {
   assert.equal(
     shouldRedirectImmediatelyForDisabledFeature(
-      { agents_dashboard: false, test_mode: false },
+      { agents_dashboard: false, copilot_dashboard: true, test_mode: false },
       "/dashboard/agents/agent-access-control"
     ),
     true
   );
   assert.equal(
     shouldRedirectImmediatelyForDisabledFeature(
-      { agents_dashboard: false, test_mode: false },
+      { agents_dashboard: true, copilot_dashboard: false, test_mode: false },
+      "/dashboard/copilot"
+    ),
+    true
+  );
+  assert.equal(
+    shouldRedirectImmediatelyForDisabledFeature(
+      { agents_dashboard: false, copilot_dashboard: true, test_mode: false },
       "/dashboard/sites"
     ),
     false

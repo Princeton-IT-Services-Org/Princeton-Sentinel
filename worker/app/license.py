@@ -26,10 +26,13 @@ LICENSE_FEATURE_DEFAULTS = {
     "graph_ingest": False,
     "copilot_telemetry": False,
     "agents_dashboard": False,
+    "copilot_usage_sync": False,
+    "copilot_dashboard": False,
 }
 JOB_TYPE_LICENSE_FEATURES = {
     "graph_ingest": "graph_ingest",
     "copilot_telemetry": "copilot_telemetry",
+    "copilot_usage_sync": "copilot_usage_sync",
 }
 
 _cache_lock = threading.Lock()

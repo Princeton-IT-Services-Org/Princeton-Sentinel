@@ -46,6 +46,8 @@ def build_payload(**overrides):
             "graph_ingest": True,
             "copilot_telemetry": True,
             "agents_dashboard": True,
+            "copilot_usage_sync": True,
+            "copilot_dashboard": True,
         },
     }
     payload.update(overrides)
@@ -115,7 +117,9 @@ class WorkerLicenseTests(unittest.TestCase):
                 "features": {
                     "admin_view": True,
                     "agents_dashboard": True,
+                    "copilot_dashboard": True,
                     "copilot_telemetry": True,
+                    "copilot_usage_sync": True,
                     "dashboard_read": True,
                     "graph_ingest": True,
                     "job_control": True,
