@@ -69,3 +69,20 @@ test("agents page mounts error details through a client-only table", () => {
   assert.match(source, /<ErrorDetailsTable items=\{errorDetails\} \/>/);
   assert.match(source, /Click a column header to sort\./);
 });
+
+test("agents page time filter uses the supported dashboard ranges", () => {
+  const source = readFileSync(path.join(process.cwd(), "app/dashboard/agents/page.tsx"), "utf8");
+  const ranges = Array.from(source.matchAll(/\{ value: "([^"]+)", label: "([^"]+)" \}/g), (match) => ({
+    value: match[1],
+    label: match[2],
+  }));
+
+  assert.deepEqual(ranges, [
+    { value: "24", label: "1 day" },
+    { value: "168", label: "7 days" },
+    { value: "720", label: "30 days" },
+    { value: "2160", label: "90 days" },
+    { value: "4320", label: "180 days" },
+    { value: "all", label: "All" },
+  ]);
+});

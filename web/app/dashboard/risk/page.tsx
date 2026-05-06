@@ -12,7 +12,7 @@ import { buildSitePrincipalCountsCte } from "@/app/lib/site-principal-counts";
 import { RiskTable } from "./risk-table";
 import { RiskSummaryBarChartClient, RiskSummaryPieChartClient } from "@/components/risk-summary-graphs-client";
 import PageHeader from "@/components/page-header";
-import FilterBar from "@/components/filter-bar";
+import FilterBar, { AppliedFilterTags, FilterField, formatSearchFilterValue } from "@/components/filter-bar";
 
 function buildSearchFilter(search: string | null) {
   if (!search) return { clause: "", params: [] as any[] };
@@ -21,6 +21,10 @@ function buildSearchFilter(search: string | null) {
       "WHERE (LOWER(i.title) LIKE $1 OR LOWER(i.web_url) LIKE $1 OR LOWER(i.site_id) LIKE $1 OR LOWER(i.route_drive_id) LIKE $1 OR LOWER(i.site_key) LIKE $1)",
     params: [`%${search.toLowerCase()}%`],
   };
+}
+
+function formatWindowFilter(days: number | null) {
+  return days == null ? "All-time" : `${days}d`;
 }
 
 export const dynamic = "force-dynamic";
@@ -268,33 +272,47 @@ async function RiskPage({ searchParams }: { searchParams?: Promise<SearchParams>
       />
       <form action="/dashboard/risk" method="get">
         <FilterBar>
-          <Input name="q" placeholder="Search sites…" defaultValue={search || ""} className="w-64" />
-          <select
-            name="days"
-            defaultValue={windowDays == null ? "all" : String(windowDays)}
-            className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
-            title="File window"
-          >
-            <option value="all">All-time</option>
-            <option value="30">30d</option>
-            <option value="90">90d</option>
-            <option value="365">365d</option>
-          </select>
-          <select
-            name="dormantDays"
-            defaultValue={String(dormantDays)}
-            className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
-            title="Dormant threshold"
-          >
-            <option value="30">Dormant 30d+</option>
-            <option value="90">Dormant 90d+</option>
-            <option value="180">Dormant 180d+</option>
-            <option value="365">Dormant 365d+</option>
-          </select>
-          <Input name="pageSize" type="number" min={10} max={200} defaultValue={String(pageSize)} className="w-24" title="Page size" />
+          <FilterField label="Search">
+            <Input name="q" placeholder="Search sites…" defaultValue={search || ""} className="w-64" />
+          </FilterField>
+          <FilterField label="File window">
+            <select
+              name="days"
+              defaultValue={windowDays == null ? "all" : String(windowDays)}
+              className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+            >
+              <option value="all">All-time</option>
+              <option value="30">30d</option>
+              <option value="90">90d</option>
+              <option value="365">365d</option>
+            </select>
+          </FilterField>
+          <FilterField label="Dormant threshold">
+            <select
+              name="dormantDays"
+              defaultValue={String(dormantDays)}
+              className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+            >
+              <option value="30">Dormant 30d+</option>
+              <option value="90">Dormant 90d+</option>
+              <option value="180">Dormant 180d+</option>
+              <option value="365">Dormant 365d+</option>
+            </select>
+          </FilterField>
+          <FilterField label="Page size">
+            <Input name="pageSize" type="number" min={10} max={200} defaultValue={String(pageSize)} className="w-24" />
+          </FilterField>
           <Button type="submit" variant="outline">
             Apply
           </Button>
+          <AppliedFilterTags
+            tags={[
+              { label: "Search", value: formatSearchFilterValue(search) },
+              { label: "File window", value: formatWindowFilter(windowDays) },
+              { label: "Dormant threshold", value: `Dormant ${dormantDays}d+` },
+              { label: "Page size", value: pageSize },
+            ]}
+          />
         </FilterBar>
       </form>
 

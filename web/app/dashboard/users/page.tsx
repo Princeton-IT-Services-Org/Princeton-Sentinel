@@ -11,7 +11,7 @@ import { UsersTable } from "./users-table";
 import { buildHref } from "@/lib/pagination";
 import { UsersSummaryBarChartClient } from "@/components/users-summary-graphs-wrapper";
 import PageHeader from "@/components/page-header";
-import FilterBar from "@/components/filter-bar";
+import FilterBar, { AppliedFilterTags, FilterField, formatSearchFilterValue } from "@/components/filter-bar";
 import MetricGrid from "@/components/metric-grid";
 import { MetricCard } from "@/components/metric-card";
 import {
@@ -48,6 +48,16 @@ function getUserStatusSelectLabel(status: UserStatusFilter) {
     default:
       return "active users";
   }
+}
+
+function formatUserStatusFilter(status: UserStatusFilter) {
+  if (status === "inactive") return "Inactive";
+  if (status === "all") return "All";
+  return "Active";
+}
+
+function formatWindowFilter(days: number | null) {
+  return days == null ? "All-time" : `${days}d`;
 }
 
 async function UsersPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
@@ -239,41 +249,54 @@ async function UsersPage({ searchParams }: { searchParams?: Promise<SearchParams
       />
       <form action="/dashboard/users" method="get">
         <FilterBar>
-          <Input name="q" placeholder="Search users…" defaultValue={search || ""} className="w-64" />
-          <select
-            name="status"
-            defaultValue={status}
-            className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
-            title="User status"
-          >
-            <option value="active">Active</option>
-            <option value="inactive">Inactive</option>
-            <option value="all">All</option>
-          </select>
-          <select
-            name="days"
-            defaultValue={windowDays == null ? "all" : String(windowDays)}
-            className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
-            title="Activity window"
-          >
-            <option value="all">All-time</option>
-            <option value="7">7d</option>
-            <option value="30">30d</option>
-            <option value="90">90d</option>
-            <option value="365">365d</option>
-          </select>
-          <Input
-            name="pageSize"
-            type="number"
-            min={10}
-            max={200}
-            defaultValue={String(pageSize)}
-            className="w-24"
-            title="Page size"
-          />
+          <FilterField label="Search">
+            <Input name="q" placeholder="Search users…" defaultValue={search || ""} className="w-64" />
+          </FilterField>
+          <FilterField label="User status">
+            <select
+              name="status"
+              defaultValue={status}
+              className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+            >
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
+              <option value="all">All</option>
+            </select>
+          </FilterField>
+          <FilterField label="Activity window">
+            <select
+              name="days"
+              defaultValue={windowDays == null ? "all" : String(windowDays)}
+              className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+            >
+              <option value="all">All-time</option>
+              <option value="7">7d</option>
+              <option value="30">30d</option>
+              <option value="90">90d</option>
+              <option value="365">365d</option>
+            </select>
+          </FilterField>
+          <FilterField label="Page size">
+            <Input
+              name="pageSize"
+              type="number"
+              min={10}
+              max={200}
+              defaultValue={String(pageSize)}
+              className="w-24"
+            />
+          </FilterField>
           <Button type="submit" variant="outline">
             Apply
           </Button>
+          <AppliedFilterTags
+            tags={[
+              { label: "Search", value: formatSearchFilterValue(search) },
+              { label: "User status", value: formatUserStatusFilter(status) },
+              { label: "Activity window", value: formatWindowFilter(windowDays) },
+              { label: "Page size", value: pageSize },
+            ]}
+          />
         </FilterBar>
       </form>
 

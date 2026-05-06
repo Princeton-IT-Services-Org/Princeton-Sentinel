@@ -10,7 +10,7 @@ import { getPagination, getParam, getSortDirection, SearchParams } from "@/app/l
 import { SitesTable } from "./sites-table";
 import { SitesSummaryGraph } from "@/components/sites-summary-graph";
 import PageHeader from "@/components/page-header";
-import FilterBar from "@/components/filter-bar";
+import FilterBar, { AppliedFilterTags, FilterField, formatSearchFilterValue } from "@/components/filter-bar";
 
 const DASHBOARD_SHAREPOINT_FILTER = `
   is_dashboard_sharepoint = true
@@ -121,19 +121,28 @@ async function SitesPage({ searchParams }: { searchParams?: Promise<SearchParams
 
       <form action="/dashboard/sites" method="get">
         <FilterBar>
-          <Input name="q" placeholder="Search title, URL, or id…" defaultValue={search || ""} className="w-72" />
-          <Input
-            name="pageSize"
-            type="number"
-            min={10}
-            max={200}
-            defaultValue={String(pageSize)}
-            className="w-24"
-            title="Page size"
-          />
+          <FilterField label="Search">
+            <Input name="q" placeholder="Search title, URL, or id…" defaultValue={search || ""} className="w-72" />
+          </FilterField>
+          <FilterField label="Page size">
+            <Input
+              name="pageSize"
+              type="number"
+              min={10}
+              max={200}
+              defaultValue={String(pageSize)}
+              className="w-24"
+            />
+          </FilterField>
           <Button type="submit" variant="outline">
             Apply
           </Button>
+          <AppliedFilterTags
+            tags={[
+              { label: "Search", value: formatSearchFilterValue(search) },
+              { label: "Page size", value: pageSize },
+            ]}
+          />
         </FilterBar>
       </form>
 

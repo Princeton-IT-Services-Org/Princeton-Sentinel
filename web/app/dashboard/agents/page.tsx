@@ -18,7 +18,7 @@ import AgentAccessControl from "@/components/agent-access-control";
 import { getParam, type SearchParams } from "@/app/lib/params";
 import { Button } from "@/components/ui/button";
 import PageHeader from "@/components/page-header";
-import FilterBar from "@/components/filter-bar";
+import FilterBar, { AppliedFilterTags, FilterField } from "@/components/filter-bar";
 import MetricGrid from "@/components/metric-grid";
 import { MetricCard } from "@/components/metric-card";
 import { UniqueUsersCard, TotalConversationsCard, EscalatedOutcomeCard } from "@/components/unique-users-card";
@@ -27,21 +27,20 @@ import { ErrorDetailsTable } from "./error-details-table";
 
 export const dynamic = "force-dynamic";
 
-// Time range options matching the workbook
+const DEFAULT_TIME_RANGE_VALUE = "2160";
+
 const TIME_RANGES = [
-  { value: "1", label: "1 hour" },
-  { value: "4", label: "4 hours" },
-  { value: "12", label: "12 hours" },
   { value: "24", label: "1 day" },
-  { value: "48", label: "2 days" },
-  { value: "72", label: "3 days" },
   { value: "168", label: "7 days" },
-  { value: "336", label: "14 days" },
-  { value: "672", label: "28 days" },
   { value: "720", label: "30 days" },
-  { value: "1440", label: "60 days" },
   { value: "2160", label: "90 days" },
+  { value: "4320", label: "180 days" },
+  { value: "all", label: "All" },
 ];
+
+function formatAllFilter(value: string, allLabel: string) {
+  return value && value !== "*" ? value : allLabel;
+}
 
 async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
   const { groups } = await requireUser();
@@ -51,9 +50,10 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
 
   // ── Parse filters ──
-  const hoursParam = getParam(resolvedSearchParams, "hours") || "2160"; // default 90 days
-  const hours = Number(hoursParam) || 2160;
-  const intervalStr = `${hours} hours`;
+  const requestedHoursParam = getParam(resolvedSearchParams, "hours") || DEFAULT_TIME_RANGE_VALUE;
+  const selectedRange = TIME_RANGES.find((t) => t.value === requestedHoursParam) ?? TIME_RANGES.find((t) => t.value === DEFAULT_TIME_RANGE_VALUE)!;
+  const hoursParam = selectedRange.value;
+  const intervalStr = hoursParam === "all" ? null : `${hoursParam} hours`;
 
   // Dynamic grain matching Azure Workbook's {TimeRange:grain}
   const grainStr = "2 hours";
@@ -67,7 +67,9 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
   const sessionParams: any[] = [];
   let paramIdx = 1;
 
-  sessionWheres.push(`started_at > now() - interval '${intervalStr}'`);
+  if (intervalStr) {
+    sessionWheres.push(`started_at > now() - interval '${intervalStr}'`);
+  }
 
   if (agentFilter && agentFilter !== "*") {
     sessionWheres.push(`bot_id = $${paramIdx}`);
@@ -87,15 +89,19 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
 
   // ── Fetch filter options ──
   const [agentOptions, channelOptions] = await Promise.all([
-    query<any>(`SELECT DISTINCT bot_id FROM copilot_sessions WHERE deleted_at IS NULL AND bot_id IS NOT NULL AND bot_id != 'Agent' AND started_at > now() - interval '${intervalStr}' ORDER BY bot_id`),
-    query<any>(`SELECT DISTINCT channel FROM copilot_sessions WHERE deleted_at IS NULL AND channel IS NOT NULL AND channel != '' AND started_at > now() - interval '${intervalStr}' ORDER BY channel`),
+    query<any>(`SELECT DISTINCT bot_id FROM copilot_sessions WHERE deleted_at IS NULL AND bot_id IS NOT NULL AND bot_id != 'Agent'${intervalStr ? ` AND started_at > now() - interval '${intervalStr}'` : ""} ORDER BY bot_id`),
+    query<any>(`SELECT DISTINCT channel FROM copilot_sessions WHERE deleted_at IS NULL AND channel IS NOT NULL AND channel != ''${intervalStr ? ` AND started_at > now() - interval '${intervalStr}'` : ""} ORDER BY channel`),
   ]);
 
   // ── Fetch data with filters ──
   // ── Build error WHERE clauses (copilot_errors uses agent_name/channel, not bot_id) ──
-  const errorWheres: string[] = [`error_ts > now() - interval '${intervalStr}'`];
+  const errorWheres: string[] = ["TRUE"];
   const errorParams: any[] = [];
   let errParamIdx = 1;
+
+  if (intervalStr) {
+    errorWheres.push(`error_ts > now() - interval '${intervalStr}'`);
+  }
 
   if (agentFilter && agentFilter !== "*") {
     errorWheres.push(`agent_name = $${errParamIdx}`);
@@ -189,7 +195,8 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
          ROUND(MAX(max_duration_sec)::numeric, 2) AS max_duration_sec,
          SUM(execution_count)::int AS execution_count
        FROM copilot_topic_stats_hourly
-       WHERE time_bucket > now() - interval '${intervalStr}'
+       WHERE TRUE
+         ${intervalStr ? `AND time_bucket > now() - interval '${intervalStr}'` : ""}
          ${agentFilter && agentFilter !== "*" ? `AND bot_id = '${agentFilter.replace(/'/g, "''")}'` : ""}
          ${channelFilter && channelFilter !== "*" ? `AND channel = '${channelFilter.replace(/'/g, "''")}'` : ""}
          ${!includeTest ? "AND is_test = false" : ""}
@@ -211,7 +218,7 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
          ROUND((SUM(successful_calls) * 100.0 / NULLIF(SUM(total_calls), 0))::numeric, 2) AS success_rate
        FROM copilot_tool_stats_hourly
        WHERE tool_name IS NOT NULL AND tool_name != ''
-         AND time_bucket > now() - interval '${intervalStr}'
+         ${intervalStr ? `AND time_bucket > now() - interval '${intervalStr}'` : ""}
          ${agentFilter && agentFilter !== "*" ? `AND bot_id = '${agentFilter.replace(/'/g, "''")}'` : ""}
          ${channelFilter && channelFilter !== "*" ? `AND channel = '${channelFilter.replace(/'/g, "''")}'` : ""}
          ${!includeTest ? "AND is_test = false" : ""}
@@ -241,7 +248,8 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
          ROUND((SUM(p99_response_sec * total_responses) / NULLIF(SUM(total_responses), 0))::numeric, 2) AS p99_response_sec,
          SUM(total_responses)::int AS total_responses
        FROM copilot_response_times
-       WHERE time_bucket > now() - interval '${intervalStr}'
+       WHERE TRUE
+         ${intervalStr ? `AND time_bucket > now() - interval '${intervalStr}'` : ""}
          ${agentFilter && agentFilter !== "*" ? `AND bot_id = '${agentFilter.replace(/'/g, "''")}'` : ""}
          ${channelFilter && channelFilter !== "*" ? `AND channel = '${channelFilter.replace(/'/g, "''")}'` : ""}
          ${!includeTest ? "AND is_test = false" : ""}
@@ -463,7 +471,7 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
     userName: e.user_display_name ?? "",
   }));
 
-  const currentRange = TIME_RANGES.find((t) => t.value === hoursParam) ?? TIME_RANGES[TIME_RANGES.length - 1];
+  const currentRange = selectedRange;
 
   return (
     <main className="ps-page">
@@ -475,50 +483,66 @@ async function AgentsPage({ searchParams }: { searchParams?: Promise<SearchParam
       {/* ── Filters ── */}
       <form action="/dashboard/agents" method="get">
         <FilterBar>
-          <select
-            name="hours"
-            defaultValue={hoursParam}
-            className="rounded-md border border-input bg-background px-3 py-1.5 text-sm"
-          >
-            {TIME_RANGES.map((t) => (
-              <option key={t.value} value={t.value}>{t.label}</option>
-            ))}
-          </select>
+          <FilterField label="Time range">
+            <select
+              name="hours"
+              defaultValue={hoursParam}
+              className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+            >
+              {TIME_RANGES.map((t) => (
+                <option key={t.value} value={t.value}>{t.label}</option>
+              ))}
+            </select>
+          </FilterField>
 
-          <select
-            name="agent"
-            defaultValue={agentFilter || "*"}
-            className="rounded-md border border-input bg-background px-3 py-1.5 text-sm"
-          >
-            <option value="*">All Agents</option>
-            {agentOptions.map((a: any) => (
-              <option key={a.bot_id} value={a.bot_id}>{a.bot_id}</option>
-            ))}
-          </select>
+          <FilterField label="Agent">
+            <select
+              name="agent"
+              defaultValue={agentFilter || "*"}
+              className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+            >
+              <option value="*">All Agents</option>
+              {agentOptions.map((a: any) => (
+                <option key={a.bot_id} value={a.bot_id}>{a.bot_id}</option>
+              ))}
+            </select>
+          </FilterField>
 
-          <select
-            name="channel"
-            defaultValue={channelFilter || "*"}
-            className="rounded-md border border-input bg-background px-3 py-1.5 text-sm"
-          >
-            <option value="*">All Channels</option>
-            {channelOptions.map((c: any) => (
-              <option key={c.channel} value={c.channel}>{c.channel}</option>
-            ))}
-          </select>
+          <FilterField label="Channel">
+            <select
+              name="channel"
+              defaultValue={channelFilter || "*"}
+              className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+            >
+              <option value="*">All Channels</option>
+              {channelOptions.map((c: any) => (
+                <option key={c.channel} value={c.channel}>{c.channel}</option>
+              ))}
+            </select>
+          </FilterField>
 
-          <select
-            name="test"
-            defaultValue={includeTest ? "true" : "false"}
-            className="rounded-md border border-input bg-background px-3 py-1.5 text-sm"
-          >
-            <option value="true">Include Test Data</option>
-            <option value="false">Production Only</option>
-          </select>
+          <FilterField label="Test data">
+            <select
+              name="test"
+              defaultValue={includeTest ? "true" : "false"}
+              className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+            >
+              <option value="true">Include Test Data</option>
+              <option value="false">Production Only</option>
+            </select>
+          </FilterField>
 
           <Button type="submit" variant="outline">
             Apply
           </Button>
+          <AppliedFilterTags
+            tags={[
+              { label: "Time range", value: currentRange.label },
+              { label: "Agent", value: formatAllFilter(agentFilter, "All Agents") },
+              { label: "Channel", value: formatAllFilter(channelFilter, "All Channels") },
+              { label: "Test data", value: includeTest ? "Include Test Data" : "Production Only" },
+            ]}
+          />
         </FilterBar>
       </form>
 

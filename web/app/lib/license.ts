@@ -188,6 +188,12 @@ function getDefaultLicenseFeatures(): LicenseFeatures {
   return { ...LICENSE_FEATURE_DEFAULTS };
 }
 
+function getDisabledLicenseFeatures(): LicenseFeatures {
+  return Object.fromEntries(
+    (Object.keys(LICENSE_FEATURE_DEFAULTS) as LicenseFeatureKey[]).map((key) => [key, false])
+  ) as LicenseFeatures;
+}
+
 function getFullyEnabledLicenseFeatures(): LicenseFeatures {
   return Object.fromEntries(
     (Object.keys(LICENSE_FEATURE_DEFAULTS) as LicenseFeatureKey[]).map((key) => [key, true])
@@ -261,7 +267,7 @@ function deriveLicenseFeatures(value: unknown): LicenseFeatures {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("license_features_invalid");
   }
-  const merged = getDefaultLicenseFeatures();
+  const merged = getDisabledLicenseFeatures();
   for (const key of Object.keys(LICENSE_FEATURE_DEFAULTS) as LicenseFeatureKey[]) {
     const raw = (value as Record<string, unknown>)[key];
     if (raw === undefined) {
@@ -351,8 +357,9 @@ export async function inspectLicenseArtifact(rawLicenseText: string): Promise<Li
       throw new Error("license_signature_invalid");
     }
 
-    const parsedPayload = parseLicensePayloadObject(JSON.parse(payloadText));
-    const canonicalPayload = canonicalizeLicensePayload(parsedPayload);
+    const rawPayload = JSON.parse(payloadText);
+    const parsedPayload = parseLicensePayloadObject(rawPayload);
+    const canonicalPayload = canonicalizeLicensePayload(rawPayload);
     if (payloadText !== canonicalPayload) {
       throw new Error("license_payload_not_canonical");
     }

@@ -10,7 +10,7 @@ import { getPagination, getParam, getSortDirection, getWindowDays, SearchParams 
 import { ActivityTable } from "./activity-table";
 import ActivitySummaryGraphsWrapper from "@/components/activity-summary-graphs-wrapper";
 import PageHeader from "@/components/page-header";
-import FilterBar from "@/components/filter-bar";
+import FilterBar, { AppliedFilterTags, FilterField, formatSearchFilterValue } from "@/components/filter-bar";
 import MetricGrid from "@/components/metric-grid";
 import { MetricCard } from "@/components/metric-card";
 
@@ -42,6 +42,16 @@ function buildSiteTypeClause(siteType: string | null) {
   if (siteType === "personal") return "WHERE is_personal = true";
   if (siteType === "nonPersonal") return "WHERE COALESCE(is_personal, false) = false";
   return "";
+}
+
+function formatSiteTypeFilter(value: string) {
+  if (value === "personal") return "Personal";
+  if (value === "nonPersonal") return "Non-personal";
+  return "All sites";
+}
+
+function formatWindowFilter(days: number | null) {
+  return days == null ? "All-time" : `${days}d`;
 }
 
 export const dynamic = "force-dynamic";
@@ -179,41 +189,54 @@ async function ActivityPage({ searchParams }: { searchParams?: Promise<SearchPar
 
       <form action="/dashboard/activity" method="get">
         <FilterBar>
-          <Input name="q" placeholder="Search sites..." defaultValue={search || ""} className="w-64" />
-          <select
-            name="siteType"
-            defaultValue={siteType}
-            className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
-            title="Site type"
-          >
-            <option value="all">All sites</option>
-            <option value="personal">Personal</option>
-            <option value="nonPersonal">Non-personal</option>
-          </select>
-          <select
-            name="days"
-            defaultValue={windowDays == null ? "all" : String(windowDays)}
-            className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm"
-            title="Window"
-          >
-            <option value="all">All-time</option>
-            <option value="7">7d</option>
-            <option value="30">30d</option>
-            <option value="90">90d</option>
-            <option value="365">365d</option>
-          </select>
-          <Input
-            name="pageSize"
-            type="number"
-            min={10}
-            max={200}
-            defaultValue={String(pageSize)}
-            className="w-24"
-            title="Page size"
-          />
+          <FilterField label="Search">
+            <Input name="q" placeholder="Search sites..." defaultValue={search || ""} className="w-64" />
+          </FilterField>
+          <FilterField label="Site type">
+            <select
+              name="siteType"
+              defaultValue={siteType}
+              className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+            >
+              <option value="all">All sites</option>
+              <option value="personal">Personal</option>
+              <option value="nonPersonal">Non-personal</option>
+            </select>
+          </FilterField>
+          <FilterField label="Activity window">
+            <select
+              name="days"
+              defaultValue={windowDays == null ? "all" : String(windowDays)}
+              className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+            >
+              <option value="all">All-time</option>
+              <option value="7">7d</option>
+              <option value="30">30d</option>
+              <option value="90">90d</option>
+              <option value="365">365d</option>
+            </select>
+          </FilterField>
+          <FilterField label="Page size">
+            <Input
+              name="pageSize"
+              type="number"
+              min={10}
+              max={200}
+              defaultValue={String(pageSize)}
+              className="w-24"
+            />
+          </FilterField>
           <Button type="submit" variant="outline">
             Apply
           </Button>
+          <AppliedFilterTags
+            tags={[
+              { label: "Search", value: formatSearchFilterValue(search) },
+              { label: "Site type", value: formatSiteTypeFilter(siteType) },
+              { label: "Activity window", value: formatWindowFilter(windowDays) },
+              { label: "Page size", value: pageSize },
+            ]}
+          />
         </FilterBar>
       </form>
 

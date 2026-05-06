@@ -169,6 +169,34 @@ test("getFeatureFlags disables agents dashboard when the license disables it", a
   clearMockQuery();
 });
 
+test("getFeatureFlags disables only copilot dashboard when omitted from an otherwise licensed artifact", async () => {
+  setMockQuery([[{ feature_key: "copilot_dashboard", enabled: true }]]);
+  setLicenseSummaryForTests({
+    status: "active",
+    mode: "full",
+    verificationStatus: "verified",
+    verificationError: null,
+    artifactId: "artifact-3",
+    sha256: "hash-3",
+    uploadedAt: "2026-03-23T12:00:00.000Z",
+    uploadedBy: { oid: null, upn: null, name: null },
+    payload: null,
+    features: {
+      ...LICENSE_FEATURE_DEFAULTS,
+      agents_dashboard: true,
+      copilot_telemetry: true,
+      copilot_dashboard: false,
+    },
+  });
+
+  const flags = await getFeatureFlags();
+  assert.equal(flags.agents_dashboard, true);
+  assert.equal(flags.copilot_dashboard, false);
+  assert.equal(flags.test_mode, false);
+
+  clearMockQuery();
+});
+
 test("shouldRedirectForDisabledFeature only redirects when a gated route was just disabled", () => {
   assert.equal(
     shouldRedirectForDisabledFeature(

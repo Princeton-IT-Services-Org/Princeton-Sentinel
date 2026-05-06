@@ -22,7 +22,7 @@ import { setLocalTestingStateForTests } from "../app/lib/local-testing-state";
 
 const execFileAsync = promisify(execFile);
 
-function makePayload(overrides: Record<string, unknown> = {}) {
+function makePayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     schema_version: LICENSE_SCHEMA_VERSION,
     license_id: "license-123",
@@ -45,6 +45,14 @@ function makePayload(overrides: Record<string, unknown> = {}) {
     },
     ...overrides,
   };
+}
+
+function makeLegacyPayloadWithoutM365CopilotFeatures() {
+  const payload = makePayload();
+  payload.features = { ...(payload.features as Record<string, boolean>) };
+  delete (payload.features as Record<string, boolean>).copilot_usage_sync;
+  delete (payload.features as Record<string, boolean>).copilot_dashboard;
+  return payload;
 }
 
 function signArtifact(privateKeyPem: string, payload: Record<string, unknown>) {
@@ -72,6 +80,54 @@ test("inspectLicenseArtifact verifies a valid canonical artifact", async () => {
   assert.equal(inspection.verificationStatus, "verified");
   assert.equal(summary.status, "active");
   assert.equal(summary.features.graph_ingest, true);
+
+  setLicensePublicKeyForTests(null);
+});
+
+test("valid legacy artifacts stay active and disable only omitted known features", async () => {
+  const { privateKey, publicKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs1", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  setLicensePublicKeyForTests(publicKey);
+  process.env.ENTRA_TENANT_ID = "tenant-a";
+
+  const artifact = signArtifact(privateKey, makeLegacyPayloadWithoutM365CopilotFeatures());
+  const inspection = await inspectLicenseArtifact(artifact);
+  const summary = await summarizeLicenseArtifactText({ rawLicenseText: artifact });
+
+  assert.equal(inspection.verificationStatus, "verified");
+  assert.equal(summary.status, "active");
+  assert.equal(summary.features.job_control, true);
+  assert.equal(summary.features.graph_ingest, true);
+  assert.equal(summary.features.permission_revoke, true);
+  assert.equal(summary.features.agents_dashboard, true);
+  assert.equal(summary.features.copilot_telemetry, true);
+  assert.equal(summary.features.copilot_usage_sync, false);
+  assert.equal(summary.features.copilot_dashboard, false);
+
+  setLicensePublicKeyForTests(null);
+});
+
+test("unknown feature keys verify but are ignored for enforcement", async () => {
+  const { privateKey, publicKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs1", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  setLicensePublicKeyForTests(publicKey);
+  process.env.ENTRA_TENANT_ID = "tenant-a";
+
+  const payload = makeLegacyPayloadWithoutM365CopilotFeatures();
+  (payload.features as Record<string, boolean>).future_feature = true;
+  const artifact = signArtifact(privateKey, payload);
+  const summary = await summarizeLicenseArtifactText({ rawLicenseText: artifact });
+
+  assert.equal(summary.status, "active");
+  assert.equal(summary.features.graph_ingest, true);
+  assert.equal("future_feature" in summary.features, false);
+  assert.equal(summary.features.copilot_dashboard, false);
 
   setLicensePublicKeyForTests(null);
 });
