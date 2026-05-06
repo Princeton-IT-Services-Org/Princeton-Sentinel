@@ -6,7 +6,7 @@ import { redirectIfFeatureDisabled } from "@/app/lib/feature-flags";
 import { formatNumber } from "@/app/lib/format";
 import { getParam, type SearchParams } from "@/app/lib/params";
 import PageHeader from "@/components/page-header";
-import FilterBar from "@/components/filter-bar";
+import FilterBar, { AppliedFilterTags, FilterField } from "@/components/filter-bar";
 import MetricGrid from "@/components/metric-grid";
 import { MetricCard } from "@/components/metric-card";
 import LocalDateTime from "@/components/local-date-time";
@@ -61,7 +61,6 @@ async function CopilotPage({ searchParams }: { searchParams?: Promise<SearchPara
   const selectedPeriod = normalizePeriod(getParam(resolvedSearchParams, "period"));
   const currentRange = PERIODS.find((period) => period.value === selectedPeriod) ?? PERIODS[1];
   const selectedPeriodDays = periodDays(selectedPeriod);
-  const promptWindowLabel = selectedPeriod === "ALL" ? "all retained interaction data" : `the last ${selectedPeriodDays} days`;
 
   const [
     summaryRows,
@@ -211,38 +210,29 @@ async function CopilotPage({ searchParams }: { searchParams?: Promise<SearchPara
   return (
     <main className="ps-page">
       <PageHeader
-        title="Copilot"
+        title="Copilot Utilization"
         subtitle={`Microsoft 365 Copilot usage from Graph reports. Selected report period: ${currentRange.label}.`}
       />
 
       <form action="/dashboard/copilot" method="get">
-        <FilterBar className="items-start justify-between gap-3 p-3">
-          <div>
-            <div className="text-sm font-medium">Usage period</div>
-            <p className="mt-1 max-w-2xl text-xs text-muted-foreground">
-              Applies to enabled users, active users, adoption, prompt totals, app charts, top users, departments, and user detail.
-              Prompt activity uses {promptWindowLabel}; report metrics use the matching Microsoft Graph report period.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-end gap-2">
-            <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
-              Report period
-              <select
-                name="period"
-                defaultValue={selectedPeriod}
-                className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
-              >
-                {PERIODS.map((period) => (
-                  <option key={period.value} value={period.value}>
-                    {period.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <Button type="submit" variant="outline">
-              Apply
-            </Button>
-          </div>
+        <FilterBar>
+          <FilterField label="Report period">
+            <select
+              name="period"
+              defaultValue={selectedPeriod}
+              className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground"
+            >
+              {PERIODS.map((period) => (
+                <option key={period.value} value={period.value}>
+                  {period.label}
+                </option>
+              ))}
+            </select>
+          </FilterField>
+          <Button type="submit" variant="outline" className="self-end">
+            Apply
+          </Button>
+          <AppliedFilterTags tags={[{ label: "Report period", value: currentRange.label }]} />
         </FilterBar>
       </form>
 

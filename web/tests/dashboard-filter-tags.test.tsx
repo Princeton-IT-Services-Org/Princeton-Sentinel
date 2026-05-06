@@ -76,6 +76,7 @@ if (!testGlobals.__psDashboardFilterMocksRegistered) {
 const { default: ActivityPage } = require("../app/dashboard/activity/page") as typeof import("../app/dashboard/activity/page");
 const { default: UsersPage } = require("../app/dashboard/users/page") as typeof import("../app/dashboard/users/page");
 const { default: AgentsPage } = require("../app/dashboard/agents/page") as typeof import("../app/dashboard/agents/page");
+const { default: CopilotPage } = require("../app/dashboard/copilot/page") as typeof import("../app/dashboard/copilot/page");
 
 test("activity page renders applied filter tags for site type, window, and page size", async () => {
   const page = await ActivityPage({
@@ -109,4 +110,14 @@ test("agents page renders applied filter tags for range, agent, channel, and tes
   assert.match(markup, /Agent: All Agents/);
   assert.match(markup, /Channel: All Channels/);
   assert.match(markup, /Test data: Production Only/);
+});
+
+test("copilot page renders the shared applied filter tag treatment", async () => {
+  const page = await CopilotPage({
+    searchParams: Promise.resolve({ period: "D90" }),
+  });
+  const markup = renderToStaticMarkup(page);
+
+  assert.match(markup, /Report period/);
+  assert.match(markup, /Report period: 90 days/);
 });
